@@ -2,6 +2,7 @@ from app.schemas.meta import MetadataInfo
 from openai import pydantic_function_tool
 from app.config import settings
 from app.dependencies import openai_client
+import logging, json
 
 tool_definition = pydantic_function_tool(
     MetadataInfo,
@@ -12,28 +13,15 @@ tool_definition = pydantic_function_tool(
 # 데이터 관련 보다는 데이터를 설명할 이라고 적으면 좋을듯..
 # langfuse 추가하기
 system_message = """
-  # 데이터 메타정보 추출 프롬프트
-
+  당신은 데이터 분석 전문가입니다.
   다음 데이터를 분석하여 메타데이터를 JSON 형식으로 추출해주세요.
-
-  ## 데이터:
-  {input_data}
-
-  ## 추출 요구사항:
-  1. **tags**: 데이터와 관련된 핵심 키워드/태그들 (3-10개)
-  2. **topics**: 데이터의 주요 주제/분야들 (2-5개)  
-  3. **description**: 데이터에 대한 간략하고 명확한 설명 (1-2문장)
-
   가이드라인:
 
-  - tags는 구체적이고 검색 가능한 키워드로 작성
-  - topics는 데이터가 속하는 주요 분야/카테고리로 작성
-  - description은 데이터의 핵심 내용을 요약
-  - 모든 텍스트는 한국어로 작성
+  - tags: 데이터와 관련된 핵심 키워드/태그들 (3-10개) 구체적이고 검색 가능한 키워드로 작성
+  - topics는 데이터가 속하는 주요 분야/카테고리로 작성. 데이터의 주요 주제/분야들 (2-5개)  
+  - description은  데이터에 대한 간략하고 명확한 설명
   - 빈 문자열이나 중복값은 제외
-  - JSON 형식을 정확히 준수
-
-  데이터를 분석하여 위 형식에 맞는 JSON만 응답해주세요.
+  - 반드시 fuction tool 호출로 응답
 """
 
 
@@ -51,14 +39,16 @@ def generate_metadata(data_text: str, model: str = settings.CLAUDE_MODEL_NAME):
                 },
                 {
                     "role": "user",
-                    "content": f"데이터: {data_text}"
+                    "content": f"데이터를 분석하여 위 형식에 맞는 JSON만 응답해주세요.\n데이터: {data_text}"
                 }
             ],
             temperature=0.0,
-            functions=[tool_definition],
+            tools=[tool_definition]
         )
-        response_message = llm_response.choices[0].message
-        print(f"Metadata Extraction LLM Response: {response_message}")
+
+        response_message =json.loads(llm_response.choices[0].message.tool_calls[0].function.arguments)
+        logging.info(f"Metadata extraction successful. \n\n {response_message}")
         return response_message
     except Exception as e:
+        logging.error(f"Metadata extraction failed: {e}")
         raise e
