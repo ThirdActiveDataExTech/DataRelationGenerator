@@ -1,4 +1,5 @@
 from typing import Annotated, Generator
+from functools import lru_cache
 
 from fastapi import Security, Depends
 from fastapi.security import APIKeyHeader
@@ -6,6 +7,8 @@ from sqlmodel import Session
 
 from app.db import engine
 from app.utils.authentication import token_validation
+from app.clients import openai
+from openai import OpenAI
 
 header_scheme = APIKeyHeader(name="x-token")
 
@@ -19,5 +22,12 @@ def get_session() -> Generator[Session, None, None]:
     with Session(engine) as session:
         yield session
 
+
+@lru_cache(maxsize=1)
+def get_openai_client() -> OpenAI:
+    return openai.get_client()
+
+# Client Instances
+openai_client: OpenAI = get_openai_client()
 
 SessionDep = Annotated[Session, Depends(get_session)]
