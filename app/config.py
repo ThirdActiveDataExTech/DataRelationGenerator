@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: Literal["local", "staging", "production"] = "local"
 
     PORT: int = 8000
-    SERVICE_NAME: str = "Python FastAPI Template"
+    SERVICE_NAME: str = "3rd party"
     SERVICE_CODE: int = 100
     MAJOR_VERSION: str = "v1"
     STATUS: str = "dev"
@@ -94,6 +94,10 @@ class Settings(BaseSettings):
 
     # DB Config
     SQLITE_FILE_NAME: str = "database.db"
+    # llm config
+    CLAUDE_MODEL_NAME: str = "claude-3-7-sonnet"
+    CLAUDE_API_KEY: str = "<LITELLM_API_KEY>"
+    LITE_LLM_BASE_URL: str = "<LITELLM_BASE_URL>"
 
 
 settings = Settings()  # type: ignore
