@@ -3,7 +3,7 @@ from openai import pydantic_function_tool
 from app.config import settings
 from app.dependencies import openai_client
 
-too_definition = pydantic_function_tool(
+tool_definition = pydantic_function_tool(
     MetadataInfo,
     name="extract_metadata_info",
     description="주어진 데이터에서 메타데이터 정보를 추출합니다."
@@ -23,14 +23,6 @@ system_message = """
   1. **tags**: 데이터와 관련된 핵심 키워드/태그들 (3-10개)
   2. **topics**: 데이터의 주요 주제/분야들 (2-5개)  
   3. **description**: 데이터에 대한 간략하고 명확한 설명 (1-2문장)
-
-  ## 출력 형식:
-  ```json
-  {
-    "tags": ["태그1", "태그2", "태그3"],
-    "topics": ["주제1", "주제2"],
-    "description": "데이터에 대한 간략한 설명"
-  }
 
   가이드라인:
 
@@ -63,9 +55,10 @@ def generate_metadata(data_text: str, model: str = settings.CLAUDE_MODEL_NAME):
                 }
             ],
             temperature=0.0,
-            functions=[too_definition],
+            functions=[tool_definition],
         )
-        # print(f"Metadata Extraction LLM Response: {llm_response}")
-        return llm_response
+        response_message = llm_response.choices[0].message
+        print(f"Metadata Extraction LLM Response: {response_message}")
+        return response_message
     except Exception as e:
         raise e
