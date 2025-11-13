@@ -135,6 +135,18 @@ exclude = [
 ]
 
 
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--verbose",
+    "--cov=app",
+    "--cov-report=xml:coverage.xml",
+    "--cov-report=term",
+    "--junit-xml=report.xml",
+]
+testpaths = ["tests"]
+
 [tool.coverage.run]
 source = ["app"]
 omit = [
@@ -142,4 +154,15 @@ omit = [
     "*/__init__.py",
     "app/api/examples/*.py",
     "app/exceptions/*.py",
+]
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
 ]
