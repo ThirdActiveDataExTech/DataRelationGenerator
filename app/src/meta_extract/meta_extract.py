@@ -46,7 +46,7 @@ def generate_metadata(data_text: str, model: str = settings.CLAUDE_MODEL_NAME):
             tools=[tool_definition]
         )
 
-        response_message =json.loads(llm_response.choices[0].message.tool_calls[0].function.arguments)
+        response_message = json.loads(llm_response.choices[0].message.tool_calls[0].function.arguments)
         logging.info(f"Metadata extraction successful. \n\n {response_message}")
         return response_message
     except Exception as e:

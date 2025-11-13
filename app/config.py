@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     CLAUDE_API_KEY: str = "<LITELLM_API_KEY>"
     LITE_LLM_BASE_URL: str = "<LITELLM_BASE_URL>"
 
+    # Langfuse Config
+    LANGFUSE_SECRET_KEY: str = "sk-lf-4da79bda-174d-4fe5-93fe-ecc2b65c8454"
+    LANGFUSE_PUBLIC_KEY: str = "pk-lf-cf038a51-6391-4640-99e5-9b3e0df44797"
+    LANGFUSE_HOST: str = "http://211.39.140.175:18300"
+
 
 settings = Settings()  # type: ignore
 print(settings.model_dump_json())
