@@ -1,6 +1,7 @@
 from typing import List
 from pydantic import BaseModel, Field, field_validator
 
+
 class MetadataInfo(BaseModel):
     """메타데이터 정보 데이터 모델"""
     tags: List[str] = Field(default_factory=list, title="태그", description="데이터와 관련된 태그 목록")
