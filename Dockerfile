@@ -25,7 +25,6 @@ RUN groupadd -r $GROUP_NAME && useradd -r -g $GROUP_NAME -d $APP_HOME $APP_USER
 
 # Set the working directory
 WORKDIR $APP_HOME
-RUN chown -R $APP_USER:$GROUP_NAME $APP_HOME
 
 # Set environment variables
 ARG DEBIAN_FRONTEND=noninteractive
@@ -35,14 +34,20 @@ ENV TZ=Asia/Seoul \
     VIRTUAL_ENV=/app/.venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# Switch to the non-root user
-USER $APP_USER
-
-# Copy necessary files and directory
+# Copy necessary files and directory (as root)
 COPY --from=builder-base $VIRTUAL_ENV $VIRTUAL_ENV
-COPY pyproject.toml version_info.py .env ./
+COPY pyproject.toml .env ./
 COPY ./static ./static/
 COPY ./app ./app/
+
+# Generate version info file with proper environment (as root)
+RUN python app/version.py
+
+# Set ownership of all files to the app user
+RUN chown -R $APP_USER:$GROUP_NAME $APP_HOME
+
+# Switch to the non-root user
+USER $APP_USER
 
 # Expose the port
 EXPOSE 8000
