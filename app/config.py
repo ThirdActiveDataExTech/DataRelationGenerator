@@ -4,7 +4,7 @@ from typing import Literal, List, Annotated, Any, Union, Dict
 
 from pydantic import AnyUrl, BeforeValidator, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
+from langfuse.langchain import CallbackHandler
 
 def parse_cors(v: Any) -> Union[List[str], str]:
     if isinstance(v, str) and not v.startswith("["):
@@ -95,15 +95,16 @@ class Settings(BaseSettings):
     # DB Config
     SQLITE_FILE_NAME: str = "database.db"
     # llm config
-    CLAUDE_MODEL_NAME: str = "claude-3-7-sonnet"
-    CLAUDE_API_KEY: str = "sk-wisenut-litellm-dev-wisenutWkd!23"
-    LITE_LLM_BASE_URL: str = "https://labs.wisenut.kr/clusters/local/namespaces/llm-hub/services/litellm-dev"
+    CLAUDE_MODEL_NAME: str = ""
+    CLAUDE_API_KEY: str = ""
+    LITE_LLM_BASE_URL: str = ""
 
     # Langfuse Config
-    LANGFUSE_SECRET_KEY: str = "sk-lf-4da79bda-174d-4fe5-93fe-ecc2b65c8454"
-    LANGFUSE_PUBLIC_KEY: str = "pk-lf-cf038a51-6391-4640-99e5-9b3e0df44797"
-    LANGFUSE_HOST: str = "http://211.39.140.175:18300"
+    LANGFUSE_SECRET_KEY: str = ""
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_HOST: str = ""
 
 
 settings = Settings()  # type: ignore
 print(settings.model_dump_json())
+langfuse_handler = CallbackHandler()

@@ -1,6 +1,5 @@
 from typing import Annotated, Generator, Optional
 from functools import lru_cache
-
 from fastapi import Security, Depends
 from fastapi.security import APIKeyHeader
 from sqlmodel import Session
@@ -26,6 +25,10 @@ def get_session() -> Generator[Session, None, None]:
 @lru_cache(maxsize=1)
 def get_openai_client() -> OpenAI:
     return openai.get_client()
+@lru_cache(maxsize=1)
+def get_chatopenai_client():
+    """Langchain OpenAI 클라이언트 생성 및 도구 바인딩"""
+    return openai.get_chat_client()
 
 
 # Client Instances

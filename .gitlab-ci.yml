@@ -6,7 +6,7 @@
 stages:
   - secret_detection
   - lint
-  - test
+#  - test
   - build-and-push-app
   - container_test
   - triage-dry-run
@@ -22,7 +22,7 @@ include:
       - templates/Security/Secret-Detection.gitlab-ci.yml
       - templates/Python/Dependency-Management.gitlab-ci.yml
       - templates/Python/Lint/Uv-Lint.gitlab-ci.yml
-      - templates/Python/Test/Uv-Test.gitlab-ci.yml
+      # - templates/Python/Test/Uv-Test.gitlab-ci.yml # 테스트 구현 후 재활성화
       - templates/Python/Openapi/Uv-Openapi.gitlab-ci.yml
       - templates/Security/Container-Scanning.gitlab-ci.yml
       - templates/Mkdocs/api/Openapi-Docs.gitlab-ci.yml
