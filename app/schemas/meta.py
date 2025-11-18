@@ -1,5 +1,7 @@
 from typing import List
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.orm import declarative_base
+from sqlalchemy import Column, Integer, Text, DateTime
 
 
 class MetadataInfo(BaseModel):
@@ -12,3 +14,16 @@ class MetadataInfo(BaseModel):
     @classmethod
     def validate_non_empty_list(cls, v: List[str]) -> List[str]:
         return [item.strip() for item in v if item.strip()]
+
+
+Base = declarative_base()
+
+
+class DataInfo(Base):
+    __tablename__ = 'data_info'
+    id = Column(Integer, primary_key=True, index=True)
+    origin_text = Column(Text, nullable=False)
+    tags = Column(Text, nullable=False, default="[]")
+    topics = Column(Text, nullable=False, default="[]")
+    description = Column(Text, nullable=False, default="")
+    extract_time = Column(DateTime, nullable=True)
