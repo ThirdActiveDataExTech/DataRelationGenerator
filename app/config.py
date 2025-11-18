@@ -95,14 +95,14 @@ class Settings(BaseSettings):
     # DB Config
     SQLITE_FILE_NAME: str = "database.db"
     # llm config
-    CLAUDE_MODEL_NAME: str = ""
-    CLAUDE_API_KEY: str = ""
-    LITE_LLM_BASE_URL: str = ""
+    CLAUDE_MODEL_NAME: str = "claude"
+    CLAUDE_API_KEY: str = "sk-..."
+    LITE_LLM_BASE_URL: str = "https://..."
 
     # Langfuse Config
-    LANGFUSE_SECRET_KEY: str = ""
-    LANGFUSE_PUBLIC_KEY: str = ""
-    LANGFUSE_HOST: str = ""
+    LANGFUSE_SECRET_KEY: str = "sk-..."
+    LANGFUSE_PUBLIC_KEY: str = "pk-..."
+    LANGFUSE_HOST: str = "http://..."
 
 
 settings = Settings()  # type: ignore
