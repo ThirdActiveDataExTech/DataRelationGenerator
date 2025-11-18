@@ -4,10 +4,13 @@ from fastapi import Security, Depends
 from fastapi.security import APIKeyHeader
 from sqlmodel import Session
 from langfuse import Langfuse
+from langchain_openai import ChatOpenAI
 from app.db import engine
 from app.utils.authentication import token_validation
 from openai import OpenAI
 from app.clients import langfuse, openai
+from langfuse.model import PromptClient
+
 
 header_scheme = APIKeyHeader(name="x-token")
 
@@ -26,13 +29,20 @@ def get_session() -> Generator[Session, None, None]:
 def get_openai_client() -> OpenAI:
     return openai.get_client()
 @lru_cache(maxsize=1)
-def get_chatopenai_client():
+def get_chatopenai_client() -> ChatOpenAI:
     """Langchain OpenAI 클라이언트 생성 및 도구 바인딩"""
     return openai.get_chat_client()
 
+@lru_cache(maxsize=3)
+def get_langfuse_prompt(prompt_name: str, prompt_label: str) -> PromptClient:
+    prompt = langfuse_client.get_prompt(prompt_name, label=prompt_label)  # pyright:ignore
+    if not prompt:
+        raise ValueError(f"Langfuse 프롬프트를 찾을 수 없습니다: {prompt_name} - {prompt_label}")
+    return prompt
 
 # Client Instances
 openai_client: OpenAI = get_openai_client()
+chatopenai_client: ChatOpenAI = get_chatopenai_client()
 langfuse_client: Optional[Langfuse] = langfuse.get_client()
 
 SessionDep = Annotated[Session, Depends(get_session)]
