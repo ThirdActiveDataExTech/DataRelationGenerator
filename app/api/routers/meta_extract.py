@@ -1,85 +1,70 @@
-from fastapi import APIRouter, Body, Depends
-from app.schemas.response import APIResponseModel
-from app.src.meta_extract.meta_extract import generate_metadata
-from app.db import save_metadata_to_db, create_db_and_tables, get_db
-from app.schemas.meta import DataInfo
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query
+from app.schemas.response import APIResponseModel, DataInfoResponse
+from app.schemas.meta import MetadataRequest, SearchField
+from app.db import get_db
+from app.src.meta_extract.meta_extract import MetadataService
 from fastapi.responses import JSONResponse
 from typing import Annotated
-from pydantic import BaseModel
-from datetime import datetime
 from sqlalchemy.orm import Session
-import json
 
-router = APIRouter(prefix="/meta_extract", tags=["meta_extract"])
+router = APIRouter(prefix="/metadata", tags=["metadata"])
 
-
-class MetadataRequest(BaseModel):
-    text: str = "데이터 값 입력 ex. 대법원 2025.09.18 선고 2023다221885 전원합의체 판결 ★ [손해배상(기)]〈중도상환수수료가 이자제한법 제4조 제1항에 따른 간주이자에 해당하여 이자제한법상 최고이자율 제한에 관한 규정이 적용되는지 문제된 사건〉 [공2025하,1874]"
-    prompt_name: str = "generate_metadata"
-    prompt_label: str = "production"
+service = MetadataService()
 
 
-@router.post("/extract", tags=["meta_extract"], response_model=APIResponseModel, response_class=JSONResponse)
+@router.post("/extract", tags=["metadata"], response_model=APIResponseModel, response_class=JSONResponse)
 async def extract_metadata(
-        request: Annotated[MetadataRequest, Body(...)]
-):
-    """메타데이터 추출 엔드포인트 - db 저장 없이 추출만 수행"""
-    try:
-        data_text = request.text.strip()
-        prompt_name = request.prompt_name
-        prompt_label = request.prompt_label
-        meta_info = generate_metadata(data_text, prompt_name=prompt_name, prompt_label=prompt_label)
-        return APIResponseModel(result=meta_info, description="메타데이터 추출 완료")
-    except Exception as e:
-        return APIResponseModel(code=500, message="메타데이터 추출 실패", result={}, description=str(e))
-
-
-@router.post("/extract_save_db", tags=["meta_extract"], response_model=APIResponseModel, response_class=JSONResponse)
-async def extract_save_db(
+        db: Annotated[Session, Depends(get_db)],
         request: Annotated[MetadataRequest, Body(...)]
 ):
     """메타데이터 추출 엔드포인트"""
-    try:
-        data_text = request.text.strip()
-        prompt_name = request.prompt_name
-        prompt_label = request.prompt_label
-        meta_info = generate_metadata(data_text, prompt_name=prompt_name, prompt_label=prompt_label)
-        save_metadata_to_db(
-            origin_text=data_text,
-            topics=meta_info.get("topics", []),
-            tags=meta_info.get("tags", []),
-            description=meta_info.get("description", ""),
-            extract_time=datetime.now()
-        )
-        return APIResponseModel(result=meta_info, description="메타데이터 추출 후 저장 완료")
-    except Exception as e:
-        return APIResponseModel(code=500, message="메타데이터 추출 실패", result={}, description=str(e))
+    meta_info = service.extract_metadata(request.text.strip(), request.prompt_name, request.prompt_label, db)
+    return APIResponseModel(result=meta_info, description="메타데이터 추출 완료")
 
 
-@router.post("/init_db", tags=["meta_extract"], response_model=APIResponseModel, response_class=JSONResponse)
+@router.post("/database/init", tags=["metadata"], response_model=APIResponseModel, response_class=JSONResponse)
 async def init_db():
     """메타데이터 테이블 초기화 엔드포인트"""
-    try:
-        create_db_and_tables()
-        return APIResponseModel(result={}, description="메타데이터 테이블 초기화 완료")
-    except Exception as e:
-        return APIResponseModel(code=500, message="메타데이터 테이블 초기화 실패", result={}, description=str(e))
+    service.create_db_and_tables()
+    return APIResponseModel(result={}, description="메타데이터 테이블 초기화 완료")
 
 
-@router.get("/get_all_db", tags=["meta_extract"], response_model=APIResponseModel, response_class=JSONResponse)
+
+@router.get("", tags=["metadata"], response_model=APIResponseModel, response_class=JSONResponse)
 async def get_all_metadata(db: Annotated[Session, Depends(get_db)]):
     """DB에 저장된 메타데이터 조회"""
-    try:
-        result = []
-        for data_info in db.query(DataInfo).all():
-            result.append({
-                "id": data_info.id,
-                "origin_text": data_info.origin_text,
-                "topics": data_info.topics,
-                "tags": data_info.tags,
-                "description": data_info.description,
-                "extract_time": data_info.extract_time
-            })
-        return APIResponseModel(result=result, description="메타데이터 조회 완료")
-    except Exception as e:
-        return APIResponseModel(code=500, message="메타데이터 조회 실패", result=[], description=str(e))
+    result = service.get_all_metadata(db)
+    return APIResponseModel(result=result, description="메타데이터 전체 조회 완료")
+
+
+@router.put("/{data_id}", tags=["metadata"], response_model=APIResponseModel, response_class=JSONResponse)
+async def update_metadata(
+        request: Annotated[MetadataRequest, Body(...)],
+        db: Annotated[Session, Depends(get_db)],
+        data_id: Annotated[int, Path(..., description="수정할 메타데이터 ID")]
+):
+    """메타데이터 업데이트"""
+    result = service.update_metadata(request.text.strip(), request.prompt_name, request.prompt_label, data_id, db)
+    return APIResponseModel(result=DataInfoResponse.from_orm(result), description="메타데이터 업데이트 완료")
+
+
+@router.delete("/{data_id}", tags=["metadata"], response_model=APIResponseModel, response_class=JSONResponse)
+async def delete_metadata(
+        db: Annotated[Session, Depends(get_db)],
+        data_id: Annotated[int, Path(..., description="삭제할 메타데이터 ID")],
+):
+    """메타데이터 삭제"""
+    service.delete_metadata_by_id(data_id, db)
+    return APIResponseModel(result={"deleted_id": data_id}, description="메타데이터 삭제 완료")
+
+
+@router.get("/search/datas", tags=["metadata"], response_model=APIResponseModel, response_class=JSONResponse)
+async def search_datas(
+        db: Annotated[Session, Depends(get_db)],
+        search_field: SearchField,
+        query: Annotated[str, Query()] = "판례",
+):
+    """메타데이터 검색 엔드포인트"""
+    data_infos = service.search_metadatas(query, search_field.value, db)
+    result = [DataInfoResponse.from_orm(data_info) for data_info in data_infos]
+    return APIResponseModel(result=result, description="메타데이터 검색 완료(검색된 데이터 수: {})".format(len(result)))
