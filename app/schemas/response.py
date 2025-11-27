@@ -1,6 +1,7 @@
-from typing import Any
-
-from pydantic import BaseModel, Field
+from typing import Any, List
+from datetime import datetime
+from pydantic import BaseModel, Field, ConfigDict
+import json
 
 from app.config import settings
 from app.log import Log
@@ -25,3 +26,34 @@ class APIResponseModel(BaseModel):
             "result": self.result,
             "description": self.description
         }
+
+
+class DataInfoResponse(BaseModel):
+    """DB 조회용 DataInfo 응답 스키마"""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(gt=0, description="데이터 ID")
+    origin_text: str = Field(min_length=1, description="원본 텍스트")
+    topics: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    description: str
+    extract_time: datetime
+
+    @classmethod
+    def from_orm(cls, data_info) -> "DataInfoResponse":
+        """DataInfo ORM 객체를 DataInfoResponse로 변환"""
+        try:
+            topics = json.loads(data_info.topics) if data_info.topics else []
+            tags = json.loads(data_info.tags) if data_info.tags else []
+        except json.JSONDecodeError:
+            topics = []
+            tags = []
+
+        return cls(
+            id=data_info.id,
+            origin_text=data_info.origin_text,
+            topics=topics,
+            tags=tags,
+            description=data_info.description,
+            extract_time=data_info.extract_time
+        )

@@ -38,13 +38,11 @@ print(json.dumps(
 
 @asynccontextmanager
 async def lifespan(lifespan_app: FastAPI):
-    from app.db import create_db_and_tables
     # startup event
     logging.info(f"uptime: {get_current_datetime()}")
     logging.debug(f"Working Directory: {repr(os.getcwd())}")
     logging.info(f"Start {settings.SERVICE_NAME} {VERSION}")
     logging.info(f"Creating tables before the app starts for hero service")
-    create_db_and_tables()
     yield
     # shutdown event
     logging.info(f"Shut down {settings.SERVICE_NAME} Service")
