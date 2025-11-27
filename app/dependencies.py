@@ -10,7 +10,8 @@ from app.utils.authentication import token_validation
 from openai import OpenAI
 from app.clients import langfuse, openai
 from langfuse.model import PromptClient
-
+from langfuse.api.resources.commons.errors.not_found_error import NotFoundError
+import logging
 
 header_scheme = APIKeyHeader(name="x-token")
 
@@ -34,11 +35,14 @@ def get_chatopenai_client() -> ChatOpenAI:
     return openai.get_chat_client()
 
 @lru_cache(maxsize=3)
-def get_langfuse_prompt(prompt_name: str, prompt_label: str) -> PromptClient:
-    prompt = langfuse_client.get_prompt(prompt_name, label=prompt_label)  # pyright:ignore
-    if not prompt:
-        raise ValueError(f"Langfuse 프롬프트를 찾을 수 없습니다: {prompt_name} - {prompt_label}")
-    return prompt
+def get_langfuse_prompt(prompt_name: str, prompt_label: str) -> PromptClient | None:
+    try:
+        prompt = langfuse_client.get_prompt(prompt_name, label=prompt_label)  # pyright: ignore
+        return prompt
+    except (NotFoundError, AttributeError) as e:
+        logging.warning(f"langfuse fail - return fallback prompt: {e}")
+        return None
+
 
 # Client Instances
 openai_client: OpenAI = get_openai_client()
