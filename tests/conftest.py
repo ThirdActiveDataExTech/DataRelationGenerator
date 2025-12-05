@@ -36,6 +36,7 @@ from tabulate import tabulate
 
 from app.dependencies import get_session
 from app.main import app
+from app.schemas.meta import DataInfo
 
 test_durations = []
 
@@ -77,9 +78,12 @@ def session(engine):
     """2. 테스트용 세션 + DB 초기화"""
     SQLModel.metadata.drop_all(engine)  # 테스트 시작 전 테이블 초기화
     SQLModel.metadata.create_all(engine)
+    DataInfo.metadata.drop_all(engine)
+    DataInfo.metadata.create_all(engine)
     with Session(engine) as session:
         yield session
     SQLModel.metadata.drop_all(engine)  # 테스트 종료 후 정리
+    DataInfo.metadata.drop_all(engine)
 
 
 @pytest.fixture(scope="function")
