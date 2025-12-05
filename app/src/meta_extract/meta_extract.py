@@ -1,12 +1,11 @@
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List
 
-from .llm_response import LLMResponse
+from app.exceptions.service import ApplicationError
 from app.repositories.meta_repository import MetadataDBRepository
-from app.schemas.response import DataInfoResponse
-
 from app.schemas.meta import DataInfo
-from fastapi import HTTPException
+from app.schemas.response import DataInfoResponse
+from app.src.meta_extract.llm_response import LLMResponse
 
 
 class MetadataService:
@@ -36,23 +35,35 @@ class MetadataService:
         result = self.repository.update_metadata(data_text, db, data_id, meta_info)
         return result
 
-    def get_all_metadata(self, db):
-        """모든 메타데이터 조회"""
-        data_infos = self.repository.get_all_metadata(db)
-        result = [DataInfoResponse.from_orm(data_info) for data_info in data_infos]
-        return result
-
     def delete_metadata_by_id(self, data_id: int, db):
         """ID로 메타데이터 삭제"""
         self.repository.delete_metadata_by_id(data_id, db)
 
-    def search_metadatas(self, query: str, search_field: str, db):
+    def get_metadatas(self, query: str | None, search_option: str, search_field: str | None, db):
+        """메타데이터 검색 처리"""
+        if search_option == "all":
+            data_infos = self._get_all_metadata(db)
+        elif search_option == "field":
+            if not (search_field and query):
+                raise ApplicationError(code=400, message="InvalidItemParams: search_field와 query는 필수 입력값입니다.",
+                                       result={"None"})
+            data_infos = self._search_metadatas(query, search_field, db)
+        else:
+            data_infos = []
+        return self._format_metadata_response(data_infos)
+
+    def _get_all_metadata(self, db):
+        """모든 메타데이터 조회"""
+        data_infos = self.repository.get_all_metadata(db)
+        return data_infos
+
+    def _search_metadatas(self, query: str, search_field: str, db):
         """메타데이터 검색"""
         if search_field == "id":
             try:
                 data_infos = [self.repository.get_data_by_id(int(query), db)]
             except ValueError as e:
-                raise HTTPException(status_code=400, detail="ValueError: ID는 정수여야 합니다.", headers=str(e))
+                raise ApplicationError(code=400, message="ValueError: ID는 정수여야 합니다.", result=str(e))
         elif search_field in ["origin_text", "description"]:
             search_field_attr = getattr(DataInfo, search_field)
             data_infos = self.repository.execute_search_query(search_field_attr, query, db)
@@ -65,6 +76,12 @@ class MetadataService:
         if data_infos:
             return data_infos
         return []
+
+    @staticmethod
+    def _format_metadata_response(data_infos: List[DataInfo]):
+        """메타데이터 응답 포맷팅"""
+        result = [DataInfoResponse.from_orm(data_info) for data_info in data_infos]
+        return result
 
     def create_db_and_tables(self):
         """메타데이터 테이블 초기화"""
