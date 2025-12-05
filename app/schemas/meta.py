@@ -42,3 +42,8 @@ class SearchField(str, Enum):
     tags = "tags"
     topics = "topics"
     description = "description"
+
+
+class SearchOption(str, Enum):
+    all = "all"
+    field = "field"
