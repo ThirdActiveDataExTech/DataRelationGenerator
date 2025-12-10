@@ -109,9 +109,14 @@ def check_cypher_execution(state: GraphWorkflowState) -> Literal[
     if state.execution_status == "success":
         return "end_success"
     elif state.execution_status == "fail":
-        if state.retry_count < 3:
-            return "llm_neo4j"  # 재시도
+        # fallback_retry가 True면 이미 하드코딩된 쿼리로 재시도했으므로 에러
+        if state.fallback_retry:
+            return "raise_error"
+        # retry_count가 3미만이면 llm_neo4j로 재시도
+        elif state.retry_count < 3:
+            return "llm_neo4j"
+        # 3번 재시도 후에는 하드코딩된 쿼리로 폴백
         else:
-            return "tool_hardcoded"  # 최종 폴백
+            return "tool_hardcoded"
     else:
         return "raise_error"

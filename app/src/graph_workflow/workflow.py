@@ -70,8 +70,8 @@ def create_graph_workflow(db: Optional[Any]) -> Any:
         }
     )
 
-    # tool_hardcoded에서 END로 (폴백 완료)
-    workflow.add_edge("tool_hardcoded", END)
+    # tool_hardcoded에서 tool_cypher로 (폴백 쿼리 실행)
+    workflow.add_edge("tool_hardcoded", "tool_cypher")
 
     # raise_error에서 END로
     workflow.add_edge("raise_error", END)

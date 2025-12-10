@@ -7,8 +7,8 @@ from langchain_core.tools import tool
 
 from app.exceptions.base import ApplicationError
 from app.exceptions.meta_extract import MetadataDBError
+from app.repositories.graph_repository import GraphRepository
 from app.repositories.meta_repository import MetadataDBRepository
-from app.src.graph_workflow.graph import GraphService
 from app.src.meta_extract.llm_response import LLMResponse
 
 
@@ -110,8 +110,8 @@ def cypher_execution_tool(queries: list) -> dict:
     """Neo4j Cypher 쿼리 실행"""
     try:
         logging.info("ToolNode: Cypher 쿼리 실행")
-        graph_service = GraphService()
-        success = graph_service.execute_queries_sequential(queries)
+        graph_repository= GraphRepository()
+        success = graph_repository.execute_queries_sequential(queries)
 
         if success:
             return {
@@ -122,8 +122,8 @@ def cypher_execution_tool(queries: list) -> dict:
         else:
             return {
                 "status": "fail",
-                "error": "Neo4j transaction failed",
-                "update_state": {"execution_status": "fail", "cypher_error": "Neo4j transaction failed"}
+                "error": "Neo4j execute queries failed",
+                "update_state": {"execution_status": "fail", "cypher_error": "Neo4j execute queries failed"}
             }
 
     except ApplicationError as e:
@@ -137,44 +137,77 @@ def cypher_execution_tool(queries: list) -> dict:
 
 @tool
 def hardcoded_fallback_tool(metadata: dict, text: str) -> dict:
-    """Neo4j 클라이언트의 하드코딩된 메서드 사용 (폴백 메커니즘)"""
-    logging.info("ToolNode: Neo4j 클라이언트의 하드코딩된 메서드 사용")
+    """하드코딩된 Cypher 쿼리 생성 (폴백 메커니즘)"""
+    logging.info("ToolNode: 하드코딩된 Cypher 쿼리 생성")
 
-    # 기본 Document 노드 생성
+    # 기본 Document 노드 생성을 위한 하드코딩된 쿼리
     doc_id = f"doc_fallback_{uuid.uuid4().hex[:8]}"
 
-    # GraphService의 비즈니스 로직 메서드 사용
+    # 메타데이터 처리
     topics = metadata.get('topics', []) if metadata else []
     tags = metadata.get('tags', []) if metadata else []
     description = metadata.get('description',
                                'Created by fallback mechanism') if metadata else 'Created by fallback mechanism'
-    try:
-        graph_service = GraphService()
-        result = graph_service.create_document_with_metadata(
-            doc_id=doc_id,
-            sqlite_id=0,  # fallback이므로 0으로 설정
-            text=text,
-            description=description,
-            topics=topics,
-            tags=tags
-        )
 
-        return {
-            "status": "success",
-            "error": "",
-            "update_state": {
-                "execution_status": "success",
-                "fallback_retry": True,
-                "cypher_error": ""
-            }
+    # 텍스트 이스케이프 처리
+    escaped_text = text.replace("'", "\\'").replace('"', '\\"') if text else ""
+    escaped_description = description.replace("'", "\\'").replace('"', '\\"')
+
+    # 하드코딩된 Cypher 쿼리 생성
+    cypher_query = f"""
+    CREATE (d:Document {{
+        id: '{doc_id}',
+        sqlite_id: 0,
+        text: '{escaped_text}',
+        description: '{escaped_description}',
+        created_at: datetime()
+    }})
+    WITH d
+    """
+
+    # Topics 처리 - MERGE를 사용해서 중복 관계 방지
+    if topics:
+        # 중복 제거
+        unique_topics = list(set(topics))
+        topics_str = "', '".join([t.replace("'", "\\'") for t in unique_topics])
+        cypher_query += f"""
+        UNWIND ['{topics_str}'] as topic_name
+        MERGE (t:Topic {{name: topic_name}})
+        MERGE (d)-[:HAS_TOPIC]->(t)
+        """
+
+    # Tags 처리 - MERGE를 사용해서 중복 관계 방지  
+    if tags:
+        # 중복 제거
+        unique_tags = list(set(tags))
+        tags_str = "', '".join([t.replace("'", "\\'") for t in unique_tags])
+        cypher_query += f"""
+        WITH d
+        UNWIND ['{tags_str}'] as tag_name
+        MERGE (tag:Tag {{name: tag_name}})
+        MERGE (d)-[:HAS_TAG]->(tag)
+        """
+
+    # Description 처리 - Description 노드 생성 및 관계 설정
+    if description and description.strip():
+        cypher_query += f"""
+        WITH d
+        MERGE (desc:Description {{content: '{escaped_description}'}})
+        MERGE (d)-[:HAS_DESCRIPTION]->(desc)
+        """
+
+    # 최종 리턴
+    cypher_query += "\nRETURN d.id as document_id"
+
+    logging.info(f"Generated hardcoded cypher query: {cypher_query}")
+
+    return {
+        "status": "success",
+        "queries": [cypher_query.strip()],
+        "error": "",
+        "update_state": {
+            "cypher_queries": [cypher_query.strip()],
+            "fallback_retry": True,
+            "llm_error": ""
         }
-    except ApplicationError as e:
-        logging.error(f"Neo4j service error in fallback: {e}")
-        return {
-            "status": "fail",
-            "error": f"Neo4j service error: {e.message}",
-            "update_state": {
-                "execution_status": "fail",
-                "cypher_error": f"Neo4j service error: {e.message}"
-            }
-        }
+    }
