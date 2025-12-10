@@ -1,7 +1,10 @@
 from typing import Literal, Any
-from app.exceptions.service import ApplicationError
 
+from app.exceptions.service import ApplicationError
 from app.schemas.graph_state import GraphWorkflowState
+
+# Constants
+MAX_RETRY_COUNT = 3
 from app.src.graph_workflow.tools import (
     llm_meta_extract_tool,
     llm_cypher_generate_tool,
@@ -21,9 +24,9 @@ def llm_meta_node(state: GraphWorkflowState) -> dict:
 
     # 업데이트할 필드 준비
     update_state = result["update_state"].copy()
-    
+
     # 재시도 중인 경우 카운트 증가
-    if state.llm_error and state.retry_count < 3:
+    if state.llm_error and state.retry_count < MAX_RETRY_COUNT:
         update_state["retry_count"] = state.retry_count + 1
 
     return update_state
@@ -48,9 +51,9 @@ def tool_cypher_node(state: GraphWorkflowState) -> dict:
 
     # 업데이트할 필드 준비
     update_state = result["update_state"].copy()
-    
-    # Cypher 실행이 실패하고 재시도 카운트가 3미만이면 카운트 증가
-    if result["status"] == "fail" and state.retry_count < 3:
+
+    # Cypher 실행이 실패하고 재시도 카운트가 MAX_RETRY_COUNT 미만이면 카운트 증가
+    if result["status"] == "fail" and state.retry_count < MAX_RETRY_COUNT:
         update_state["retry_count"] = state.retry_count + 1
 
     return update_state
@@ -95,7 +98,7 @@ def raise_error_node(state: GraphWorkflowState) -> GraphWorkflowState:
 # 조건부 엣지 함수들
 def check_llm_meta_result(state: GraphWorkflowState) -> list:
     """LLM Meta 결과에 따른 라우팅 - 메타데이터가 있으면 두 갈래로"""
-    if state.llm_error and state.retry_count < 3:
+    if state.llm_error and state.retry_count < MAX_RETRY_COUNT:
         return ["llm_meta"]  # 재시도는 llm_meta_node에서 카운트 증가 처리
     elif state.metadata:
         return ["llm_neo4j", "tool_sqlite"]  # 메타데이터가 있으면 두 갈래 모두
@@ -112,10 +115,10 @@ def check_cypher_execution(state: GraphWorkflowState) -> Literal[
         # fallback_retry가 True면 이미 하드코딩된 쿼리로 재시도했으므로 에러
         if state.fallback_retry:
             return "raise_error"
-        # retry_count가 3미만이면 llm_neo4j로 재시도
-        elif state.retry_count < 3:
+        # retry_count가 MAX_RETRY_COUNT 미만이면 llm_neo4j로 재시도
+        elif state.retry_count < MAX_RETRY_COUNT:
             return "llm_neo4j"
-        # 3번 재시도 후에는 하드코딩된 쿼리로 폴백
+        # MAX_RETRY_COUNT 재시도 후에는 하드코딩된 쿼리로 폴백
         else:
             return "tool_hardcoded"
     else:
