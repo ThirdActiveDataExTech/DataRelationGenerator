@@ -18,7 +18,7 @@ tool_definition = pydantic_function_tool(
 
 
 class LLMResponse:
-    """LLM 응답 처리 클래스 - 메타데이터 추출용"""
+    """LLM 응답 처리 클래스 - 메타데이터 추출 및 Neo4j 쿼리 생성용"""
 
     def __init__(self):
         """Init 매서드"""
@@ -38,6 +38,38 @@ class LLMResponse:
       ---
     데이터를 분석하여 위 형식에 맞는 JSON만 응답해주세요.
     데이터: {data_text}
+    """
+
+    CYPHER_GENERATION_FALLBACK_PROMPT: str = """
+    당신은 Neo4j Cypher 전문가입니다.
+    다음 메타데이터와 텍스트를 기반으로 단일 Cypher 쿼리를 생성해주세요.
+    
+    요구사항:
+    1. 하나의 완전한 쿼리로 Document 노드와 모든 관계를 생성
+    2. UNWIND를 사용하여 topics와 tags를 효율적으로 처리  
+    3. 문자열은 작은따옴표로 감싸고 특수문자는 이스케이프
+    4. apoc.create.uuid()를 사용하여 고유 ID 생성
+    
+    메타데이터: {metadata}
+    텍스트: {text}
+    
+    예시:
+    CREATE (d:Document) 
+    SET d.id = 'doc_' + apoc.create.uuid(),
+        d.text = '예시 텍스트 내용',
+        d.description = '예시 설명',
+        d.created_at = datetime()
+    WITH d
+    UNWIND ['주제1', '주제2'] AS topic_name
+    MERGE (t:Topic) ON CREATE SET t.name = topic_name
+    CREATE (d)-[:HAS_TOPIC]->(t)
+    WITH d  
+    UNWIND ['태그1', '태그2'] AS tag_name
+    MERGE (tag:Tag) ON CREATE SET tag.name = tag_name
+    CREATE (d)-[:HAS_TAG]->(tag)
+    
+    위 형식을 따라 실제 메타데이터 값으로 완전한 단일 쿼리를 생성하세요.
+    다른 설명이나 여러 쿼리는 반환하지 마세요.
     """
 
     def extract_metadata_by_llm(self, data_text: str, prompt_name: str, prompt_label: str) -> Dict[str, Any]:
@@ -92,5 +124,33 @@ class LLMResponse:
             config={
                 "callbacks": [langfuse_handler],
                 "metadata": {"langfuse_tags": ["generate_metadata"]},
+            },
+        )
+
+    def generate_cypher_queries_by_llm(self, metadata: Dict[str, Any], text: str, prompt_name: str, prompt_label: str) -> str:
+        """메타데이터를 기반으로 Neo4j Cypher 쿼리 생성"""
+        # 프롬프트 가져오기(캐싱)
+        prompt = self._get_cypher_prompt(prompt_name, prompt_label)
+        prompt_variables = {"metadata": metadata, "text": text}
+        compiled_prompt = self._compile_prompt(prompt, **prompt_variables)
+        response = self._invoke_llm_for_cypher(compiled_prompt)
+        return response.content
+
+    def _get_cypher_prompt(self, prompt_name: str, prompt_label: str) -> Union[PromptClient, str]:
+        """Cypher 생성용 프롬프트를 가져오기. - Langfuse 실패 시 폴백 프롬프트를 반환"""
+        prompt = get_langfuse_prompt(prompt_name=prompt_name, prompt_label=prompt_label)
+        if prompt is None:
+            logging.warning("LLM Response: Cypher 생성용 프롬프트 폴백")
+            prompt = self.CYPHER_GENERATION_FALLBACK_PROMPT
+        return prompt
+
+    @staticmethod
+    def _invoke_llm_for_cypher(compiled_prompt: str) -> Any:
+        """LLM에 컴파일된 프롬프트로 요청 보내기 - Cypher 생성"""
+        return chatopenai_client.invoke(
+            compiled_prompt,
+            config={
+                "callbacks": [langfuse_handler],
+                "metadata": {"langfuse_tags": ["generate_cypher"]},
             },
         )

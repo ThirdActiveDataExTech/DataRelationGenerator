@@ -1,6 +1,6 @@
 from langgraph.graph import StateGraph, START, END
 from functools import partial
-
+from app.config import langfuse_handler
 from app.schemas.graph_state import GraphWorkflowState
 from app.src.graph_workflow.nodes import (
     llm_meta_node,
@@ -20,12 +20,10 @@ def create_graph_workflow(db) -> StateGraph:
     # StateGraph 초기화
     workflow = StateGraph(GraphWorkflowState)
 
-    # db 의존성을 주입하기 위해 partial 사용
-    llm_meta_with_db = partial(llm_meta_node, db=db)
     tool_sqlite_with_db = partial(tool_sqlite_node, db=db)
 
     # 노드 추가
-    workflow.add_node("llm_meta", llm_meta_with_db)
+    workflow.add_node("llm_meta", llm_meta_node)
     workflow.add_node("llm_neo4j", llm_neo4j_node)
     workflow.add_node("tool_cypher", tool_cypher_node)
     workflow.add_node("tool_hardcoded", tool_hardcoded_node)
@@ -40,18 +38,18 @@ def create_graph_workflow(db) -> StateGraph:
         "llm_meta",
         check_llm_meta_result,
         {
+            "llm_meta": "llm_meta",
             "llm_neo4j": "llm_neo4j",
             "tool_sqlite": "tool_sqlite",
-            "raise_error": "raise_error",
-            "retry_meta": "llm_meta"
+            "raise_error": "raise_error"
         }
     )
 
     # tool_sqlite에서 END로 (SQLite만 저장하는 경로)
     workflow.add_edge("tool_sqlite", END)
 
-    # tool_sqlite_neo4j에서 tool_cypher로 (SQLite 저장 후 Neo4j 처리)
-    workflow.add_edge("tool_sqlite_neo4j", "tool_cypher")
+    # llm_neo4j에서 tool_cypher로 (Neo4j 쿼리 실행)
+    workflow.add_edge("llm_neo4j", "tool_cypher")
 
     # tool_cypher에서 조건부 라우팅
     workflow.add_conditional_edges(
@@ -59,19 +57,18 @@ def create_graph_workflow(db) -> StateGraph:
         check_cypher_execution,
         {
             "end_success": END,
-            "retry_neo4j": "llm_neo4j",
             "tool_hardcoded": "tool_hardcoded",
             "raise_error": "raise_error"
         }
     )
 
-    # tool_hardcoded에서 다시 tool_cypher로
-    workflow.add_edge("tool_hardcoded", "tool_cypher")
+    # tool_hardcoded에서 END로 (폴백 완료)
+    workflow.add_edge("tool_hardcoded", END)
 
     # raise_error에서 END로
     workflow.add_edge("raise_error", END)
 
-    return workflow.compile()
+    return workflow.compile().with_config({"callbacks": [langfuse_handler]})
 
 
 def run_graph_workflow(text: str, prompt_name: str, prompt_label: str, db) -> GraphWorkflowState:
@@ -90,8 +87,7 @@ def run_graph_workflow(text: str, prompt_name: str, prompt_label: str, db) -> Gr
         cypher_error="",
         llm_error="",
         retry_count=0,
-        fallback_retry=False,
-        messages=[]
+        fallback_retry=False
     )
 
     # 워크플로우 생성 및 실행
