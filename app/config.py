@@ -104,6 +104,11 @@ class Settings(BaseSettings):
     LANGFUSE_PUBLIC_KEY: str = "pk-..."
     LANGFUSE_HOST: str = "http://..."
 
+    # Neo4j Config
+    NEO4J_URI: str = "bolt://localhost:7687"
+    NEO4J_USER: str = "neo4j-username"
+    NEO4J_PASSWORD: str = "neo4j-password"
+
 
 settings = Settings()  # type: ignore
 print(settings.model_dump_json())
