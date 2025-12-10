@@ -46,8 +46,14 @@ def tool_cypher_node(state: GraphWorkflowState) -> dict:
         "queries": state.cypher_queries
     })
 
-    # 업데이트할 필드만 반환
-    return result["update_state"]
+    # 업데이트할 필드 준비
+    update_state = result["update_state"].copy()
+    
+    # Cypher 실행이 실패하고 재시도 카운트가 3미만이면 카운트 증가
+    if result["status"] == "fail" and state.retry_count < 3:
+        update_state["retry_count"] = state.retry_count + 1
+
+    return update_state
 
 
 def tool_hardcoded_node(state: GraphWorkflowState) -> dict:
@@ -98,11 +104,14 @@ def check_llm_meta_result(state: GraphWorkflowState) -> list:
 
 
 def check_cypher_execution(state: GraphWorkflowState) -> Literal[
-    "end_success", "tool_hardcoded", "raise_error"]:
+    "end_success", "llm_neo4j", "tool_hardcoded", "raise_error"]:
     """Cypher 실행 결과에 따른 라우팅"""
     if state.execution_status == "success":
         return "end_success"
     elif state.execution_status == "fail":
-        return "tool_hardcoded"  # 실패시 폴백으로
+        if state.retry_count < 3:
+            return "llm_neo4j"  # 재시도
+        else:
+            return "tool_hardcoded"  # 최종 폴백
     else:
         return "raise_error"
