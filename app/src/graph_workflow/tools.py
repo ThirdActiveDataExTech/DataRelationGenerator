@@ -4,6 +4,7 @@ from typing import Any
 
 import logging
 from langchain_core.tools import tool
+from openai import InternalServerError
 
 from app.exceptions.base import ApplicationError
 from app.exceptions.meta_extract import MetadataDBError
@@ -34,6 +35,9 @@ def llm_meta_extract_tool(text: str, prompt_name: str, prompt_label: str) -> dic
             "error": f"Application error: {e.message}",
             "update_state": {"llm_error": f"Application error: {e.message}"}
         }
+    except InternalServerError as e:
+        raise ApplicationError(code=503, message=f"OpenAI API service unavailable: {str(e)}",
+                               result={"error_type": "api_service_error", "exception": str(e)})
 
 
 @tool
@@ -103,6 +107,9 @@ def sqlite_insert_tool(text: str, metadata: dict, db: Any) -> dict:
             "error": f"Data validation error: {str(e)}",
             "update_state": {"sqlite_status": "fail", "sqlite_error": f"Data validation error: {str(e)}"}
         }
+    except InternalServerError as e:
+        raise ApplicationError(code=503, message=f"OpenAI API service unavailable: {str(e)}",
+                               result={"error_type": "api_service_error", "exception": str(e)})
 
 
 @tool
@@ -110,7 +117,7 @@ def cypher_execution_tool(queries: list) -> dict:
     """Neo4j Cypher 쿼리 실행"""
     try:
         logging.info("ToolNode: Cypher 쿼리 실행")
-        graph_repository= GraphRepository()
+        graph_repository = GraphRepository()
         success = graph_repository.execute_queries_sequential(queries)
 
         if success:
