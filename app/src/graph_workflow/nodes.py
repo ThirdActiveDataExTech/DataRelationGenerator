@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Literal, Any
 from app.exceptions.service import ApplicationError
 
 from app.schemas.graph_state import GraphWorkflowState
@@ -19,8 +19,14 @@ def llm_meta_node(state: GraphWorkflowState) -> dict:
         "prompt_label": state.prompt_label
     })
 
-    # 업데이트할 필드만 반환
-    return result["update_state"]
+    # 업데이트할 필드 준비
+    update_state = result["update_state"].copy()
+    
+    # 재시도 중인 경우 카운트 증가
+    if state.llm_error and state.retry_count < 3:
+        update_state["retry_count"] = state.retry_count + 1
+
+    return update_state
 
 
 def llm_neo4j_node(state: GraphWorkflowState) -> dict:
@@ -55,7 +61,7 @@ def tool_hardcoded_node(state: GraphWorkflowState) -> dict:
     return result["update_state"]
 
 
-def tool_sqlite_node(state: GraphWorkflowState, db) -> dict:
+def tool_sqlite_node(state: GraphWorkflowState, db: Any) -> dict:
     """ToolNode: SQLite에 메타데이터 저장"""
     result = sqlite_insert_tool.invoke({
         "text": state.text,
@@ -69,7 +75,14 @@ def tool_sqlite_node(state: GraphWorkflowState, db) -> dict:
 
 def raise_error_node(state: GraphWorkflowState) -> GraphWorkflowState:
     """에러 발생 노드"""
-    error_msg = f"Workflow failed: LLM Error: {state.llm_error}, Cypher Error: {state.cypher_error}, SQLite Error: {state.sqlite_error}"
+    errors = []
+    if state.llm_error:
+        errors.append(f"LLM Error: {state.llm_error}")
+    if state.cypher_error:
+        errors.append(f"Cypher Error: {state.cypher_error}")
+    if state.sqlite_error:
+        errors.append(f"SQLite Error: {state.sqlite_error}")
+    error_msg = f"Workflow failed: {', '.join(errors)}"
     raise ApplicationError(code=500, message=error_msg, result={"exception": "LangGraph - Flow Fail"})
 
 
@@ -77,8 +90,7 @@ def raise_error_node(state: GraphWorkflowState) -> GraphWorkflowState:
 def check_llm_meta_result(state: GraphWorkflowState) -> list:
     """LLM Meta 결과에 따른 라우팅 - 메타데이터가 있으면 두 갈래로"""
     if state.llm_error and state.retry_count < 3:
-        state.retry_count = state.retry_count + 1
-        return ["llm_meta"]
+        return ["llm_meta"]  # 재시도는 llm_meta_node에서 카운트 증가 처리
     elif state.metadata:
         return ["llm_neo4j", "tool_sqlite"]  # 메타데이터가 있으면 두 갈래 모두
     else:

@@ -7,11 +7,18 @@ class GraphService:
     """그래프 데이터베이스 비즈니스 로직 서비스"""
 
     def __init__(self):
+        """Init 매서드"""
         self.graph_repository = GraphRepository()
 
-    def create_document_with_metadata_transaction(self, doc_id: str, sqlite_id: int, text: str,
-                                                  description: str, topics: List[str], tags: List[str]) -> Dict[
-        str, Any]:
+    def create_document_with_metadata_transaction(
+            self,
+            doc_id: str,
+            sqlite_id: int,
+            text: str,
+            description: str,
+            topics: List[str],
+            tags: List[str]
+    ) -> Dict[str, Any]:
         """Document와 모든 관련 메타데이터를 한 번의 트랜잭션으로 생성"""
         # 단일 쿼리로 Document, Topic, Tag를 모두 생성
         query = """
@@ -61,6 +68,6 @@ class GraphService:
         """Document와 모든 관련 메타데이터를 한 번에 생성하는 비즈니스 로직"""
         return self.create_document_with_metadata_transaction(doc_id, sqlite_id, text, description, topics, tags)
 
-    def execute_queries_transaction(self, queries: List[str]) -> bool:
-        """여러 쿼리를 트랜잭션으로 실행"""
-        return self.graph_repository.execute_queries_transaction(queries)
+    def execute_queries_sequential(self, queries: List[str]) -> bool:
+        """여러 쿼리를 순차적으로 실행"""
+        return self.graph_repository.execute_queries_sequential(queries)

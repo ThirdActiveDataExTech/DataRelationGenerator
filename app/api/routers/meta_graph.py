@@ -13,8 +13,8 @@ router = APIRouter()
 
 @router.post("/extract-and-load")
 async def extract_and_load_to_graph(
-        request: Annotated[MetadataRequest, Body(...)],
-        db: Session = Depends(get_db)
+        db: Annotated[Session, Depends(get_db)],
+        request: Annotated[MetadataRequest, Body(...)]
 ):
     """메타데이터 추출 후 Graph DB 적재"""
     result = run_graph_workflow(request.text.strip(), request.prompt_name, request.prompt_label, db)

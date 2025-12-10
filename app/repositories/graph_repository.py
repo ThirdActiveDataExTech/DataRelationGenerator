@@ -42,12 +42,24 @@ class GraphRepository:
 
     def execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict]:
         """단일 쿼리 실행"""
+        if self.graph is None:
+            raise ApplicationError(
+                code=500,
+                message="Neo4j connection not available",
+                result={"error_type": "connection_error"}
+            )
         result = self.graph.query(query, parameters or {})
         return result
 
-    def execute_queries_transaction(self, queries: List[str]) -> bool:
-        """여러 쿼리를 트랜잭션으로 실행"""
+    def execute_queries_sequential(self, queries: List[str]) -> bool:
+        """여러 쿼리를 순차적으로 실행"""
+        if self.graph is None:
+            raise ApplicationError(
+                code=500,
+                message="Neo4j connection not available",
+                result={"error_type": "connection_error"}
+            )
         for query in queries:
             self.graph.query(query)
-        logging.info(f"트랜잭션 성공: {len(queries)}개 쿼리 실행")
+        logging.info(f"순차 실행 성공: {len(queries)}개 쿼리 실행")
         return True
