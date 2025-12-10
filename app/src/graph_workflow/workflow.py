@@ -1,4 +1,5 @@
 from langgraph.graph import StateGraph, START, END
+from typing import Any, Optional
 from functools import partial
 from app.config import langfuse_handler
 from app.schemas.graph_state import GraphWorkflowState
@@ -14,9 +15,15 @@ from app.src.graph_workflow.nodes import (
 )
 
 
-def create_graph_workflow(db) -> StateGraph:
-    """Graph DB 적재 워크플로우 생성"""
+def create_graph_workflow(db: Optional[Any]) -> Any:
+    """Graph DB 적재 워크플로우 생성
 
+    Args:
+        db: 데이터베이스 연결 객체
+
+    Returns:
+        StateGraph: 컴파일된 워크플로우 그래프
+    """
     # StateGraph 초기화
     workflow = StateGraph(GraphWorkflowState)
 
@@ -73,7 +80,6 @@ def create_graph_workflow(db) -> StateGraph:
 
 def run_graph_workflow(text: str, prompt_name: str, prompt_label: str, db) -> GraphWorkflowState:
     """워크플로우 실행"""
-
     # 초기 상태 설정
     initial_state = GraphWorkflowState(
         text=text,

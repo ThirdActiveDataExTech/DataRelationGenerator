@@ -1,14 +1,15 @@
 import uuid
 from datetime import datetime
-import logging
+from typing import Any
 
+import logging
 from langchain_core.tools import tool
 
-from app.repositories.meta_repository import MetadataDBRepository
-from app.src.meta_extract.llm_response import LLMResponse
-from app.src.graph_workflow.graph import GraphService
 from app.exceptions.base import ApplicationError
 from app.exceptions.meta_extract import MetadataDBError
+from app.repositories.meta_repository import MetadataDBRepository
+from app.src.graph_workflow.graph import GraphService
+from app.src.meta_extract.llm_response import LLMResponse
 
 
 @tool
@@ -36,7 +37,8 @@ def llm_meta_extract_tool(text: str, prompt_name: str, prompt_label: str) -> dic
 
 
 @tool
-def llm_cypher_generate_tool(metadata: dict, text: str) -> dict:
+def llm_cypher_generate_tool(metadata: dict, text: str, prompt_name: str = "generate_cypher_query",
+                             prompt_label: str = "production") -> dict:
     """LLM을 사용해 Neo4j Cypher 쿼리 생성"""
     try:
         logging.info("LLMNode: LLM을 사용해 Neo4j Cypher 쿼리 생성 시작")
@@ -46,8 +48,8 @@ def llm_cypher_generate_tool(metadata: dict, text: str) -> dict:
         cypher_text = llm_response.generate_cypher_queries_by_llm(
             metadata=metadata,
             text=text,
-            prompt_name="generate_cypher_query",
-            prompt_label="production"
+            prompt_name=prompt_name,
+            prompt_label=prompt_label
         )
 
         # 단일 쿼리 또는 ';'로 구분된 쿼리들을 리스트로 전환
@@ -72,18 +74,10 @@ def llm_cypher_generate_tool(metadata: dict, text: str) -> dict:
             "error": f"LLM response format error: {str(e)}",
             "update_state": {"llm_error": f"LLM response format error: {str(e)}"}
         }
-    except Exception as e:
-        logging.error(f"Unexpected error in cypher generation: {e}")
-        return {
-            "status": "fail",
-            "queries": [],
-            "error": f"Cypher generation failed: {str(e)}",
-            "update_state": {"llm_error": f"Cypher generation failed: {str(e)}"}
-        }
 
 
 @tool
-def sqlite_insert_tool(text: str, metadata: dict, db=None) -> dict:
+def sqlite_insert_tool(text: str, metadata: dict, db=Any) -> dict:
     """SQLite에 메타데이터 저장"""
     try:
         repository = MetadataDBRepository()
@@ -117,7 +111,7 @@ def cypher_execution_tool(queries: list) -> dict:
     try:
         logging.info("ToolNode: Cypher 쿼리 실행")
         graph_service = GraphService()
-        success = graph_service.execute_queries_transaction(queries)
+        success = graph_service.execute_queries_sequential(queries)
 
         if success:
             return {
