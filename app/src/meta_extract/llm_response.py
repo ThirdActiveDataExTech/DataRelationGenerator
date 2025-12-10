@@ -1,13 +1,13 @@
 from typing import Dict, Any, Union
+
 import logging
 from langfuse.model import PromptClient
-from openai import pydantic_function_tool
+from openai import pydantic_function_tool, InternalServerError
 
 from app.config import langfuse_handler
 from app.dependencies import chatopenai_client, get_langfuse_prompt
-from app.schemas.meta import MetadataInfo
 from app.exceptions.base import ApplicationError
-
+from app.schemas.meta import MetadataInfo
 
 # Pydantic 모델 기반 OpenAI Tool 정의
 tool_definition = pydantic_function_tool(
@@ -75,12 +75,15 @@ class LLMResponse:
     def extract_metadata_by_llm(self, data_text: str, prompt_name: str, prompt_label: str) -> Dict[str, Any]:
         """메타데이터 추출 모델 응답 받아오기"""
         # 프롬프트 가져오기(캐싱)
-        prompt = self._get_prompt(prompt_name, prompt_label)
-        prompt_variables = {"data_text": data_text}
-        compiled_prompt = self._compile_prompt(prompt, **prompt_variables)
-        response = self._invoke_llm_with_prompt(compiled_prompt)
-        # 응답 처리
-        return self._process_llm_response(response)
+        try:
+            prompt = self._get_prompt(prompt_name, prompt_label)
+            prompt_variables = {"data_text": data_text}
+            compiled_prompt = self._compile_prompt(prompt, **prompt_variables)
+            response = self._invoke_llm_with_prompt(compiled_prompt)
+            # 응답 처리
+            return self._process_llm_response(response)
+        except InternalServerError:
+            raise
 
     def _get_prompt(self, prompt_name: str, prompt_label: str) -> Union[PromptClient, str]:
         """메타데이터 추출용 프롬프트를 가져오기. - Langfuse 실패 시 폴백 프롬프트를 반환."""
@@ -127,14 +130,18 @@ class LLMResponse:
             },
         )
 
-    def generate_cypher_queries_by_llm(self, metadata: Dict[str, Any], text: str, prompt_name: str, prompt_label: str) -> str:
+    def generate_cypher_queries_by_llm(self, metadata: Dict[str, Any], text: str, prompt_name: str,
+                                       prompt_label: str) -> str:
         """메타데이터를 기반으로 Neo4j Cypher 쿼리 생성"""
-        # 프롬프트 가져오기(캐싱)
-        prompt = self._get_cypher_prompt(prompt_name, prompt_label)
-        prompt_variables = {"metadata": metadata, "text": text}
-        compiled_prompt = self._compile_prompt(prompt, **prompt_variables)
-        response = self._invoke_llm_for_cypher(compiled_prompt)
-        return response.content
+        try:
+            # 프롬프트 가져오기(캐싱)
+            prompt = self._get_cypher_prompt(prompt_name, prompt_label)
+            prompt_variables = {"metadata": metadata, "text": text}
+            compiled_prompt = self._compile_prompt(prompt, **prompt_variables)
+            response = self._invoke_llm_for_cypher(compiled_prompt)
+            return response.content
+        except InternalServerError:
+            raise
 
     def _get_cypher_prompt(self, prompt_name: str, prompt_label: str) -> Union[PromptClient, str]:
         """Cypher 생성용 프롬프트를 가져오기. - Langfuse 실패 시 폴백 프롬프트를 반환"""
