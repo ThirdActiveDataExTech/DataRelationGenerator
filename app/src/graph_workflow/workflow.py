@@ -64,6 +64,7 @@ def create_graph_workflow(db: Optional[Any]) -> Any:
         check_cypher_execution,
         {
             "end_success": END,
+            "llm_neo4j": "llm_neo4j",
             "tool_hardcoded": "tool_hardcoded",
             "raise_error": "raise_error"
         }
