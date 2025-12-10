@@ -1,49 +1,96 @@
+from typing import Literal
+from app.exceptions.service import ApplicationError
+
 from app.schemas.graph_state import GraphWorkflowState
-from app.src.graph_workflow.tools import extract_metadata_llm_tool, save_metadata_sqlite_tool
+from app.src.graph_workflow.tools import (
+    llm_meta_extract_tool,
+    llm_cypher_generate_tool,
+    cypher_execution_tool,
+    hardcoded_fallback_tool,
+    sqlite_insert_tool
+)
 
 
-# TODO: state 상세하게 나누기.
-
-def extract_metadata_node(state: GraphWorkflowState) -> dict:
-    """메타데이터 추출 노드"""
-
-    metadata = extract_metadata_llm_tool.invoke({
-        "text": state.input_text,
+def llm_meta_node(state: GraphWorkflowState) -> dict:
+    """LLMNode: 텍스트에서 메타데이터 추출"""
+    result = llm_meta_extract_tool.invoke({
+        "text": state.text,
         "prompt_name": state.prompt_name,
         "prompt_label": state.prompt_label
     })
-    return {
-        "metadata": metadata,
-        "status": "metadata_extracted"
-    }
+
+    # 업데이트할 필드만 반환
+    return result["update_state"]
 
 
-def save_to_sqlite_node(state: GraphWorkflowState) -> dict:
-    """SQLite 저장 노드"""
-
-    # TODO: db 객체를 state에서 받아오거나 의존성 주입 방식 개선 필요
-    record_id = save_metadata_sqlite_tool.invoke({
-        "text": state.input_text,
+def llm_neo4j_node(state: GraphWorkflowState) -> dict:
+    """LLMNode: LLM을 사용해 Neo4j Cypher 쿼리 생성"""
+    result = llm_cypher_generate_tool.invoke({
         "metadata": state.metadata,
-        "db": None  # TODO: 임시로 None, 실제로는 db 객체 전달 필요 어디서 받아오게 하지
+        "text": state.text
     })
-    return {
-        "sqlite_record_id": record_id,
-        "status": "saved_to_sqlite"
-    }
+
+    # 업데이트할 필드만 반환
+    return result["update_state"]
 
 
-def create_document_node(state: GraphWorkflowState) -> dict:
-    """Document 노드 생성 쿼리 준비"""
+def tool_cypher_node(state: GraphWorkflowState) -> dict:
+    """ToolNode: Cypher 쿼리 실행"""
+    result = cypher_execution_tool.invoke({
+        "queries": state.cypher_queries
+    })
+
+    # 업데이트할 필드만 반환
+    return result["update_state"]
 
 
-def create_topic_nodes(state: GraphWorkflowState) -> dict:
-    """Topic 노드들 생성 쿼리 준비"""
+def tool_hardcoded_node(state: GraphWorkflowState) -> dict:
+    """ToolNode: Neo4j 클라이언트의 하드코딩된 메서드 사용"""
+    result = hardcoded_fallback_tool.invoke({
+        "metadata": state.metadata,
+        "text": state.text
+    })
+
+    # 업데이트할 필드만 반환
+    return result["update_state"]
 
 
-def create_tag_nodes(state: GraphWorkflowState) -> dict:
-    """Tag 노드들 생성 쿼리 준비"""
+def tool_sqlite_node(state: GraphWorkflowState, db) -> dict:
+    """ToolNode: SQLite에 메타데이터 저장"""
+    result = sqlite_insert_tool.invoke({
+        "text": state.text,
+        "metadata": state.metadata or {},
+        "db": db
+    })
+
+    # 업데이트할 필드만 반환
+    return result["update_state"]
 
 
-def load_to_neo4j_node(state: GraphWorkflowState) -> dict:
-    """Neo4j에 모든 쿼리 실행"""
+def raise_error_node(state: GraphWorkflowState) -> GraphWorkflowState:
+    """에러 발생 노드"""
+    error_msg = f"Workflow failed: LLM Error: {state.llm_error}, Cypher Error: {state.cypher_error}, SQLite Error: {state.sqlite_error}"
+    raise ApplicationError(code=500, message=error_msg, result={"exception": "LangGraph - Flow Fail"})
+
+
+# 조건부 엣지 함수들
+def check_llm_meta_result(state: GraphWorkflowState) -> list:
+    """LLM Meta 결과에 따른 라우팅 - 메타데이터가 있으면 두 갈래로"""
+    if state.llm_error and state.retry_count < 3:
+        state.retry_count = state.retry_count + 1
+        return ["llm_meta"]
+    elif state.metadata:
+        return ["llm_neo4j", "tool_sqlite"]  # 메타데이터가 있으면 두 갈래 모두
+    else:
+        return ["raise_error"]
+
+
+def check_cypher_execution(state: GraphWorkflowState) -> Literal[
+    "end_success", "tool_hardcoded", "raise_error"]:
+    """Cypher 실행 결과에 따른 라우팅"""
+    if state.execution_status == "success":
+        return "end_success"
+    elif state.execution_status == "fail":
+        return "tool_hardcoded"  # 실패시 폴백으로
+    else:
+        return "raise_error"
