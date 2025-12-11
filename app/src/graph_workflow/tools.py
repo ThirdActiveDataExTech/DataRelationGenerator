@@ -80,7 +80,6 @@ def llm_cypher_generate_tool(metadata: dict, text: str, prompt_name: str = "gene
         }
 
 
-@tool
 def sqlite_insert_tool(text: str, metadata: dict, db: Any) -> dict:
     """SQLite에 메타데이터 저장"""
     try:
