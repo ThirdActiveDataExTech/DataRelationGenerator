@@ -13,7 +13,7 @@ class MetadataService:
 
     def __init__(self, llm_response: LLMResponse = None, repository: MetadataDBRepository = None):
         """Init 매서드 - 의존성 주입"""
-        self.llm_response = llm_response or LLMResponse()
+        self.llm_response = llm_response or LLMResponse("meta_extract")
         self.repository = repository or MetadataDBRepository()
 
     def extract_metadata(self, data_text: str, prompt_name: str, prompt_label: str, db) -> Dict[str, Any]:
