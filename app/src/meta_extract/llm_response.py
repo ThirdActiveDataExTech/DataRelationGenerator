@@ -74,13 +74,10 @@ class LLMResponse:
 
     def generate_llm_response(self, prompt_name: str, prompt_label: str, variables: Any) -> Dict[str, Any] | str:
         """통합 LLM 응답 처리"""
-        try:
-            prompt = self._get_prompt(prompt_name, prompt_label)
-            compiled_prompt = self._compile_prompt(prompt, **variables)
-            response = self._invoke_llm_unified(compiled_prompt)
-            return self._process_llm_response(response)
-        except InternalServerError:
-            raise
+        prompt = self._get_prompt(prompt_name, prompt_label)
+        compiled_prompt = self._compile_prompt(prompt, **variables)
+        response = self._invoke_llm_unified(compiled_prompt)
+        return self._process_llm_response(response)
 
     @staticmethod
     def _extract_message_from_tool_call(tool_call: Dict[str, Any]) -> Dict[str, Any]:
@@ -88,21 +85,20 @@ class LLMResponse:
         try:
             response_message = tool_call["args"]
             logging.debug(f"Extracted metadata: {response_message}")
-            raise IndexError
             return response_message
-        except IndexError as e:
-            raise e
+        except KeyError:
+            raise KeyError("tool_call에 'args' 키가 없습니다")
 
     def _process_llm_response(self, response: Any) -> Dict[str, Any]:
         """LLM 응답 처리하여 메타데이터 추출"""
         try:
             tool_call = response.tool_calls[0]
             return self._extract_message_from_tool_call(tool_call)
-        except (IndexError, AttributeError) as e:
+        except (IndexError, AttributeError, KeyError) as e:
             if self.task == "cypher_generate":
                 raise e
-            raise ApplicationError(code=400, message=f"No tool calls in llm_response: {response.content}",
-                                   result={"exception": str(e)})
+            raise ApplicationError(code=400, message=f"No tool calls in llm_response: {str(e)}",
+                                   result={"exception": f"llm response: {response.content}"})
 
     @staticmethod
     def _compile_prompt(prompt, **variables):
@@ -121,11 +117,14 @@ class LLMResponse:
 
     def _invoke_llm_unified(self, compiled_prompt: str) -> Any:
         """통합 LLM 호출"""
-        llm = chatopenai_client.bind_tools([metadata_tool, cypher_tool])
-        return llm.invoke(
-            compiled_prompt,
-            config={
-                "callbacks": [langfuse_handler],
-                "metadata": {"langfuse_tags": [self.task]},
-            },
-        )
+        try:
+            llm = chatopenai_client.bind_tools([metadata_tool, cypher_tool])
+            return llm.invoke(
+                compiled_prompt,
+                config={
+                    "callbacks": [langfuse_handler],
+                    "metadata": {"langfuse_tags": [self.task]},
+                },
+            )
+        except InternalServerError:
+            raise
