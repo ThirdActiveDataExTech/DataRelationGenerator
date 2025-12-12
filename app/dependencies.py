@@ -11,6 +11,7 @@ from openai import OpenAI
 from app.clients import langfuse, openai
 from langfuse.model import PromptClient
 from langfuse.api.resources.commons.errors.not_found_error import NotFoundError
+from langfuse.api.core.api_error import ApiError
 import logging
 
 header_scheme = APIKeyHeader(name="x-token")
@@ -39,7 +40,7 @@ def get_langfuse_prompt(prompt_name: str, prompt_label: str) -> PromptClient | N
     try:
         prompt = langfuse_client.get_prompt(prompt_name, label=prompt_label)  # pyright: ignore
         return prompt
-    except (NotFoundError, AttributeError) as e:
+    except (NotFoundError, AttributeError, ApiError) as e:
         logging.warning(f"langfuse fail - return fallback prompt: {e}")
         return None
 
