@@ -13,13 +13,16 @@ from app.repositories.meta_repository import MetadataDBRepository
 from app.src.meta_extract.llm_response import LLMResponse
 
 
-@tool
-def llm_meta_extract_tool(text: str, prompt_name: str, prompt_label: str) -> dict:
+def llm_meta_extract_function(text: str, prompt_name: str, prompt_label: str) -> dict:
     """LLM을 사용하여 텍스트에서 메타데이터 추출"""
     try:
-        logging.info("LLMNode: 텍스트에서 메타데이터 추출 시작")
-        llm_response = LLMResponse()
-        metadata = llm_response.extract_metadata_by_llm(text, prompt_name, prompt_label)
+        logging.info("LLM Function: 텍스트에서 메타데이터 추출 시작")
+        llm_response = LLMResponse("meta_extract")
+        metadata = llm_response.generate_llm_response(
+            prompt_name=prompt_name,
+            prompt_label=prompt_label,
+            variables={"data_text": text}
+        )
 
         return {
             "status": "success",
@@ -40,29 +43,28 @@ def llm_meta_extract_tool(text: str, prompt_name: str, prompt_label: str) -> dic
                                result={"error_type": "api_service_error", "exception": str(e)})
 
 
-@tool
-def llm_cypher_generate_tool(metadata: dict, text: str, prompt_name: str = "generate_cypher_query",
-                             prompt_label: str = "production") -> dict:
+def llm_cypher_generate_function(metadata: dict, text: str, prompt_name: str = "generate_cypher_query",
+                                 prompt_label: str = "production") -> dict:
     """LLM을 사용해 Neo4j Cypher 쿼리 생성"""
     try:
-        logging.info("LLMNode: LLM을 사용해 Neo4j Cypher 쿼리 생성 시작")
-        llm_response = LLMResponse()
+        logging.info("LLM Function: LLM을 사용해 Neo4j Cypher 쿼리 생성 시작")
+        llm_response = LLMResponse("cypher_generate")
 
         # LLM을 사용해 Cypher 쿼리 생성
-        cypher_text = llm_response.generate_cypher_queries_by_llm(
-            metadata=metadata,
-            text=text,
+        cypher_text = llm_response.generate_llm_response(
             prompt_name=prompt_name,
-            prompt_label=prompt_label
+            prompt_label=prompt_label,
+            variables={"metadata": metadata, "text": text}
         )
-
+        if isinstance(cypher_text, dict):
+            cypher_text = cypher_text.get("cypher_query", "")
         # 단일 쿼리 또는 ';'로 구분된 쿼리들을 리스트로 전환
         if ';' in cypher_text:
             queries = [q.strip() for q in cypher_text.split(';') if q.strip()]
         else:
             queries = [cypher_text.strip()] if cypher_text.strip() else []
 
-        logging.info(f"LLMNode: Neo4j Cypher 쿼리 생성 완료: \n{queries}")
+        logging.info(f"LLM Function: Neo4j Cypher 쿼리 생성 완료: \n{queries}")
 
         return {
             "status": "success",
@@ -70,7 +72,7 @@ def llm_cypher_generate_tool(metadata: dict, text: str, prompt_name: str = "gene
             "error": "",
             "update_state": {"cypher_queries": queries, "llm_error": ""}
         }
-    except AttributeError as e:
+    except (IndexError, AttributeError, KeyError, InternalServerError)as e:
         logging.error(f"LLM response attribute error: {e}")
         return {
             "status": "fail",

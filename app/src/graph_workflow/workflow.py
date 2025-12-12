@@ -11,11 +11,11 @@ from app.src.graph_workflow.nodes import (
     llm_neo4j_node,
     tool_cypher_node,
     tool_hardcoded_node,
+    tool_sqlite_node,
     raise_error_node,
     check_llm_meta_result,
     check_cypher_execution
 )
-from app.src.graph_workflow.tools import sqlite_insert_tool
 
 
 def create_graph_workflow(db: Optional[Any]) -> Any:
@@ -30,14 +30,16 @@ def create_graph_workflow(db: Optional[Any]) -> Any:
     # StateGraph 초기화
     workflow = StateGraph(GraphWorkflowState)
 
-    tool_sqlite_node = partial(sqlite_insert_tool, db=db)
+    # 바인딩 수정 필요
+    sqlite_node = partial(tool_sqlite_node, db=db)
 
     # 노드 추가
     workflow.add_node("llm_meta", llm_meta_node)
     workflow.add_node("llm_neo4j", llm_neo4j_node)
     workflow.add_node("tool_cypher", tool_cypher_node)
     workflow.add_node("tool_hardcoded", tool_hardcoded_node)
-    workflow.add_node("tool_sqlite", ToolNode([tool_sqlite_node]))
+    workflow.add_node("tool_sqlite", sqlite_node)
+
     workflow.add_node("raise_error", raise_error_node)
 
     # START에서 llm_meta로

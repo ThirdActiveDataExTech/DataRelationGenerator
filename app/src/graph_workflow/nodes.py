@@ -6,8 +6,8 @@ from app.schemas.graph_state import GraphWorkflowState
 # Constants
 MAX_RETRY_COUNT = 3
 from app.src.graph_workflow.tools import (
-    llm_meta_extract_tool,
-    llm_cypher_generate_tool,
+    llm_meta_extract_function,
+    llm_cypher_generate_function,
     cypher_execution_tool,
     hardcoded_fallback_tool,
     sqlite_insert_tool
@@ -15,12 +15,12 @@ from app.src.graph_workflow.tools import (
 
 
 def llm_meta_node(state: GraphWorkflowState) -> dict:
-    """LLMNode: 텍스트에서 메타데이터 추출"""
-    result = llm_meta_extract_tool.invoke({
-        "text": state.text,
-        "prompt_name": state.prompt_name,
-        "prompt_label": state.prompt_label
-    })
+    """LLM Node: 텍스트에서 메타데이터 추출"""
+    result = llm_meta_extract_function(
+        text=state.text,
+        prompt_name=state.prompt_name,
+        prompt_label=state.prompt_label
+    )
 
     # 업데이트할 필드 준비
     update_state = result["update_state"].copy()
@@ -33,11 +33,11 @@ def llm_meta_node(state: GraphWorkflowState) -> dict:
 
 
 def llm_neo4j_node(state: GraphWorkflowState) -> dict:
-    """LLMNode: LLM을 사용해 Neo4j Cypher 쿼리 생성"""
-    result = llm_cypher_generate_tool.invoke({
-        "metadata": state.metadata,
-        "text": state.text
-    })
+    """LLM Node: LLM을 사용해 Neo4j Cypher 쿼리 생성"""
+    result = llm_cypher_generate_function(
+        metadata=state.metadata,
+        text=state.text
+    )
 
     # 업데이트할 필드만 반환
     return result["update_state"]
@@ -72,11 +72,11 @@ def tool_hardcoded_node(state: GraphWorkflowState) -> dict:
 
 def tool_sqlite_node(state: GraphWorkflowState, db: Any) -> dict:
     """ToolNode: SQLite에 메타데이터 저장"""
-    result = sqlite_insert_tool.invoke({
-        "text": state.text,
-        "metadata": state.metadata or {},
-        "db": db
-    })
+    result = sqlite_insert_tool(
+        text=state.text,
+        metadata=state.metadata,
+        db=db
+    )
 
     # 업데이트할 필드만 반환
     return result["update_state"]

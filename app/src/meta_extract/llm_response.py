@@ -117,8 +117,14 @@ class LLMResponse:
 
     def _invoke_llm_unified(self, compiled_prompt: str) -> Any:
         """통합 LLM 호출"""
+        if self.task == "meta_extract":
+            tools = [metadata_tool]
+        elif self.task == "cypher_generate":
+            tools = [cypher_tool]
+        else:
+            tools = []
         try:
-            llm = chatopenai_client.bind_tools([metadata_tool, cypher_tool])
+            llm = chatopenai_client.bind_tools(tools)
             return llm.invoke(
                 compiled_prompt,
                 config={
