@@ -11,7 +11,7 @@ from app.src.meta_extract.meta_extract import MetadataService
 def mock_llm_response():
     """메타 추출해주는 LLM mocking"""
     mock = Mock()
-    mock.extract_metadata_by_llm.return_value = {
+    mock.generate_llm_response.return_value = {
         "topics": ["topic1", "topic2"],
         "tags": ["tag1", "tag2"],
         "description": "test description"
@@ -42,8 +42,9 @@ def test_extract_metadata_success(mock_llm_response, mock_repository):
         db=Mock()
     )
 
-    mock_llm_response.extract_metadata_by_llm.assert_called_once_with("test data test", "test_prompt_name",
-                                                                      "production")
+    mock_llm_response.generate_llm_response.assert_called_once_with("test_prompt_name",
+                                                                    "production",
+                                                                    variables={"data_text": "test data test"})
     mock_repository.save_metadata_to_db.assert_called_once()
     assert result["topics"] == ["topic1", "topic2"]
     assert result["tags"] == ["tag1", "tag2"]
