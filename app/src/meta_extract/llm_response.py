@@ -16,7 +16,7 @@ class LLMResponse:
     def __init__(self, task: str):
         """Init 매서드"""
         self.task = task
-        self.fallback_prompt = None
+        self.fallback_prompt = ""
         if task == "meta_extract":
             self.fallback_prompt = self.META_EXTRACT_FALLBACK_PROMPT
         else:

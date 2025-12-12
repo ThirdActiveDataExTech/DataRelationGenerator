@@ -18,7 +18,11 @@ class MetadataService:
 
     def extract_metadata(self, data_text: str, prompt_name: str, prompt_label: str, db) -> Dict[str, Any]:
         """메타데이터 추출 후 DB 저장 처리"""
-        meta_info = self.llm_response.extract_metadata_by_llm(data_text, prompt_name, prompt_label)
+        meta_info = self.llm_response.generate_llm_response(prompt_name, prompt_label,
+                                                            variables={"data_text": data_text})
+        if isinstance(meta_info, str):
+            return {"error": "String response received instead of metadata dict"}
+            
         self.repository.save_metadata_to_db(
             origin_text=data_text,
             topics=meta_info.get("topics", []),
@@ -31,7 +35,11 @@ class MetadataService:
 
     def update_metadata(self, data_text: str, prompt_name: str, prompt_label: str, data_id: int, db) -> Dict[str, Any]:
         """메타데이터 추출 후 DB 저장 처리"""
-        meta_info = self.llm_response.extract_metadata_by_llm(data_text, prompt_name, prompt_label)
+        meta_info = self.llm_response.generate_llm_response(prompt_name, prompt_label,
+                                                            variables={"data_text": data_text})
+        if isinstance(meta_info, str):
+            return {"error": "String response received instead of metadata dict"}
+            
         result = self.repository.update_metadata(data_text, db, data_id, meta_info)
         return result
 
