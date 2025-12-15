@@ -17,8 +17,8 @@ from app.src.graph_workflow.tools import (
     sqlite_insert_tool
 )
 
-class Nodes:
-    """메타데이터 추출 및 Graph DB 적재 - LangGraph Node"""
+class GraphComponents:
+    """메타데이터 추출 및 Graph DB 적재 - LangGraph Components (Nodes & Routers)"""
 
     def __init__(self, db: Optional[Session] = None):
         """Init 매서드"""
@@ -132,15 +132,15 @@ class Nodes:
                 continue
 
             try:
-                result = Nodes._parse_tool_result(msg.content)
+                result = GraphComponents._parse_tool_result(msg.content)
 
                 if not isinstance(result, dict):
                     continue
 
                 if result.get("status") == "success":
-                    Nodes._handle_success_result(result, state_updates)
+                    GraphComponents._handle_success_result(result, state_updates)
                 elif result.get("status") == "error":
-                    Nodes._handle_error_result(result, state, state_updates)
+                    GraphComponents._handle_error_result(result, state, state_updates)
 
             except Exception as e:
                 logging.warning(f"[extract_state] Failed to parse tool result: {e}")
