@@ -1,8 +1,9 @@
 from typing import Dict, Any, Union
+import time
 
 import logging
 from langfuse.model import PromptClient
-from openai import InternalServerError
+from openai import InternalServerError, APIError
 
 from app.config import langfuse_handler
 from app.dependencies import chatopenai_client, get_langfuse_prompt
@@ -123,14 +124,22 @@ class LLMResponse:
             tools = [cypher_tool]
         else:
             tools = []
-        try:
-            llm = chatopenai_client.bind_tools(tools)
-            return llm.invoke(
-                compiled_prompt,
-                config={
-                    "callbacks": [langfuse_handler],
-                    "metadata": {"langfuse_tags": [self.task]},
-                },
-            )
-        except InternalServerError:
-            raise
+        
+        llm = chatopenai_client.bind_tools(tools)
+        for attempt in range(2):
+            try:
+                return llm.invoke(
+                    compiled_prompt,
+                    config={
+                        "callbacks": [langfuse_handler],
+                        "metadata": {"langfuse_tags": [self.task]},
+                    },
+                )
+            except APIError as e:
+                if ("503" in str(e) or "Too many connections" in str(e)) and attempt == 0:
+                    logging.warning(f"LLM 503 에러, 2초 후 재시도")
+                    time.sleep(2)
+                    continue
+                raise
+            except InternalServerError:
+                raise

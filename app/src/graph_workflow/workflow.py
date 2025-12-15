@@ -1,109 +1,56 @@
-from functools import partial
-from typing import Any, Optional
+import asyncio
+from typing import Optional
 
-from langgraph.graph import StateGraph, START, END
-from langgraph.prebuilt import ToolNode
+import logging
+from sqlalchemy.orm import Session
 
-from app.config import langfuse_handler
-from app.schemas.graph_state import GraphWorkflowState
-from app.src.graph_workflow.nodes import (
-    llm_meta_node,
-    llm_neo4j_node,
-    tool_cypher_node,
-    tool_hardcoded_node,
-    tool_sqlite_node,
-    raise_error_node,
-    check_llm_meta_result,
-    check_cypher_execution
-)
+from app.src.graph_workflow.agent import MetadataAgent, AgentState
 
 
-def create_graph_workflow(db: Optional[Any]) -> Any:
-    """Graph DB 적재 워크플로우 생성
+async def create_agent_workflow(db: Optional[Session] = None) -> MetadataAgent:
+    """Agent 기반 워크플로우 생성"""
+    logging.info("Creating Agent-based workflow")
 
-    Args:
-        db: 데이터베이스 연결 객체
+    # Agent 인스턴스 생성
+    agent = MetadataAgent(db=db)
 
-    Returns:
-        StateGraph: 컴파일된 워크플로우 그래프
-    """
-    # StateGraph 초기화
-    workflow = StateGraph(GraphWorkflowState)
+    return agent
 
-    # 바인딩 수정 필요
-    sqlite_node = partial(tool_sqlite_node, db=db)
 
-    # 노드 추가
-    workflow.add_node("llm_meta", llm_meta_node)
-    workflow.add_node("llm_neo4j", llm_neo4j_node)
-    workflow.add_node("tool_cypher", tool_cypher_node)
-    workflow.add_node("tool_hardcoded", tool_hardcoded_node)
-    workflow.add_node("tool_sqlite", sqlite_node)
+async def run_agent_workflow(text: str, prompt_name: str, prompt_label: str,
+                             db: Optional[Session] = None) -> AgentState:
+    """Agent 기반 워크플로우 실행"""
+    logging.info(f"Starting Agent workflow for text: {text[:50]}...")
 
-    workflow.add_node("raise_error", raise_error_node)
+    # Agent 생성
+    agent = await create_agent_workflow(db)
 
-    # START에서 llm_meta로
-    workflow.add_edge(START, "llm_meta")
+    # Agent 워크플로우 실행
+    result = await agent.run_agent_workflow(text)
 
-    # llm_meta에서 조건부 라우팅
-    workflow.add_conditional_edges(
-        "llm_meta",
-        check_llm_meta_result,
-        {
-            "llm_meta": "llm_meta",
-            "llm_neo4j": "llm_neo4j",
-            "tool_sqlite": "tool_sqlite",
-            "raise_error": "raise_error"
-        }
+    logging.info("Agent workflow completed successfully")
+    return {
+        "origin_text": result.get("origin_text", ""),
+        "extracted_metadata": result.get("extracted_metadata"),
+        "generated_queries": result.get("generated_queries"),
+        "sqlite_result": result.get("sqlite_result"),
+        "metadata_extract_retry": result.get("metadata_extract_retry", 0),
+        "cypher_retry": result.get("cypher_retry", 0),
+        "last_failed_step": result.get("last_failed_step")
+    }
+
+
+def run_graph_workflow(text: str, prompt_name: str, prompt_label: str, db) -> AgentState:
+    """기존 동기 인터페이스 호환성을 위한 래퍼 함수"""
+    logging.info("Running workflow via sync wrapper")
+
+    # 비동기 함수를 동기적으로 실행
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(
+        run_agent_workflow(text, prompt_name, prompt_label, db)
     )
-
-    # tool_sqlite에서 END로 (SQLite만 저장하는 경로)
-    workflow.add_edge("tool_sqlite", END)
-
-    # llm_neo4j에서 tool_cypher로 (Neo4j 쿼리 실행)
-    workflow.add_edge("llm_neo4j", "tool_cypher")
-
-    # tool_cypher에서 조건부 라우팅
-    workflow.add_conditional_edges(
-        "tool_cypher",
-        check_cypher_execution,
-        {
-            "end_success": END,
-            "llm_neo4j": "llm_neo4j",
-            "tool_hardcoded": "tool_hardcoded",
-            "raise_error": "raise_error"
-        }
-    )
-
-    # tool_hardcoded에서 tool_cypher로 (폴백 쿼리 실행)
-    workflow.add_edge("tool_hardcoded", "tool_cypher")
-
-    # raise_error에서 END로
-    workflow.add_edge("raise_error", END)
-
-    return workflow.compile().with_config({"callbacks": [langfuse_handler]})
-
-
-def run_graph_workflow(text: str, prompt_name: str, prompt_label: str, db) -> GraphWorkflowState:
-    """워크플로우 실행"""
-    # 초기 상태 설정
-    initial_state = GraphWorkflowState(
-        text=text,
-        prompt_name=prompt_name,
-        prompt_label=prompt_label,
-        metadata={},
-        sqlite_status="pending",
-        sqlite_error="",
-        cypher_queries=[],
-        execution_status="pending",
-        cypher_error="",
-        llm_error="",
-        retry_count=0,
-        fallback_retry=False
-    )
-
-    # 워크플로우 생성 및 실행
-    graph = create_graph_workflow(db)
-    result = graph.invoke(initial_state)
-
-    return result
