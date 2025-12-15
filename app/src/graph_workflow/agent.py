@@ -69,7 +69,7 @@ class MetadataAgent:
 
         return builder
 
-    async def run_agent_workflow(self, origin_text: str) -> AgentState:
+    async def run_agent_workflow(self, origin_text: str) -> dict:
         """Agent 워크플로우 실행"""
         # 초기 메시지 구성 - 원본 텍스트는 state로 전달하고 LLM에게는 작업 지시만
         initial_message = {

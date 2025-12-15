@@ -13,9 +13,9 @@ from app.src.graph_workflow.tools import (
     metadata_extract_tool,
     cypher_generate_tool,
     cypher_execution_tool,
-    hardcoded_fallback_tool,
-    sqlite_insert_tool
+    hardcoded_fallback_tool
 )
+
 
 class GraphComponents:
     """메타데이터 추출 및 Graph DB 적재 - LangGraph Components (Nodes & Routers)"""
@@ -30,8 +30,7 @@ class GraphComponents:
             metadata_extract_tool,
             cypher_generate_tool,
             cypher_execution_tool,
-            hardcoded_fallback_tool,
-            sqlite_insert_tool
+            hardcoded_fallback_tool
         ]
 
         # LLM에 도구 바인딩
@@ -40,16 +39,17 @@ class GraphComponents:
         logging.debug(f"MetadataAgent initialized with {len(self.tools)} tools")
 
     @staticmethod
-    def _inject_context_to_tool_calls(state: AgentState) -> AgentState:
+    def _inject_context_to_tool_calls(state: AgentState) -> dict:
         """[Node] Tool call의 arguments에 state context 주입"""
         messages = state.get("messages", [])
         last_message = messages[-1] if messages else None
 
-        if not last_message or not hasattr(last_message, "tool_calls"):
+        if not last_message or not hasattr(last_message, "tool_calls") or not getattr(last_message, "tool_calls", None):
             logging.debug("[inject_context] No tool calls found, passing through")
-            return state
+            return {}
 
-        logging.debug(f"[inject_context] Processing {len(last_message.tool_calls)} tool call(s)")
+        tool_calls = getattr(last_message, "tool_calls", [])
+        logging.debug(f"[inject_context] Processing {len(tool_calls)} tool call(s)")
 
         origin_text = state.get("origin_text", "")
         prompt_name = state.get("prompt_name", "generate_metadata")
@@ -57,7 +57,7 @@ class GraphComponents:
         extracted_metadata = state.get("extracted_metadata")
         generated_queries = state.get("generated_queries")
 
-        for tool_call in last_message.tool_calls:
+        for tool_call in tool_calls:
             tool_name = tool_call["name"]
             tool_args = tool_call.get("args", {})
 
@@ -66,11 +66,6 @@ class GraphComponents:
                     "text": origin_text,
                     "prompt_name": prompt_name,
                     "prompt_label": prompt_label
-                }
-            elif tool_name == "sqlite_insert_tool":
-                tool_call["args"] = {
-                    "text": origin_text,
-                    "metadata": extracted_metadata or {}
                 }
             elif tool_name == "cypher_generate_tool":
                 tool_call["args"] = {
@@ -86,7 +81,7 @@ class GraphComponents:
                     "text": origin_text,
                     "metadata": extracted_metadata or {}
                 }
-        return state
+        return {}
 
     @staticmethod
     def _parse_tool_result(msg_content: str | dict) -> dict:
@@ -122,7 +117,7 @@ class GraphComponents:
             state_updates["cypher_retry"] = state.get("cypher_retry", 0) + 1
 
     @staticmethod
-    def _extract_state_from_tool_results(state: AgentState) -> AgentState:
+    def _extract_state_from_tool_results(state: AgentState) -> dict:
         """[Node] Tool 실행 결과에서 state 업데이트 및 실패 감지"""
         messages = state.get("messages", [])
         state_updates = {}
@@ -173,7 +168,7 @@ class GraphComponents:
         # 정상 진행
         return "reasoning_node"
 
-    async def _reasoning_node(self, state: AgentState) -> AgentState:
+    async def _reasoning_node(self, state: AgentState) -> dict:
         """[Node] reasoning node - Agent의 판단 / 추론 / 의사결정을 하며 다음 행동을 결정하는 단계"""
         logging.info("[reasoning_node] Starting agent decision making")
 
@@ -187,7 +182,7 @@ class GraphComponents:
 
         return {"messages": [result]}
 
-    async def _fallback_node(self, state: AgentState) -> AgentState:
+    async def _fallback_node(self, state: AgentState) -> dict:
         """[Node] Hardcoded fallback을 강제로 호출하는 노드"""
         logging.info("[fallback_node] Forcing hardcoded_fallback_tool call")
 

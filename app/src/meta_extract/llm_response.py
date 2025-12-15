@@ -141,5 +141,3 @@ class LLMResponse:
                     time.sleep(2)
                     continue
                 raise
-            except InternalServerError:
-                raise

@@ -22,7 +22,7 @@ class MetadataService:
                                                             variables={"data_text": data_text})
         if isinstance(meta_info, str):
             return {"error": "String response received instead of metadata dict"}
-            
+
         self.repository.save_metadata_to_db(
             origin_text=data_text,
             topics=meta_info.get("topics", []),
