@@ -9,6 +9,12 @@ from app.config import langfuse_handler
 from app.dependencies import chatopenai_client, get_langfuse_prompt
 from app.exceptions.base import ApplicationError
 from app.schemas.meta import metadata_tool, cypher_tool
+from app.constants import (
+    GENERATE_METADATA_PROMPT_NAME,
+    GENERATE_METADATA_PROMPT_LABEL,
+    GENERATE_CYPHER_PROMPT_NAME,
+    GENERATE_CYPHER_PROMPT_LABEL,
+)
 
 
 class LLMResponse:
@@ -18,10 +24,17 @@ class LLMResponse:
         """Init 매서드"""
         self.task = task
         self.fallback_prompt = ""
+        self.prompt_name = ""
+        self.prompt_label = ""
+
         if task == "meta_extract":
             self.fallback_prompt = self.META_EXTRACT_FALLBACK_PROMPT
+            self.prompt_name = GENERATE_METADATA_PROMPT_NAME
+            self.prompt_label = GENERATE_METADATA_PROMPT_LABEL
         else:
             self.fallback_prompt = self.CYPHER_GENERATION_FALLBACK_PROMPT
+            self.prompt_name = GENERATE_CYPHER_PROMPT_NAME
+            self.prompt_label = GENERATE_CYPHER_PROMPT_LABEL
 
     META_EXTRACT_FALLBACK_PROMPT: str = """
     **반드시 tool call을 사용하여 응답할것.**
@@ -73,9 +86,9 @@ class LLMResponse:
     다른 설명이나 여러 쿼리는 반환하지 마세요.
     """
 
-    def generate_llm_response(self, prompt_name: str, prompt_label: str, variables: Any) -> Dict[str, Any] | str:
+    def generate_llm_response(self, variables: Any) -> Dict[str, Any] | str:
         """통합 LLM 응답 처리"""
-        prompt = self._get_prompt(prompt_name, prompt_label)
+        prompt = self._get_prompt()
         compiled_prompt = self._compile_prompt(prompt, **variables)
         response = self._invoke_llm_unified(compiled_prompt)
         return self._process_llm_response(response)
@@ -108,9 +121,9 @@ class LLMResponse:
             return prompt.compile(**variables)
         return prompt.format(**variables)
 
-    def _get_prompt(self, prompt_name: str, prompt_label: str) -> Union[PromptClient, str]:
+    def _get_prompt(self) -> Union[PromptClient, str]:
         """통합 프롬프트 가져오기 - Langfuse 실패 시 폴백 프롬프트 반환"""
-        prompt = get_langfuse_prompt(prompt_name=prompt_name, prompt_label=prompt_label)
+        prompt = get_langfuse_prompt(prompt_name=self.prompt_name, prompt_label=self.prompt_label)
         if prompt is None:
             logging.warning(f"LLM Response: {self.task} 프롬프트 폴백")
             prompt = self.fallback_prompt
