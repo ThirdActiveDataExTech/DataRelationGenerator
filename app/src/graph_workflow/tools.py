@@ -46,26 +46,6 @@ def metadata_extract_tool(text: str, prompt_name: str = "generate_metadata", pro
 
 
 @tool
-def sqlite_insert_tool(text: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """SQLite에 메타데이터를 저장하는 도구"""
-    try:
-        logging.info("Tool: SQLite에 메타데이터 저장")
-        # 실제 구현에서는 전역 db 세션이나 별도 방식으로 db 접근 필요
-        # 현재는 성공으로 시뮬레이션
-        logging.info(f"Simulating SQLite insert for metadata: {metadata}")
-        return {
-            "status": "success",
-            "message": "SQLite 저장 완료 (시뮬레이션)"
-        }
-    except Exception as e:
-        logging.error(f"SQLite 저장 실패: {e}")
-        return {
-            "status": "error",
-            "message": f"SQLite 저장 실패: {str(e)}"
-        }
-
-
-@tool
 def cypher_generate_tool(metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
     """메타데이터를 바탕으로 Neo4j Cypher 쿼리를 생성하는 도구"""
     try:
