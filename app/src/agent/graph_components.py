@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.clients.agent_client import llm_client
 from app.constants import METADATA_AGENT_SYSTEM_PROMPT
 from app.schemas.graph_state import AgentState
-from app.src.graph_workflow.tools import (
+from app.src.agent.tools import (
     metadata_extract_tool,
     cypher_generate_tool,
     cypher_execution_tool,
@@ -52,8 +52,6 @@ class GraphComponents:
         logging.debug(f"[inject_context] Processing {len(tool_calls)} tool call(s)")
 
         origin_text = state.get("origin_text", "")
-        prompt_name = state.get("prompt_name", "generate_metadata")
-        prompt_label = state.get("prompt_label", "production")
         extracted_metadata = state.get("extracted_metadata")
         generated_queries = state.get("generated_queries")
 
@@ -63,9 +61,7 @@ class GraphComponents:
 
             if tool_name == "metadata_extract_tool":
                 tool_call["args"] = {
-                    "text": origin_text,
-                    "prompt_name": prompt_name,
-                    "prompt_label": prompt_label
+                    "text": origin_text
                 }
             elif tool_name == "cypher_generate_tool":
                 tool_call["args"] = {

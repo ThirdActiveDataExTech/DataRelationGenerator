@@ -10,16 +10,13 @@ from app.src.meta_extract.llm_response import LLMResponse
 
 
 @tool
-def metadata_extract_tool(text: str, prompt_name: str = "generate_metadata", prompt_label: str = "production") -> Dict[
-    str, Any]:
+def metadata_extract_tool(text: str) -> Dict[str, Any]:
     """텍스트에서 메타데이터를 추출하는 도구"""
     try:
         logging.info("Tool: 텍스트에서 메타데이터 추출")
         llm_response = LLMResponse("meta_extract")
 
         metadata: Dict[str, Any] | str = llm_response.generate_llm_response(
-            prompt_name=prompt_name,
-            prompt_label=prompt_label,
             variables={"data_text": text}
         )
 
@@ -53,8 +50,6 @@ def cypher_generate_tool(metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
         llm_response = LLMResponse("cypher_generate")
 
         cypher_text = llm_response.generate_llm_response(
-            prompt_name="generate_cypher_query",
-            prompt_label="production",
             variables={"metadata": metadata, "text": text}
         )
 

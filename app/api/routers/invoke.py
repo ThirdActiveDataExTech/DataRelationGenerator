@@ -4,7 +4,7 @@ from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 from app.schemas.response import APIResponseModel
-from app.src.graph_workflow.agent import MetadataAgent
+from app.src.agent.agent import MetadataAgent
 
 router = APIRouter(prefix="/invoke", tags=["invoke"])
 

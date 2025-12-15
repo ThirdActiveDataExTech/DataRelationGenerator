@@ -5,8 +5,8 @@ from langgraph.prebuilt import tools_condition, ToolNode
 from app.config import langfuse_handler
 from app.constants import METADATA_AGENT_INIT_MESSAGE
 from app.schemas.graph_state import AgentState
-from app.src.graph_workflow.graph_components import GraphComponents
-from app.src.graph_workflow.tools import (
+from app.src.agent.graph_components import GraphComponents
+from app.src.agent.tools import (
     metadata_extract_tool,
     cypher_generate_tool,
     cypher_execution_tool,
@@ -84,8 +84,6 @@ class MetadataAgent:
         result = await graph.ainvoke({
             "messages": [initial_message],
             "origin_text": origin_text,
-            "prompt_name": "generate_metadata",
-            "prompt_label": "production",
             "extracted_metadata": None,
             "generated_queries": None,
             "sqlite_result": None,
