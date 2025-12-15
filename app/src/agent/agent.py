@@ -86,7 +86,7 @@ class MetadataAgent:
             "origin_text": origin_text,
             "extracted_metadata": None,
             "generated_queries": None,
-            "sqlite_result": None,
+            "neo4j_result": None,
             "metadata_extract_retry": 0,
             "cypher_retry": 0,
             "last_failed_step": None
