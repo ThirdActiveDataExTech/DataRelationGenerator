@@ -6,6 +6,7 @@ from pydantic import AnyUrl, BeforeValidator, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from langfuse.langchain import CallbackHandler
 
+
 def parse_cors(v: Any) -> Union[List[str], str]:
     if isinstance(v, str) and not v.startswith("["):
         return [i.strip() for i in v.split(",")]
@@ -91,23 +92,30 @@ class Settings(BaseSettings):
 
     # Service Config
     X_TOKEN: str = ""
-
     # DB Config
     SQLITE_FILE_NAME: str = "database.db"
     # llm config
+    MAIN_MODEL_NAME: str = "claude"
+    API_KEY: str = "claude-api-key"
+    BASE_URL: str = "http://litellme.base.url"
+    FALLBACK_MODEL_LIST: List[str] = ["claude", "gpt"]
     CLAUDE_MODEL_NAME: str = "claude"
     CLAUDE_API_KEY: str = "sk-..."
     LITE_LLM_BASE_URL: str = "https://..."
 
     # Langfuse Config
-    LANGFUSE_SECRET_KEY: str = "sk-..."
-    LANGFUSE_PUBLIC_KEY: str = "pk-..."
-    LANGFUSE_HOST: str = "http://..."
+    LANGFUSE_SECRET_KEY: str = "<LANGFUSE_SECRET_KEY>"
+    LANGFUSE_PUBLIC_KEY: str = "<LANGFUSE_PUBLIC_KEY>"
+    LANGFUSE_HOST: str = "http://web.langfuse.dev.cluster.wisenut"
 
     # Neo4j Config
     NEO4J_URI: str = "bolt://localhost:7687"
-    NEO4J_USER: str = "neo4j-username"
-    NEO4J_PASSWORD: str = "neo4j-password"
+    NEO4J_USER: str = "neo4j"
+    NEO4J_PASSWORD: str = "password"
+
+    # Fallback Models Config
+    FALLBACK_MODEL_LIST: List[str] = ["wise-model-32b", "wise-next-80b",
+                                      "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0"]
 
 
 settings = Settings()  # type: ignore
