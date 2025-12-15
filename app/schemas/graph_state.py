@@ -10,7 +10,7 @@ class AgentState(MessagesState):
     # 중간 결과 저장
     extracted_metadata: Optional[Dict[str, Any]]
     generated_queries: Optional[List[str]]
-    sqlite_result: Optional[Dict[str, Any]]
+    neo4j_result: Optional[Dict[str, Any]]
 
     # Retry 관리
     metadata_extract_retry: int

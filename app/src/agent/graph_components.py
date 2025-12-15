@@ -96,8 +96,8 @@ class GraphComponents:
         if "queries" in result:
             state_updates["generated_queries"] = result["queries"]
 
-        if "message" in result and "SQLite" in result["message"]:
-            state_updates["sqlite_result"] = result
+        if "message" in result and "Neo4j" in result["message"]:
+            state_updates["neo4j_result"] = result
 
     @staticmethod
     def _handle_error_result(result: dict, state: AgentState, state_updates: dict) -> None:
@@ -142,12 +142,14 @@ class GraphComponents:
     def _route_after_extract(state: AgentState) -> str:
         """extract_state 후 라우팅 결정"""
         last_failed = state.get("last_failed_step")
+        extracted_metadata = state.get("extracted_metadata")
+        neo4j_result = state.get("neo4j_result")
 
         # metadata_extract 실패 시 retry 로직
         if last_failed == "metadata_extract":
             retry_count = state.get("metadata_extract_retry", 0)
             if retry_count < 2:
-                return "reasoning_node"  # LLM에게 다시 시도하도록
+                return "reasoning_node"
             else:
                 return "end"
 
@@ -156,12 +158,23 @@ class GraphComponents:
             retry_count = state.get("cypher_retry", 0)
             if retry_count == 1:
                 logging.info(f"[route_after_extract] Routing to reasoning_node. cypher 생성 retry")
-                return "reasoning_node"  # LLM에게 다시 generate 요청
+                return "reasoning_node"
             elif retry_count > 1:
                 logging.warning(f"[route_after_extract] Cypher generation/execution failed, routing to fallback")
-                return "fallback"  # hardcoded fallback 사용
+                return "fallback"
 
-        # 정상 진행
+        # 모든 작업 완료 확인
+        if extracted_metadata and neo4j_result:
+            logging.info("[route_after_extract] All tasks completed, ending workflow")
+            return "end"
+
+        # 메타데이터 추출만 완료 - cypher 생성 필요
+        if extracted_metadata and not neo4j_result:
+            logging.info("[route_after_extract] Metadata extracted, continuing to cypher generation")
+            return "reasoning_node"
+
+        # 아무것도 추출되지 않았으면 계속 진행
+        logging.info("[route_after_extract] No results yet, continuing")
         return "reasoning_node"
 
     async def _reasoning_node(self, state: AgentState) -> dict:
