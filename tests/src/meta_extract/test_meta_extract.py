@@ -37,14 +37,10 @@ def test_extract_metadata_success(mock_llm_response, mock_repository):
 
     result = metadata_service.extract_metadata(
         data_text="test data test",
-        prompt_name="test_prompt_name",
-        prompt_label="production",
         db=Mock()
     )
 
-    mock_llm_response.generate_llm_response.assert_called_once_with("test_prompt_name",
-                                                                    "production",
-                                                                    variables={"data_text": "test data test"})
+    mock_llm_response.generate_llm_response.assert_called_once_with(variables={"data_text": "test data test"})
     mock_repository.save_metadata_to_db.assert_called_once()
     assert result["topics"] == ["topic1", "topic2"]
     assert result["tags"] == ["tag1", "tag2"]

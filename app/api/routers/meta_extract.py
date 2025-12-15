@@ -28,7 +28,7 @@ async def update_metadata(
         data_id: Annotated[int, Path(..., description="수정할 메타데이터 ID")]
 ):
     """메타데이터 업데이트"""
-    result = service.update_metadata(request.text.strip(), request.prompt_name, request.prompt_label, data_id, db)
+    result = service.update_metadata(request.text.strip(), data_id, db)
     return APIResponseModel(result=DataInfoResponse.from_orm(result), description="메타데이터 업데이트 완료")
 
 
