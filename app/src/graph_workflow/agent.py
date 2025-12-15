@@ -1,18 +1,14 @@
-import asyncio
-import json
-import logging
 from typing import Optional
 
-from langchain_core.messages import AIMessage, SystemMessage
+import logging
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import tools_condition, ToolNode
 from sqlalchemy.orm import Session
 
-from app.src.graph_workflow.nodes import Nodes
-from app.clients.agent_client import llm_client
 from app.config import langfuse_handler
-from app.constants import METADATA_AGENT_INIT_MESSAGE, METADATA_AGENT_SYSTEM_PROMPT
+from app.constants import METADATA_AGENT_INIT_MESSAGE
 from app.schemas.graph_state import AgentState
+from app.src.graph_workflow.graph_components import GraphComponents
 from app.src.graph_workflow.tools import (
     metadata_extract_tool,
     cypher_generate_tool,
@@ -27,7 +23,7 @@ class MetadataAgent:
 
     def __init__(self, db: Optional[Session] = None):
         """Init 매서드"""
-        self.nodes = Nodes()
+        self.graph_components = GraphComponents(db=db)
         self.tools = [
             metadata_extract_tool,
             cypher_generate_tool,
@@ -41,11 +37,11 @@ class MetadataAgent:
         builder = StateGraph(AgentState)
 
         # 노드 추가
-        builder.add_node("reasoning_node", self.nodes._reasoning_node)
-        builder.add_node("fallback", self.nodes._fallback_node)
-        builder.add_node("inject_context", self.nodes._inject_context_to_tool_calls)
+        builder.add_node("reasoning_node", self.graph_components._reasoning_node)
+        builder.add_node("fallback", self.graph_components._fallback_node)
+        builder.add_node("inject_context", self.graph_components._inject_context_to_tool_calls)
         builder.add_node("tool_node", ToolNode(self.tools))
-        builder.add_node("extract_state", self.nodes._extract_state_from_tool_results)
+        builder.add_node("extract_state", self.graph_components._extract_state_from_tool_results)
 
         # 엣지 구성
         builder.add_edge(START, "reasoning_node")
@@ -68,7 +64,7 @@ class MetadataAgent:
         # extract_state 후 retry 로직에 따라 라우팅
         builder.add_conditional_edges(
             "extract_state",
-            self.nodes._route_after_extract,
+            self.graph_components._route_after_extract,
             {
                 "reasoning_node": "reasoning_node",
                 "fallback": "fallback",
