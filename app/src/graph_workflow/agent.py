@@ -1,9 +1,6 @@
-from typing import Optional
-
 import logging
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import tools_condition, ToolNode
-from sqlalchemy.orm import Session
 
 from app.config import langfuse_handler
 from app.constants import METADATA_AGENT_INIT_MESSAGE
@@ -13,23 +10,21 @@ from app.src.graph_workflow.tools import (
     metadata_extract_tool,
     cypher_generate_tool,
     cypher_execution_tool,
-    hardcoded_fallback_tool,
-    sqlite_insert_tool
+    hardcoded_fallback_tool
 )
 
 
 class MetadataAgent:
     """메타데이터 추출 및 Graph DB 적재를 위한 Agent"""
 
-    def __init__(self, db: Optional[Session] = None):
+    def __init__(self):
         """Init 매서드"""
-        self.graph_components = GraphComponents(db=db)
+        self.graph_components = GraphComponents()
         self.tools = [
             metadata_extract_tool,
             cypher_generate_tool,
             cypher_execution_tool,
-            hardcoded_fallback_tool,
-            sqlite_insert_tool
+            hardcoded_fallback_tool
         ]
 
     def build_agent_graph(self) -> StateGraph:
