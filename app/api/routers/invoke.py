@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.schemas.meta import MetadataRequest
 from app.schemas.response import APIResponseModel
-from app.src.graph_workflow.workflow import run_agent_workflow
+from app.src.graph_workflow.agent import MetadataAgent
 
 router = APIRouter(prefix="/invoke", tags=["invoke"])
 
@@ -18,10 +18,6 @@ async def extract_and_load_to_graph(
         request: Annotated[MetadataRequest, Body(...)]
 ):
     """메타데이터 추출 후 Graph DB 적재"""
-    result = await run_agent_workflow(
-        request.text.strip(),
-        request.prompt_name,
-        request.prompt_label,
-        db
-    )
+    agent = MetadataAgent()
+    result = await agent.run_agent_workflow(origin_text = request.text.strip())
     return APIResponseModel(result=result, description="메타데이터 추출 후 GraphDB 적재 완료")
