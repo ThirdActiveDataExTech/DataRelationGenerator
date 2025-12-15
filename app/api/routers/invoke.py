@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
@@ -8,7 +10,7 @@ router = APIRouter(prefix="/invoke", tags=["invoke"])
 
 
 @router.post("", tags=["invoke"], response_model=APIResponseModel, response_class=JSONResponse)
-async def extract_and_load_to_graph(text: str = Body(..., embed=True)):
+async def extract_and_load_to_graph(text: Annotated[str, Body(embed=True)]):
     """메타데이터 추출 후 Graph DB 적재"""
     agent = MetadataAgent()
     result = await agent.run_agent_workflow(origin_text=text.strip())
