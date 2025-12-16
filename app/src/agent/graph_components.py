@@ -44,7 +44,7 @@ class GraphComponents:
         messages = state.get("messages", [])
         last_message = messages[-1] if messages else None
 
-        if not last_message or not hasattr(last_message, "tool_calls") or not getattr(last_message, "tool_calls", None):
+        if not last_message or not getattr(last_message, "tool_calls", None):
             logging.debug("[inject_context] No tool calls found, passing through")
             return {}
 
@@ -57,13 +57,12 @@ class GraphComponents:
 
         for tool_call in tool_calls:
             tool_name = tool_call["name"]
-            tool_args = tool_call.get("args", {})
 
             if tool_name == "metadata_extract_tool":
                 tool_call["args"] = {
                     "text": origin_text
                 }
-            elif tool_name == "cypher_generate_tool":
+            elif tool_name in ("cypher_generate_tool", "hardcoded_fallback_tool"):
                 tool_call["args"] = {
                     "text": origin_text,
                     "metadata": extracted_metadata or {}
@@ -72,19 +71,12 @@ class GraphComponents:
                 tool_call["args"] = {
                     "queries": generated_queries or []
                 }
-            elif tool_name == "hardcoded_fallback_tool":
-                tool_call["args"] = {
-                    "text": origin_text,
-                    "metadata": extracted_metadata or {}
-                }
         return {}
 
     @staticmethod
     def _parse_tool_result(msg_content: str | dict) -> dict:
         """Tool 결과를 dict로 파싱"""
-        if isinstance(msg_content, str):
-            return json.loads(msg_content)
-        return msg_content
+        return json.loads(msg_content) if isinstance(msg_content, str) else msg_content
 
     @staticmethod
     def _handle_success_result(result: dict, state_updates: dict) -> None:
@@ -147,17 +139,13 @@ class GraphComponents:
 
         # metadata_extract 실패 시 retry 로직
         if last_failed == "metadata_extract":
-            retry_count = state.get("metadata_extract_retry", 0)
-            if retry_count < 2:
-                return "reasoning_node"
-            else:
-                return "end"
+            return "reasoning_node" if state.get("metadata_extract_retry", 0) < 2 else "end"
 
         # cypher 실패 시 retry 로직
         if last_failed == "cypher":
             retry_count = state.get("cypher_retry", 0)
             if retry_count == 1:
-                logging.info(f"[route_after_extract] Routing to reasoning_node. cypher 생성 retry")
+                logging.info("[route_after_extract] Routing to reasoning_node. cypher 생성 retry")
                 return "reasoning_node"
             elif retry_count > 1:
                 logging.warning(f"[route_after_extract] Cypher generation/execution failed, routing to fallback")
@@ -168,13 +156,7 @@ class GraphComponents:
             logging.info("[route_after_extract] All tasks completed, ending workflow")
             return "end"
 
-        # 메타데이터 추출만 완료 - cypher 생성 필요
-        if extracted_metadata and not neo4j_result:
-            logging.info("[route_after_extract] Metadata extracted, continuing to cypher generation")
-            return "reasoning_node"
-
-        # 아무것도 추출되지 않았으면 계속 진행
-        logging.info("[route_after_extract] No results yet, continuing")
+        logging.info("[route_after_extract] Continuing to next step")
         return "reasoning_node"
 
     async def _reasoning_node(self, state: AgentState) -> dict:
@@ -191,7 +173,8 @@ class GraphComponents:
 
         return {"messages": [result]}
 
-    async def _fallback_node(self, state: AgentState) -> dict:
+    @staticmethod
+    async def _fallback_node(state: AgentState) -> dict:
         """[Node] Hardcoded fallback을 강제로 호출하는 노드"""
         logging.info("[fallback_node] Forcing hardcoded_fallback_tool call")
 
