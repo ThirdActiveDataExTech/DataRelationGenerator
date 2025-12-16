@@ -56,11 +56,7 @@ def cypher_generate_tool(metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
         if isinstance(cypher_text, dict):
             cypher_text = cypher_text.get("cypher_query", "")
 
-        # 쿼리 파싱
-        if ';' in cypher_text:
-            queries = [q.strip() for q in cypher_text.split(';') if q.strip()]
-        else:
-            queries = [cypher_text.strip()] if cypher_text.strip() else []
+        queries = [q.strip() for q in cypher_text.split(';') if q.strip()]
 
         return {
             "status": "success",
@@ -87,16 +83,10 @@ def cypher_execution_tool(queries: list) -> Dict[str, Any]:
         graph_repository = GraphRepository()
         success = graph_repository.execute_queries_sequential(queries)
 
-        if success:
-            return {
-                "status": "success",
-                "message": f"Neo4j 쿼리 실행 완료: {len(queries)}개 쿼리 성공"
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "Neo4j 쿼리 실행 실패"
-            }
+        return {
+            "status": "success" if success else "error",
+            "message": f"Neo4j 쿼리 실행 완료: {len(queries)}개 쿼리 성공" if success else "Neo4j 쿼리 실행 실패"
+        }
 
     except ApplicationError as e:
         logging.error(f"Neo4j service error: {e}")
@@ -139,8 +129,7 @@ def hardcoded_fallback_tool(metadata: Dict[str, Any], text: str) -> Dict[str, An
 
         # Topics 처리
         if topics:
-            unique_topics = list(set(topics))
-            topics_str = "', '".join([t.replace("'", "\\'") for t in unique_topics])
+            topics_str = "', '".join([t.replace("'", "\\'") for t in set(topics)])
             cypher_query += f"""
             UNWIND ['{topics_str}'] as topic_name
             MERGE (t:Topic {{name: topic_name}})
@@ -149,8 +138,7 @@ def hardcoded_fallback_tool(metadata: Dict[str, Any], text: str) -> Dict[str, An
 
         # Tags 처리
         if tags:
-            unique_tags = list(set(tags))
-            tags_str = "', '".join([t.replace("'", "\\'") for t in unique_tags])
+            tags_str = "', '".join([t.replace("'", "\\'") for t in set(tags)])
             cypher_query += f"""
             WITH d
             UNWIND ['{tags_str}'] as tag_name
@@ -159,7 +147,7 @@ def hardcoded_fallback_tool(metadata: Dict[str, Any], text: str) -> Dict[str, An
             """
 
         # Description 처리
-        if description and description.strip():
+        if description.strip():
             cypher_query += f"""
             WITH d
             MERGE (desc:Description {{content: '{escaped_description}'}})
