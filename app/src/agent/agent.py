@@ -93,6 +93,13 @@ class MetadataAgent:
         })
 
         logging.info("Agent workflow completed")
-
-        # AgentState 결과 반환
-        return result
+        
+        return {
+            "origin_text": result.get("origin_text"),
+            "extracted_metadata": result.get("extracted_metadata"),
+            "generated_queries": result.get("generated_queries"),
+            "neo4j_result": result.get("neo4j_result"),
+            "metadata_extract_retry": result.get("metadata_extract_retry"),
+            "cypher_retry": result.get("cypher_retry"),
+            "last_failed_step": result.get("last_failed_step")
+        }
