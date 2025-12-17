@@ -15,4 +15,5 @@ class AgentState(MessagesState):
     # Retry 관리
     metadata_extract_retry: int
     cypher_retry: int
+    fallback_used: bool
     last_failed_step: Optional[str]
