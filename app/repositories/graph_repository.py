@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional
 
 import logging
 from langchain_neo4j import Neo4jGraph
-from neo4j.exceptions import ServiceUnavailable, AuthError
+from neo4j.exceptions import ServiceUnavailable, AuthError, CypherSyntaxError
 
 from app.config import settings
 from app.exceptions.service import ApplicationError
@@ -59,7 +59,17 @@ class GraphRepository:
                 message="Neo4j connection not available",
                 result={"error_type": "connection_error"}
             )
-        for query in queries:
-            self.graph.query(query)
-        logging.info(f"순차 실행 성공: {len(queries)}개 쿼리 실행")
-        return True
+
+        try:
+            for idx, query in enumerate(queries, 1):
+                self.graph.query(query)
+            logging.info(f"순차 실행 성공: {len(queries)}개 쿼리 실행")
+            return True
+
+        except CypherSyntaxError as e:
+            logging.error(f"Cypher 구문 오류: {e}")
+            raise ApplicationError(
+                code=400,
+                message="Cypher 쿼리 구문 오류",
+                result={"detail": str(e)}
+            )
