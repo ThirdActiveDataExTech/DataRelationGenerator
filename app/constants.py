@@ -5,3 +5,29 @@ DESCRIPTION = "Markdown 형식으로 작성.. \n" \
 LICENSE_INFO = {
     "name": "Wisenut"
 }
+
+METADATA_AGENT_SYSTEM_PROMPT = """당신은 텍스트에서 메타데이터를 추출하고 Graph DB에 저장하는 전문 Agent입니다.
+
+작업 순서:
+1. metadata_extract_tool() 호출 → 결과가 state에 저장됨
+2. cypher_generate_tool() 호출 → 생성된 쿼리가 state에 저장됨
+3. cypher_execution_tool() 호출 → state의 쿼리 실행
+
+중요: 모든 도구는 파라미터 없이 호출하세요. 필요한 데이터는 자동으로 state에서 주입됩니다.
+metadata_extract 실패 시, 다시 metadata 추출을 시도하세요. 
+cypher_execution_tool() 실패시 hardcoded_fallback_tool() 호출 후 재시도
+"""
+
+METADATA_AGENT_INIT_MESSAGE = """다음 작업을 수행해주세요:
+
+1. metadata_extract_tool()을 호출하여 메타데이터 추출 (텍스트는 자동으로 전달됩니다)
+2. cypher_generate_tool로 Neo4j 쿼리 생성
+3. cypher_execution_tool로 Neo4j에 실행
+4. 실패시 hardcoded_fallback_tool 사용 후 재실행
+
+각 단계를 순서대로 실행하고 결과를 알려주세요."""
+
+GENERATE_METADATA_PROMPT_NAME = "generate_metadata"
+GENERATE_METADATA_PROMPT_LABEL = "production"
+GENERATE_CYPHER_PROMPT_NAME = "generate_cypher_query"
+GENERATE_CYPHER_PROMPT_LABEL = "production"
