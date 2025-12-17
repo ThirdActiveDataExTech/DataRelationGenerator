@@ -89,8 +89,9 @@ class MetadataAgent:
             "neo4j_result": None,
             "metadata_extract_retry": 0,
             "cypher_retry": 0,
+            "fallback_used": False,
             "last_failed_step": None
-        })
+        }, {"recursion_limit": 40})
 
         logging.info("Agent workflow completed")
         
@@ -101,5 +102,6 @@ class MetadataAgent:
             "neo4j_result": result.get("neo4j_result"),
             "metadata_extract_retry": result.get("metadata_extract_retry"),
             "cypher_retry": result.get("cypher_retry"),
+            "fallback_used": result.get("fallback_used"),
             "last_failed_step": result.get("last_failed_step")
         }

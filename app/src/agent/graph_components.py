@@ -124,6 +124,8 @@ class GraphComponents:
                     GraphComponents._handle_success_result(result, state_updates)
                 elif result.get("status") == "error":
                     GraphComponents._handle_error_result(result, state, state_updates)
+                
+                break
 
             except Exception as e:
                 logging.warning(f"[extract_state] Failed to parse tool result: {e}")
@@ -139,17 +141,24 @@ class GraphComponents:
 
         # metadata_extract 실패 시 retry 로직
         if last_failed == "metadata_extract":
-            return "reasoning_node" if state.get("metadata_extract_retry", 0) < 2 else "end"
+            retry_count = state.get("metadata_extract_retry", 0)
+            logging.info(f"[route_after_extract] metadata_extract failed, retry_count={retry_count}")
+            return "reasoning_node" if retry_count < 2 else "end"
 
         # cypher 실패 시 retry 로직
         if last_failed == "cypher":
             retry_count = state.get("cypher_retry", 0)
+            fallback_used = state.get("fallback_used", False)
+            
             if retry_count == 1:
                 logging.info("[route_after_extract] Routing to reasoning_node. cypher 생성 retry")
                 return "reasoning_node"
-            elif retry_count > 1:
-                logging.warning(f"[route_after_extract] Cypher generation/execution failed, routing to fallback")
+            elif retry_count > 1 and not fallback_used:
+                logging.warning("[route_after_extract] Cypher generation/execution failed, routing to fallback")
                 return "fallback"
+            elif fallback_used:
+                logging.error("[route_after_extract] Fallback already used but still failing, ending workflow")
+                return "end"
 
         # 모든 작업 완료 확인
         if extracted_metadata and neo4j_result:
@@ -178,7 +187,6 @@ class GraphComponents:
         """[Node] Hardcoded fallback을 강제로 호출하는 노드"""
         logging.info("[fallback_node] Forcing hardcoded_fallback_tool call")
 
-        # AIMessage with tool_call for hardcoded_fallback_tool
         fallback_call = AIMessage(
             content="",
             tool_calls=[{
@@ -188,4 +196,4 @@ class GraphComponents:
             }]
         )
 
-        return {"messages": [fallback_call]}
+        return {"messages": [fallback_call], "fallback_used": True}
