@@ -12,7 +12,6 @@ from app.schemas.graph_state import AgentState
 from app.src.agent.tools import (
     metadata_extract_tool,
     cypher_generate_tool,
-    cypher_execution_tool,
     hardcoded_fallback_tool
 )
 
@@ -20,18 +19,18 @@ from app.src.agent.tools import (
 class GraphComponents:
     """메타데이터 추출 및 Graph DB 적재 - LangGraph Components (Nodes & Routers)"""
 
-    def __init__(self, db: Optional[Session] = None):
+    def __init__(self, mcp_tools: Optional[list] = None):
         """Init 매서드"""
-        self.db = db
         self.llm = llm_client.primary_model
         #
         # Agent가 동적으로 선택할 수 있는 tool 정의
         self.tools = [
             metadata_extract_tool,
             cypher_generate_tool,
-            cypher_execution_tool,
             hardcoded_fallback_tool
         ]
+        if mcp_tools:
+            self.tools.extend(mcp_tools)
 
         # LLM에 도구 바인딩
         self.llm_with_tools = self.llm.bind_tools(self.tools)
@@ -68,6 +67,10 @@ class GraphComponents:
                     "metadata": extracted_metadata or {}
                 }
             elif tool_name == "cypher_execution_tool":
+                tool_call["args"] = {
+                    "queries": generated_queries or []
+                }
+            elif tool_name == "write_neo4j_cypher":
                 tool_call["args"] = {
                     "queries": generated_queries or []
                 }
@@ -124,7 +127,7 @@ class GraphComponents:
                     GraphComponents._handle_success_result(result, state_updates)
                 elif result.get("status") == "error":
                     GraphComponents._handle_error_result(result, state, state_updates)
-                
+
                 break
 
             except Exception as e:
@@ -149,7 +152,7 @@ class GraphComponents:
         if last_failed == "cypher":
             retry_count = state.get("cypher_retry", 0)
             fallback_used = state.get("fallback_used", False)
-            
+
             if retry_count == 1:
                 logging.info("[route_after_extract] Routing to reasoning_node. cypher 생성 retry")
                 return "reasoning_node"
