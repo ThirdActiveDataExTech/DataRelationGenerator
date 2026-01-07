@@ -9,9 +9,9 @@ from app.src.agent.graph_components import GraphComponents
 from app.src.agent.tools import (
     metadata_extract_tool,
     cypher_generate_tool,
-    cypher_execution_tool,
     hardcoded_fallback_tool
 )
+from app.clients.mcp import get_neo4j_mcp_tools
 
 
 class MetadataAgent:
@@ -19,23 +19,26 @@ class MetadataAgent:
 
     def __init__(self):
         """Init 매서드"""
-        self.graph_components = GraphComponents()
+        self.graph_components = None
+        self.mcp_tools: list = []
         self.tools = [
             metadata_extract_tool,
             cypher_generate_tool,
-            cypher_execution_tool,
             hardcoded_fallback_tool
         ]
 
     def build_agent_graph(self) -> StateGraph:
         """Agent 그래프 빌드"""
+        if not self.graph_components:
+            raise RuntimeError("GraphComponents not initialized. Call run_agent_workflow first.")
+
         builder = StateGraph(AgentState)
 
         # 노드 추가
         builder.add_node("reasoning_node", self.graph_components._reasoning_node)
         builder.add_node("fallback", self.graph_components._fallback_node)
         builder.add_node("inject_context", self.graph_components._inject_context_to_tool_calls)
-        builder.add_node("tool_node", ToolNode(self.tools))
+        builder.add_node("tool_node", ToolNode(self.tools + self.mcp_tools))
         builder.add_node("extract_state", self.graph_components._extract_state_from_tool_results)
 
         # 엣지 구성
@@ -71,6 +74,11 @@ class MetadataAgent:
 
     async def run_agent_workflow(self, origin_text: str) -> dict:
         """Agent 워크플로우 실행"""
+        # MCP tools 초기화
+        if not self.mcp_tools:
+            self.mcp_tools = await get_neo4j_mcp_tools()
+        self.graph_components = GraphComponents(mcp_tools=self.mcp_tools)
+
         # 초기 메시지 구성 - 원본 텍스트는 state로 전달하고 LLM에게는 작업 지시만
         initial_message = {
             "role": "user",
@@ -94,7 +102,7 @@ class MetadataAgent:
         }, {"recursion_limit": 40})
 
         logging.info("Agent workflow completed")
-        
+
         return {
             "origin_text": result.get("origin_text"),
             "extracted_metadata": result.get("extracted_metadata"),

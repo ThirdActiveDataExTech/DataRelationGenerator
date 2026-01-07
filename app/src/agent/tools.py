@@ -4,8 +4,6 @@ from typing import Any, Dict
 import logging
 from langchain_core.tools import tool
 
-from app.exceptions.base import ApplicationError
-from app.repositories.graph_repository import GraphRepository
 from app.src.meta_extract.llm_response import LLMResponse
 
 
@@ -56,7 +54,8 @@ def cypher_generate_tool(metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
         if isinstance(cypher_text, dict):
             cypher_text = cypher_text.get("cypher_query", "")
 
-        queries = [q.strip() for q in cypher_text.split(';') if q.strip()]
+        queries = [q.strip().replace("apoc.create.uuid()", "randomUUID()")
+                   for q in cypher_text.split(';') if q.strip()]
 
         return {
             "status": "success",
@@ -69,30 +68,6 @@ def cypher_generate_tool(metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
             "status": "error",
             "queries": [],
             "message": f"Cypher 쿼리 생성 실패: {str(e)}"
-        }
-
-
-@tool
-def cypher_execution_tool(queries: list) -> Dict[str, Any]:
-    """Neo4j에서 Cypher 쿼리를 실행하는 도구"""
-    try:
-        logging.info(f"Tool: Neo4j Cypher 쿼리 실행 ({len(queries)}개):")
-        for idx, query in enumerate(queries, 1):
-            logging.info(f"  Query {idx}:\n{query}\n")
-
-        graph_repository = GraphRepository()
-        success = graph_repository.execute_queries_sequential(queries)
-
-        return {
-            "status": "success" if success else "error",
-            "message": f"Neo4j 쿼리 실행 완료: {len(queries)}개 쿼리 성공" if success else "Neo4j 쿼리 실행 실패"
-        }
-
-    except ApplicationError as e:
-        logging.error(f"Neo4j service error: {e}")
-        return {
-            "status": "error",
-            "message": f"Neo4j 서비스 오류: {e.message}"
         }
 
 
