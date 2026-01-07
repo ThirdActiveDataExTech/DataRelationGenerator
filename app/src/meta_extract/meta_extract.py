@@ -109,11 +109,18 @@ class MetadataService:
         return "\n".join(parts)
 
     def extract_and_load_to_graph(self, data_text: str) -> Dict[str, Any]:
+        """메타데이터 추출 후 Graph DB 적재 - 카테고리 추출 포함"""
         graph_repo = GraphRepository()
 
         metadata = LLMResponse("meta_extract").generate_llm_response(variables={"data_text": data_text})
+        if not isinstance(metadata, dict):
+            raise ValueError("Metadata extraction failed")
+        
         cypher_result = LLMResponse("cypher_generate").generate_llm_response(
             variables={"metadata": metadata, "text": data_text})
+        if not isinstance(cypher_result, dict):
+            raise ValueError("Cypher generation failed")
+        
         doc_query = cypher_result["cypher_query"].replace("apoc.create.uuid()", "randomUUID()")
 
         existing_cats = graph_repo.execute_query("MATCH (c:Category) RETURN c.name as category")
@@ -122,6 +129,9 @@ class MetadataService:
         category_result = LLMResponse("category_generate").generate_llm_response(
             variables={"topics": metadata.get("topics", []), "existing_categories": cat_names}
         )
+        if not isinstance(category_result, dict):
+            raise ValueError("Category generation failed")
+        
         cat_queries = [self._build_category_query(cat) for cat in category_result.get("categories", [])]
 
         combined_query = ";\n".join([doc_query] + cat_queries)

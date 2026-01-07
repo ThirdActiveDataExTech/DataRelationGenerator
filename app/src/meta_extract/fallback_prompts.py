@@ -84,18 +84,7 @@ class FallbackPrompts:
 
     @classmethod
     def get_prompt(cls, task: str) -> str:
-        """
-        Get fallback prompt by task name.
-
-        Args:
-            task: Task identifier ('meta_extract', 'cypher_generate', 'category_generate')
-
-        Returns:
-            Fallback prompt template string
-
-        Raises:
-            ValueError: If task is not recognized
-        """
+        """Get fallback prompt by task name."""
         prompt_map: Dict[str, str] = {
             "meta_extract": cls.META_EXTRACT,
             "cypher_generate": cls.CYPHER_GENERATE,
