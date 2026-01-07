@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[misc]
     @property
     def neo4j_mcp_url(self) -> str:
-        return f"http://{self.NEO4J_MCP_SERVER_HOST}:{self.NEO4J_MCP_SERVER_PORT}{self.NEO4J_MCP_SERVER_PATH}"
+        return f"{self.NEO4J_TRANSPORT}://{self.NEO4J_MCP_SERVER_HOST}:{self.NEO4J_MCP_SERVER_PORT}{self.NEO4J_MCP_SERVER_PATH}"
 
 
 settings = Settings()  # type: ignore
