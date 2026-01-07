@@ -71,8 +71,10 @@ class GraphComponents:
                     "queries": generated_queries or []
                 }
             elif tool_name == "write_neo4j_cypher":
+                queries_list = generated_queries or []
+                combined_query = ";\n".join(queries_list) if queries_list else ""
                 tool_call["args"] = {
-                    "queries": generated_queries or []
+                    "query": combined_query
                 }
         return {}
 
