@@ -1,5 +1,7 @@
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from app.config import settings
+
 
 async def get_neo4j_mcp_tools():
     """Get Neo4j MCP tools from the MCP server.
@@ -10,8 +12,8 @@ async def get_neo4j_mcp_tools():
     client = MultiServerMCPClient(
         {
             "neo4j": {
-                "url": "http://localhost:8001/api/mcp/",
-                "transport": "http",
+                "url": settings.neo4j_mcp_url,
+                "transport": settings.NEO4J_TRANSPORT,
             }
         }
     )

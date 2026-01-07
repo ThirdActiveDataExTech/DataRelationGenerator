@@ -117,6 +117,17 @@ class Settings(BaseSettings):
     FALLBACK_MODEL_LIST: List[str] = ["wise-model-32b", "wise-next-80b",
                                       "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0"]
 
+    # MCP Server Config
+    NEO4J_TRANSPORT: str = "http"
+    NEO4J_MCP_SERVER_HOST: str = "127.0.0.1"
+    NEO4J_MCP_SERVER_PORT: int = 8001
+    NEO4J_MCP_SERVER_PATH: str = "/api/mcp/"
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def neo4j_mcp_url(self) -> str:
+        return f"http://{self.NEO4J_MCP_SERVER_HOST}:{self.NEO4J_MCP_SERVER_PORT}{self.NEO4J_MCP_SERVER_PATH}"
+
 
 settings = Settings()  # type: ignore
 print(settings.model_dump_json())
