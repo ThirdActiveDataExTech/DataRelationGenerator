@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional
 
 import logging
 from neo4j import GraphDatabase
-from neo4j.exceptions import ServiceUnavailable, AuthError
+from neo4j.exceptions import ServiceUnavailable, AuthError, CypherSyntaxError
 
 from app.config import settings
 from app.exceptions.service import ApplicationError
@@ -46,7 +46,14 @@ class GraphRepository:
                 message="Neo4j connection not available",
                 result={"error_type": "connection_error"}
             )
-
-        with self.driver.session() as session:
-            result = session.run(query, parameters or {})
-            return [record.data() for record in result]
+        try:
+            with self.driver.session() as session:
+                result = session.run(query, parameters or {})
+                return [record.data() for record in result]
+        except CypherSyntaxError as e:
+            logging.error(f"Cypher 쿼리 문법 오류: {e}")
+            raise ApplicationError(
+                code=400,
+                message="잘못된 Cypher 쿼리입니다",
+                result={"error_type": "cypher_syntax_error", "detail": str(e)}
+            )
