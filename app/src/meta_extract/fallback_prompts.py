@@ -83,7 +83,7 @@ class FallbackPrompts:
     """)
 
     @classmethod
-    def get_prompt(cls, task: str) -> Template:
+    def get_prompt(cls, task: str) -> str:
         """Get fallback prompt template by task name."""
         prompt_map = {
             "meta_extract": cls.META_EXTRACT_TEMPLATE,
@@ -96,4 +96,4 @@ class FallbackPrompts:
                 f"Unknown task: {task}. Available tasks: {', '.join(prompt_map.keys())}"
             )
 
-        return prompt_map[task]
+        return prompt_map[task].template
