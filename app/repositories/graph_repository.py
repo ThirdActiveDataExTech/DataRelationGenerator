@@ -1,8 +1,8 @@
 from typing import List, Dict, Any, Optional
 
 import logging
-from langchain_neo4j import Neo4jGraph
-from neo4j.exceptions import ServiceUnavailable, AuthError, CypherSyntaxError
+from neo4j import GraphDatabase
+from neo4j.exceptions import ServiceUnavailable, AuthError
 
 from app.config import settings
 from app.exceptions.service import ApplicationError
@@ -12,17 +12,15 @@ class GraphRepository:
     """그래프 데이터베이스 도메인 레포지토리"""
 
     def __init__(self):
-        self.graph = None
+        self.driver = None
 
         try:
             logging.info(f"Neo4j 연결 시도: {settings.NEO4J_URI}")
-            self.graph = Neo4jGraph(
-                url=settings.NEO4J_URI,
-                username=settings.NEO4J_USER,
-                password=settings.NEO4J_PASSWORD
+            self.driver = GraphDatabase.driver(
+                settings.NEO4J_URI,
+                auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD)
             )
-            # 연결 테스트
-            self.graph.query("RETURN 1 as test")
+            self.driver.verify_connectivity()
             logging.info("Neo4j 연결 성공")
 
         except ServiceUnavailable as e:
@@ -42,34 +40,13 @@ class GraphRepository:
 
     def execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict]:
         """단일 쿼리 실행"""
-        if self.graph is None:
-            raise ApplicationError(
-                code=500,
-                message="Neo4j connection not available",
-                result={"error_type": "connection_error"}
-            )
-        result = self.graph.query(query, parameters or {})
-        return result
-
-    def execute_queries_sequential(self, queries: List[str]) -> bool:
-        """여러 쿼리를 순차적으로 실행"""
-        if self.graph is None:
+        if self.driver is None:
             raise ApplicationError(
                 code=500,
                 message="Neo4j connection not available",
                 result={"error_type": "connection_error"}
             )
 
-        try:
-            for idx, query in enumerate(queries, 1):
-                self.graph.query(query)
-            logging.info(f"순차 실행 성공: {len(queries)}개 쿼리 실행")
-            return True
-
-        except CypherSyntaxError as e:
-            logging.error(f"Cypher 구문 오류: {e}")
-            raise ApplicationError(
-                code=400,
-                message="Cypher 쿼리 구문 오류",
-                result={"detail": str(e)}
-            )
+        with self.driver.session() as session:
+            result = session.run(query, parameters or {})
+            return [record.data() for record in result]

@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Dict, Any, List
 
 from app.exceptions.service import ApplicationError
+from app.repositories.graph_repository import GraphRepository
 from app.repositories.meta_repository import MetadataDBRepository
 from app.schemas.meta import DataInfo
 from app.schemas.response import DataInfoResponse
@@ -37,7 +38,7 @@ class MetadataService:
         meta_info = self.llm_response.generate_llm_response(variables={"data_text": data_text})
         if isinstance(meta_info, str):
             return {"error": "String response received instead of metadata dict"}
-            
+
         result = self.repository.update_metadata(data_text, db, data_id, meta_info)
         return result
 
@@ -92,3 +93,42 @@ class MetadataService:
     def create_db_and_tables(self):
         """메타데이터 테이블 초기화"""
         self.repository.create_db_and_tables()
+
+    @staticmethod
+    def _build_category_query(category: Dict[str, Any]) -> str:
+        name = category.get("name", "")
+        topics = category.get("topics", [])
+
+        parts = [f"MERGE (c:Category {{name: '{name}'}})"]
+        for topic in topics:
+            relation = topic.get("relation", "BELONGS_TO")
+            parts.extend([
+                f"WITH c\nMERGE (t:Topic {{name: '{topic.get('topic', '')}'}})",
+                f"MERGE (t)-[:{relation}]->(c)"
+            ])
+        return "\n".join(parts)
+
+    def extract_and_load_to_graph(self, data_text: str) -> Dict[str, Any]:
+        graph_repo = GraphRepository()
+
+        metadata = LLMResponse("meta_extract").generate_llm_response(variables={"data_text": data_text})
+        cypher_result = LLMResponse("cypher_generate").generate_llm_response(
+            variables={"metadata": metadata, "text": data_text})
+        doc_query = cypher_result["cypher_query"].replace("apoc.create.uuid()", "randomUUID()")
+
+        existing_cats = graph_repo.execute_query("MATCH (c:Category) RETURN c.name as category")
+        cat_names = [item["category"] for item in existing_cats if "category" in item]
+
+        category_result = LLMResponse("category_generate").generate_llm_response(
+            variables={"topics": metadata.get("topics", []), "existing_categories": cat_names}
+        )
+        cat_queries = [self._build_category_query(cat) for cat in category_result.get("categories", [])]
+
+        combined_query = ";\n".join([doc_query] + cat_queries)
+        graph_repo.execute_query(combined_query)
+
+        return {
+            "metadata": metadata,
+            "cypher_query": combined_query,
+            "categories": category_result.get("categories", [])
+        }
