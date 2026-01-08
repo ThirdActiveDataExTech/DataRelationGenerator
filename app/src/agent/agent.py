@@ -9,6 +9,7 @@ from app.src.agent.graph_components import GraphComponents
 from app.src.agent.tools import (
     metadata_extract_tool,
     cypher_generate_tool,
+    category_generate_tool,
     hardcoded_fallback_tool
 )
 from app.clients.mcp import get_neo4j_mcp_tools
@@ -24,6 +25,7 @@ class MetadataAgent:
         self.tools = [
             metadata_extract_tool,
             cypher_generate_tool,
+            category_generate_tool,
             hardcoded_fallback_tool
         ]
 

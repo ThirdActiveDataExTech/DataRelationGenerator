@@ -1,9 +1,10 @@
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import logging
 from langchain_core.tools import tool
 
+from app.repositories.graph_repository import GraphRepository
 from app.src.meta_extract.llm_response import LLMResponse
 
 
@@ -68,6 +69,51 @@ def cypher_generate_tool(metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
             "status": "error",
             "queries": [],
             "message": f"Cypher 쿼리 생성 실패: {str(e)}"
+        }
+
+
+@tool
+def category_generate_tool(topics: List[str], existing_categories: List[str]) -> Dict[str, Any]:
+    """Topic 목록에서 Category를 생성하는 도구"""
+    try:
+        logging.info("Tool: Category 생성")
+        
+        category_result = LLMResponse("category_generate").generate_llm_response(
+            variables={"topics": topics, "existing_categories": existing_categories}
+        )
+        
+        if not isinstance(category_result, dict):
+            raise ValueError("Category generation failed")
+        
+        categories = category_result.get("categories", [])
+        
+        queries = []
+        for cat in categories:
+            name = cat.get("name", "")
+            topics_list = cat.get("topics", [])
+            
+            parts = [f"MERGE (c:Category {{name: '{name}'}})"]
+            for topic in topics_list:
+                relation = topic.get("relation", "BELONGS_TO")
+                parts.extend([
+                    f"WITH c\nMERGE (t:Topic {{name: '{topic.get('topic', '')}'}})",
+                    f"MERGE (t)-[:{relation}]->(c)"
+                ])
+            queries.append("\n".join(parts))
+        
+        return {
+            "status": "success",
+            "categories": categories,
+            "queries": queries,
+            "message": f"Category {len(categories)}개 생성 완료"
+        }
+    except Exception as e:
+        logging.error(f"Category 생성 실패: {e}")
+        return {
+            "status": "error",
+            "categories": [],
+            "queries": [],
+            "message": f"Category 생성 실패: {str(e)}"
         }
 
 

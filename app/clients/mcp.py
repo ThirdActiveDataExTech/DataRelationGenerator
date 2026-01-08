@@ -7,7 +7,7 @@ async def get_neo4j_mcp_tools():
     """Get Neo4j MCP tools from the MCP server.
 
     Returns:
-        List of LangChain tools for Neo4j operations (read_neo4j_cypher, write_neo4j_cypher, get_neo4j_schema).
+        List of LangChain tools for Neo4j operations (read_neo4j_cypher, write_neo4j_cypher).
     """
     client = MultiServerMCPClient(
         {
@@ -19,6 +19,4 @@ async def get_neo4j_mcp_tools():
     )
 
     tools = await client.get_tools()
-    return tools
-
-
+    return [tool for tool in tools if tool.name != "get_neo4j_schema"]  # Exclude schema tool
