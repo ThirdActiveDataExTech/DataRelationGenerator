@@ -12,6 +12,7 @@ from app.schemas.graph_state import AgentState
 from app.src.agent.tools import (
     metadata_extract_tool,
     cypher_generate_tool,
+    category_generate_tool,
     hardcoded_fallback_tool
 )
 
@@ -27,6 +28,7 @@ class GraphComponents:
         self.tools = [
             metadata_extract_tool,
             cypher_generate_tool,
+            category_generate_tool,
             hardcoded_fallback_tool
         ]
         if mcp_tools:
@@ -58,24 +60,16 @@ class GraphComponents:
             tool_name = tool_call["name"]
 
             if tool_name == "metadata_extract_tool":
-                tool_call["args"] = {
-                    "text": origin_text
-                }
+                tool_call["args"] = {"text": origin_text}
             elif tool_name in ("cypher_generate_tool", "hardcoded_fallback_tool"):
-                tool_call["args"] = {
-                    "text": origin_text,
-                    "metadata": extracted_metadata or {}
-                }
-            elif tool_name == "cypher_execution_tool":
-                tool_call["args"] = {
-                    "queries": generated_queries or []
-                }
+                tool_call["args"] = {"text": origin_text, "metadata": extracted_metadata or {}}
+            elif tool_name == "category_generate_tool":
+                topics = (extracted_metadata or {}).get("topics", [])
+                tool_call["args"] = {"topics": topics, "existing_categories": []}
             elif tool_name == "write_neo4j_cypher":
                 queries_list = generated_queries or []
                 combined_query = ";\n".join(queries_list) if queries_list else ""
-                tool_call["args"] = {
-                    "query": combined_query
-                }
+                tool_call["args"] = {"query": combined_query}
         return {}
 
     @staticmethod
@@ -95,6 +89,9 @@ class GraphComponents:
 
         if "message" in result and "Neo4j" in result["message"]:
             state_updates["neo4j_result"] = result
+        
+        if "categories" in result:
+            state_updates["categories"] = result["categories"]
 
     @staticmethod
     def _handle_error_result(result: dict, state: AgentState, state_updates: dict) -> None:
