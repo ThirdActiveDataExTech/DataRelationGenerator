@@ -1,10 +1,9 @@
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import logging
 from langchain_core.tools import tool
 
-from app.exceptions.base import ApplicationError
 from app.repositories.graph_repository import GraphRepository
 from app.src.meta_extract.llm_response import LLMResponse
 
@@ -56,7 +55,8 @@ def cypher_generate_tool(metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
         if isinstance(cypher_text, dict):
             cypher_text = cypher_text.get("cypher_query", "")
 
-        queries = [q.strip() for q in cypher_text.split(';') if q.strip()]
+        queries = [q.strip().replace("apoc.create.uuid()", "randomUUID()")
+                   for q in cypher_text.split(';') if q.strip()]
 
         return {
             "status": "success",
@@ -73,26 +73,47 @@ def cypher_generate_tool(metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
 
 
 @tool
-def cypher_execution_tool(queries: list) -> Dict[str, Any]:
-    """Neo4j에서 Cypher 쿼리를 실행하는 도구"""
+def category_generate_tool(topics: List[str], existing_categories: List[str]) -> Dict[str, Any]:
+    """Topic 목록에서 Category를 생성하는 도구"""
     try:
-        logging.info(f"Tool: Neo4j Cypher 쿼리 실행 ({len(queries)}개):")
-        for idx, query in enumerate(queries, 1):
-            logging.info(f"  Query {idx}:\n{query}\n")
-
-        graph_repository = GraphRepository()
-        success = graph_repository.execute_queries_sequential(queries)
-
+        logging.info("Tool: Category 생성")
+        
+        category_result = LLMResponse("category_generate").generate_llm_response(
+            variables={"topics": topics, "existing_categories": existing_categories}
+        )
+        
+        if not isinstance(category_result, dict):
+            raise ValueError("Category generation failed")
+        
+        categories = category_result.get("categories", [])
+        
+        queries = []
+        for cat in categories:
+            name = cat.get("name", "")
+            topics_list = cat.get("topics", [])
+            
+            parts = [f"MERGE (c:Category {{name: '{name}'}})"]
+            for topic in topics_list:
+                relation = topic.get("relation", "BELONGS_TO")
+                parts.extend([
+                    f"WITH c\nMERGE (t:Topic {{name: '{topic.get('topic', '')}'}})",
+                    f"MERGE (t)-[:{relation}]->(c)"
+                ])
+            queries.append("\n".join(parts))
+        
         return {
-            "status": "success" if success else "error",
-            "message": f"Neo4j 쿼리 실행 완료: {len(queries)}개 쿼리 성공" if success else "Neo4j 쿼리 실행 실패"
+            "status": "success",
+            "categories": categories,
+            "queries": queries,
+            "message": f"Category {len(categories)}개 생성 완료"
         }
-
-    except ApplicationError as e:
-        logging.error(f"Neo4j service error: {e}")
+    except Exception as e:
+        logging.error(f"Category 생성 실패: {e}")
         return {
             "status": "error",
-            "message": f"Neo4j 서비스 오류: {e.message}"
+            "categories": [],
+            "queries": [],
+            "message": f"Category 생성 실패: {str(e)}"
         }
 
 
