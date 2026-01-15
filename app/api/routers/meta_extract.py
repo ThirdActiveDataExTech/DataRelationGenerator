@@ -52,3 +52,11 @@ async def get_metadata(
     """메타데이터 검색 엔드포인트"""
     result = service.get_metadatas(query, search_option, search_field, db)
     return APIResponseModel(result=result, description="메타데이터 검색 완료(검색된 데이터 수: {})".format(len(result)))
+
+
+@router.post("/extract_and_load_to_graph", tags=["metadata"], response_model=APIResponseModel,
+             response_class=JSONResponse)
+async def extract_and_load_to_graph(text: Annotated[str, Body(embed=True)]):
+    """메타데이터 추출 후 Graph DB 적재 - 카테고리 추출 포함"""
+    result = service.extract_and_load_to_graph(text.strip())
+    return APIResponseModel(result=result, description="메타데이터 추출 후 GraphDB 적재 완료")

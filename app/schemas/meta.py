@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List
+from typing import List, Literal
 
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, field_validator
@@ -22,6 +22,26 @@ class MetadataInfo(BaseModel):
 class CypherQueryInfo(BaseModel):
     """Cypher 쿼리 생성 데이터 모델"""
     cypher_query: str = Field(..., title="Cypher 쿼리", description="Neo4j 데이터베이스에 실행할 완전한 Cypher 쿼리")
+
+
+TopicRelation = Literal["SIMILAR_TO", "SUBTYPE_OF", "SAME_AS", "BELONGS_TO"]
+
+
+class TopicCategoryMapping(BaseModel):
+    """Topic과 Category 간 매핑 정보"""
+    topic: str = Field(..., description="토픽명")
+    relation: TopicRelation = Field(..., description="관계 타입")
+
+
+class CategoryInfo(BaseModel):
+    """카테고리 정보 데이터 모델"""
+    name: str = Field(..., description="카테고리명 (일반명사)")
+    topics: List[TopicCategoryMapping] = Field(default_factory=list, description="포함되는 토픽 목록")
+
+
+class CategoryGenerationResult(BaseModel):
+    """카테고리 생성 결과"""
+    categories: List[CategoryInfo] = Field(default_factory=list, description="생성된 카테고리 목록")
 
 
 Base = declarative_base()
@@ -67,4 +87,10 @@ cypher_tool = pydantic_function_tool(
     CypherQueryInfo,
     name="generate_cypher_query",
     description="Neo4j Cypher 쿼리 생성 전용 도구입니다. 메타데이터와 텍스트를 Neo4j 그래프 데이터베이스 쿼리로 변환할 때만 사용합니다."
+)
+
+category_generation_tool = pydantic_function_tool(
+    CategoryGenerationResult,
+    name="generate_categories",
+    description="Topic 목록을 분석하여 의미적으로 묶일 수 있는 상위 Category를 생성합니다."
 )
