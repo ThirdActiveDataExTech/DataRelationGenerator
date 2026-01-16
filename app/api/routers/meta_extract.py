@@ -4,7 +4,7 @@ from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 from app.schemas.response import APIResponseModel
-from app.src.meta_extract.meta_extract import MetadataService
+from app.src.meta_extract.meta_extractor import MetadataService
 
 router = APIRouter(prefix="/metadata", tags=["metadata"])
 
