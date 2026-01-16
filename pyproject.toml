@@ -27,6 +27,7 @@ dependencies = [
     "neo4j>=5.25.0,<6.0.0",
     "langchain-neo4j>=0.6.0",
     "langchain-mcp-adapters>=0.2.1",
+    "sentence-transformers>=5.2.0",
 ]
 name = "python-fastapi-template"
 version = "v1"
@@ -147,18 +148,18 @@ exclude = [
     '.cache'
 ]
 
-
-[tool.pytest.ini_options]
-addopts = [
-    "--strict-markers",
-    "--strict-config",
-    "--verbose",
-    "--cov=app",
-    "--cov-report=xml:coverage.xml",
-    "--cov-report=term",
-    "--junit-xml=report.xml",
-]
-testpaths = ["tests"]
+#
+#[tool.pytest.ini_options]
+#addopts = [
+#    "--strict-markers",
+#    "--strict-config",
+#    "--verbose",
+#    "--cov=app",
+#    "--cov-report=xml:coverage.xml",
+#    "--cov-report=term",
+#    "--junit-xml=report.xml",
+#]
+#testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["app"]
@@ -169,13 +170,13 @@ omit = [
     "app/exceptions/*.py",
 ]
 
-[tool.coverage.xml]
-output = "coverage.xml"
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "raise AssertionError",
-    "raise NotImplementedError",
-]
+#[tool.coverage.xml]
+#output = "coverage.xml"
+#
+#[tool.coverage.report]
+#exclude_lines = [
+#    "pragma: no cover",
+#    "def __repr__",
+#    "raise AssertionError",
+#    "raise NotImplementedError",
+#]
