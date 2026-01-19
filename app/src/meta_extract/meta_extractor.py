@@ -14,8 +14,16 @@ class MetadataService:
     def __init__(self, llm_response: LLMResponse = None):
         """Init 매서드 - 의존성 주입"""
         self.llm_response = llm_response or LLMResponse("meta_extract")
-        self.graph_builder = GraphBuilder()
-        self.graph_repo = GraphRepository()
+        self._graph_repo = None
+        self.graph_builder = None
+
+    @property
+    def graph_repo(self) -> GraphRepository:
+        """Lazy initialization: 최초 접근 시 한 번만 생성"""
+        _ = GraphRepository()
+        if self.graph_builder is None:
+            self.graph_builder = GraphBuilder()
+        return self._graph_repo or GraphRepository()
 
     @staticmethod
     def _extract_metadata(data_text: str) -> Dict[str, Any]:
@@ -49,7 +57,7 @@ class MetadataService:
         try:
             metadata = self._extract_metadata(data_text)
             categories = self._generate_categories(metadata.get("topics", []))
-            build_result = self.graph_builder.build_graph(
+            build_result = self.graph_builder.build_graph(  # pyright: ignore
                 metadata=metadata,
                 text=data_text,
                 categories=categories

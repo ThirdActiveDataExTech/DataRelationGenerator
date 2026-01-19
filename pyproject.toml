@@ -108,7 +108,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = [
-    "D",    # pydocstyle <https://docs.astral.sh/ruff/rules/#pydocstyle-d>
+    "D", # pydocstyle <https://docs.astral.sh/ruff/rules/#pydocstyle-d>
     "FAST"  # FastAPI <https://docs.astral.sh/ruff/rules/#fastapi-fast>
 ]
 ignore = ['W', "D100", "D104", "D414", "D415", "D417"]
@@ -148,18 +148,18 @@ exclude = [
     '.cache'
 ]
 
-#
-#[tool.pytest.ini_options]
-#addopts = [
-#    "--strict-markers",
-#    "--strict-config",
-#    "--verbose",
-#    "--cov=app",
-#    "--cov-report=xml:coverage.xml",
-#    "--cov-report=term",
-#    "--junit-xml=report.xml",
-#]
-#testpaths = ["tests"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--verbose",
+    "--cov=app",
+    "--cov-report=xml:coverage.xml",
+    "--cov-report=term",
+    "--junit-xml=report.xml",
+]
+testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["app"]
@@ -170,13 +170,13 @@ omit = [
     "app/exceptions/*.py",
 ]
 
-#[tool.coverage.xml]
-#output = "coverage.xml"
-#
-#[tool.coverage.report]
-#exclude_lines = [
-#    "pragma: no cover",
-#    "def __repr__",
-#    "raise AssertionError",
-#    "raise NotImplementedError",
-#]
+[tool.coverage.xml]
+output = "coverage.xml"
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+]
