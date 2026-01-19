@@ -10,9 +10,9 @@ from app.src.embedding.embedding_service import embedding_service
 class GraphBuilder:
     """Neo4j Graph DB 구축 서비스 클래스"""
 
-    def __init__(self):
+    def __init__(self, graph_repo: GraphRepository = None):
         """Init 매서드 - GraphRepository 인스턴스 생성"""
-        self.graph_repo = GraphRepository()
+        self.graph_repo = graph_repo or GraphRepository()
 
     def build_graph(
             self,
