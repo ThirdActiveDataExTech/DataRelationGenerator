@@ -1,3 +1,4 @@
+from functools import cached_property
 from typing import Dict, Any, List
 
 import logging
@@ -15,15 +16,17 @@ class MetadataService:
         """Init 매서드 - 의존성 주입"""
         self.llm_response = llm_response or LLMResponse("meta_extract")
         self._graph_repo = None
-        self.graph_builder = None
+        self._graph_builder = None
 
-    @property
+    @cached_property
     def graph_repo(self) -> GraphRepository:
         """Lazy initialization: 최초 접근 시 한 번만 생성"""
-        _ = GraphRepository()
-        if self.graph_builder is None:
-            self.graph_builder = GraphBuilder()
-        return self._graph_repo or GraphRepository()
+        return GraphRepository()
+
+    @cached_property
+    def graph_builder(self) -> GraphBuilder:
+        """Lazy initialization: 최초 접근 시 한 번만 생성"""
+        return GraphBuilder(graph_repo=self.graph_repo)
 
     @staticmethod
     def _extract_metadata(data_text: str) -> Dict[str, Any]:
@@ -57,7 +60,7 @@ class MetadataService:
         try:
             metadata = self._extract_metadata(data_text)
             categories = self._generate_categories(metadata.get("topics", []))
-            build_result = self.graph_builder.build_graph(  # pyright: ignore
+            build_result = self.graph_builder.build_graph(
                 metadata=metadata,
                 text=data_text,
                 categories=categories
