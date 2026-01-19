@@ -21,7 +21,7 @@ class EmbeddingService:
             text: 변환할 텍스트
 
         Returns:
-            embedding 벡터 (768차원 float list)
+            embedding 벡터 (float list, 차원은 모델에 따라 결정됨)
 
         Raises:
             ApplicationError: 텍스트가 비어있거나 embedding 생성 실패
