@@ -1,3 +1,4 @@
+import json
 from functools import cached_property
 from typing import Dict, Any, List
 
@@ -71,3 +72,19 @@ class MetadataService:
                 message="메타데이터 또는 카테고리 생성에 실패했습니다.",
                 result={"error": str(e)}
             )
+
+    def batch_extract_and_load_from_jsonl(self, content: str) -> Dict[str, Any]:
+        """JSONL 콘텐츠를 배치 처리하여 메타데이터 추출 및 Graph DB 적재"""
+        lines = [line for line in content.strip().split("\n") if line.strip()]
+        success_count = 0
+        errors = []
+
+        for idx, line in enumerate(lines, start=1):
+            try:
+                text_data = json.dumps(json.loads(line), ensure_ascii=False)
+                self.extract_and_load_to_graph(text_data)
+                success_count += 1
+            except json.JSONDecodeError as e:
+                errors.append({"line": idx, "error": f"JSON 파싱 실패: {str(e)}"})
+
+        return {"success": success_count, "failed": len(errors), "errors": errors}
