@@ -1,4 +1,3 @@
-from enum import Enum
 from typing import List, Literal, Optional
 
 from openai import pydantic_function_tool
@@ -9,8 +8,16 @@ from sqlalchemy.orm import declarative_base
 
 class MetadataInfo(BaseModel):
     """메타데이터 정보 데이터 모델"""
-    tags: List[str] = Field(default_factory=list, title="태그", description="데이터와 관련된 태그 목록")
-    topics: List[str] = Field(default_factory=list, title="주제", description="데이터의 주요 주제 목록")
+    tags: List[str] = Field(
+        default_factory=list,
+        title="태그",
+        description="데이터와 관련된 태그 목록. 반드시 배열 형식으로 반환: [\"태그1\", \"태그2\", \"태그3\"]"
+    )
+    topics: List[str] = Field(
+        default_factory=list,
+        title="주제",
+        description="데이터의 주요 주제 목록. 반드시 배열 형식으로 반환: [\"주제1\", \"주제2\", \"주제3\"]"
+    )
     description: str = Field(default="", title="설명", description="데이터에 대한 간략한 설명")
     embedding: Optional[List[float]] = Field(default=None, title="임베딩", description="Description의 embedding 벡터 (384차원)")
 
