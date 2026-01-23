@@ -81,10 +81,13 @@ class MetadataService:
 
         for idx, line in enumerate(lines, start=1):
             try:
-                text_data = json.dumps(json.loads(line), ensure_ascii=False)
-                self.extract_and_load_to_graph(text_data)
+                json.loads(line)
+                self.extract_and_load_to_graph(line)
                 success_count += 1
             except json.JSONDecodeError as e:
                 errors.append({"line": idx, "error": f"JSON 파싱 실패: {str(e)}"})
 
         return {"success": success_count, "failed": len(errors), "errors": errors}
+
+
+meta_service = MetadataService()
