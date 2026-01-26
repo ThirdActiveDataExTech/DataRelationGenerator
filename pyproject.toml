@@ -27,6 +27,7 @@ dependencies = [
     "neo4j>=5.25.0,<6.0.0",
     "langchain-neo4j>=0.6.0",
     "langchain-mcp-adapters>=0.2.1",
+    "sentence-transformers>=5.2.0",
 ]
 name = "python-fastapi-template"
 version = "v1"
@@ -107,7 +108,7 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = [
-    "D",    # pydocstyle <https://docs.astral.sh/ruff/rules/#pydocstyle-d>
+    "D", # pydocstyle <https://docs.astral.sh/ruff/rules/#pydocstyle-d>
     "FAST"  # FastAPI <https://docs.astral.sh/ruff/rules/#fastapi-fast>
 ]
 ignore = ['W', "D100", "D104", "D414", "D415", "D417"]

@@ -128,6 +128,11 @@ class Settings(BaseSettings):
     def neo4j_mcp_url(self) -> str:
         return f"{self.NEO4J_TRANSPORT}://{self.NEO4J_MCP_SERVER_HOST}:{self.NEO4J_MCP_SERVER_PORT}{self.NEO4J_MCP_SERVER_PATH}"
 
+    # Embedding Config
+    EMBEDDING_MODEL_NAME: str = "jhgan/ko-sroberta-multitask"
+    SIMILARITY_THRESHOLD: float = 0.75
+    SIMILARITY_TOP_K: int = 5
+
 
 settings = Settings()  # type: ignore
 print(settings.model_dump_json())

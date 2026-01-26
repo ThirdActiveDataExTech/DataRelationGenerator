@@ -4,7 +4,8 @@ from typing import Any, Dict, List
 import logging
 from langchain_core.tools import tool
 
-from app.repositories.graph_repository import GraphRepository
+from app.config import settings
+from app.src.embedding.embedding_service import embedding_service
 from app.src.meta_extract.llm_response import LLMResponse
 
 
@@ -46,22 +47,56 @@ def cypher_generate_tool(metadata: Dict[str, Any], text: str) -> Dict[str, Any]:
     """메타데이터를 바탕으로 Neo4j Cypher 쿼리를 생성하는 도구"""
     try:
         logging.info("Tool: Neo4j Cypher 쿼리 생성")
-        llm_response = LLMResponse("cypher_generate")
 
-        cypher_text = llm_response.generate_llm_response(
-            variables={"metadata": metadata, "text": text}
-        )
+        # Embedding 생성
+        description = metadata.get("description", "")
+        if not description or not description.strip():
+            raise ValueError("Description이 비어있어 embedding을 생성할 수 없습니다")
+        embedding = embedding_service.generate_embedding(description)
+        logging.info(f"Embedding 생성 완료 (차원: {len(embedding)})")
 
-        if isinstance(cypher_text, dict):
-            cypher_text = cypher_text.get("cypher_query", "")
+        # Document 생성 쿼리
+        doc_id = f"doc_{uuid.uuid4().hex[:12]}"
+        queries = []
 
-        queries = [q.strip().replace("apoc.create.uuid()", "randomUUID()")
-                   for q in cypher_text.split(';') if q.strip()]
+        doc_query = f"""
+        CREATE (d:Document {{
+            id: '{doc_id}',
+            text: $text,
+            description: $description,
+            embedding: $embedding,
+            created_at: datetime()
+        }})
+        WITH d
+        UNWIND $topics AS topic_name
+        MERGE (t:Topic {{name: topic_name}})
+        MERGE (d)-[:HAS_TOPIC]->(t)
+        WITH d
+        UNWIND $tags AS tag_name
+        MERGE (tag:Tag {{name: tag_name}})
+        MERGE (d)-[:HAS_TAG]->(tag)
+        RETURN d.id as document_id
+        """
+        queries.append(doc_query.strip())
+
+        # 유사도 관계 생성 쿼리
+        similarity_query = f"""
+        MATCH (d1:Document {{id: '{doc_id}'}})
+        CALL db.index.vector.queryNodes('document_embedding_index', {settings.SIMILARITY_TOP_K}, d1.embedding)
+        YIELD node AS d2, score
+        WHERE d2.id <> '{doc_id}' AND score >= {settings.SIMILARITY_THRESHOLD}
+        MERGE (d1)-[r:SIMILAR_TO]->(d2)
+        SET r.similarity_score = score
+        RETURN d2.id AS related_doc_id, score
+        """
+        queries.append(similarity_query.strip())
 
         return {
             "status": "success",
             "queries": queries,
-            "message": f"Cypher 쿼리 생성 완료: {len(queries)}개 쿼리"
+            "doc_id": doc_id,
+            "embedding": embedding,
+            "message": f"Cypher 쿼리 생성 완료: {len(queries)}개"
         }
     except Exception as e:
         logging.error(f"Cypher 쿼리 생성 실패: {e}")
@@ -77,21 +112,21 @@ def category_generate_tool(topics: List[str], existing_categories: List[str]) ->
     """Topic 목록에서 Category를 생성하는 도구"""
     try:
         logging.info("Tool: Category 생성")
-        
+
         category_result = LLMResponse("category_generate").generate_llm_response(
             variables={"topics": topics, "existing_categories": existing_categories}
         )
-        
+
         if not isinstance(category_result, dict):
             raise ValueError("Category generation failed")
-        
+
         categories = category_result.get("categories", [])
-        
+
         queries = []
         for cat in categories:
             name = cat.get("name", "")
             topics_list = cat.get("topics", [])
-            
+
             parts = [f"MERGE (c:Category {{name: '{name}'}})"]
             for topic in topics_list:
                 relation = topic.get("relation", "BELONGS_TO")
@@ -100,7 +135,7 @@ def category_generate_tool(topics: List[str], existing_categories: List[str]) ->
                     f"MERGE (t)-[:{relation}]->(c)"
                 ])
             queries.append("\n".join(parts))
-        
+
         return {
             "status": "success",
             "categories": categories,
