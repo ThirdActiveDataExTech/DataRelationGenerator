@@ -57,3 +57,60 @@ class GraphRepository:
                 message="잘못된 Cypher 쿼리입니다",
                 result={"error_type": "cypher_syntax_error", "detail": str(e)}
             )
+
+    def create_vector_index(self) -> None:
+        """Document 노드의 embedding property에 대한 vector index 생성"""
+        query = """
+        CREATE VECTOR INDEX document_embedding_index IF NOT EXISTS
+        FOR (d:Document)
+        ON d.embedding
+        OPTIONS {
+            indexConfig: {
+                `vector.dimensions`: 768,
+                `vector.similarity_function`: 'cosine'
+            }
+        }
+        """
+        self.execute_query(query)
+
+    def find_and_create_similarity_relations(
+            self,
+            doc_id: str,
+            embedding: List[float],
+            threshold: float = settings.SIMILARITY_THRESHOLD,
+            top_k: int = settings.SIMILARITY_TOP_K
+    ) -> List[Dict[str, Any]]:
+        """
+        Vector search로 유사한 문서를 찾고 SIMILAR_TO 관계 생성
+
+        Args:
+            doc_id: 현재 문서 ID
+            embedding: 현재 문서의 embedding 벡터
+            threshold: 유사도 임계값 (0.0 ~ 1.0), None이면 settings에서 가져옴
+            top_k: 최대 관계 생성 개수, None이면 settings에서 가져옴
+
+        Returns:
+            생성된 관계 정보 리스트
+        """
+
+        query = """
+        MATCH (d1:Document {id: $doc_id})
+        WITH d1
+        CALL db.index.vector.queryNodes('document_embedding_index', $top_k, $embedding)
+        YIELD node AS d2, score
+        WHERE d2.id <> $doc_id AND score >= $threshold
+        MERGE (d1)-[r:SIMILAR_TO]->(d2)
+        SET r.similarity_score = score
+        RETURN d2.id AS related_doc_id, score
+        """
+
+        parameters = {
+            "doc_id": doc_id,
+            "embedding": embedding,
+            "threshold": threshold,
+            "top_k": top_k
+        }
+
+        results = self.execute_query(query, parameters)
+        logging.info(f"Document {doc_id}에 대해 {len(results)}개의 유사도 관계 생성")
+        return results

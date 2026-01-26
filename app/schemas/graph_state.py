@@ -12,6 +12,11 @@ class AgentState(MessagesState):
     generated_queries: Optional[List[str]]
     neo4j_result: Optional[Dict[str, Any]]
 
+    # Embedding 관련 state
+    generated_embedding: Optional[List[float]]
+    similarity_relationships: Optional[List[Dict[str, Any]]]
+    document_id: Optional[str]
+
     # Retry 관리
     metadata_extract_retry: int
     cypher_retry: int
