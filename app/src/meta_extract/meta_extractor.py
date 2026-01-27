@@ -6,6 +6,7 @@ import logging
 
 from app.exceptions.base import ApplicationError
 from app.repositories.graph_repository import GraphRepository
+from app.src.embedding.embedding_service import embedding_service
 from app.src.meta_extract.graph_builder import GraphBuilder
 from app.src.meta_extract.llm_response import LLMResponse
 
@@ -53,18 +54,30 @@ class MetadataService:
     async def extract_and_load_to_graph(self, data_text: str) -> Dict[str, Any]:
         """메타데이터 추출 후 Graph DB 적재"""
         try:
+            # 1. 메타데이터 추출 및 카테고리 생성
             metadata = self._extract_metadata(data_text)
             categories = self._generate_categories(metadata.get("topics", []))
+            # 2. 텍스트 임베딩 생성
+            text_embedding = embedding_service.generate_embedding(data_text)
+            # 3. Vector index 생성 (최초 1회만 실행됨)
+            self.graph_repo.create_vector_index()
+            self.graph_repo.create_graph_embedding_index()
+
+            # 4. 고정 구조 그래프 생성 (Document, Topic, Tag, Category + 고정 관계)
             build_result = self.graph_builder.build_graph(
                 metadata=metadata,
                 text=data_text,
-                categories=categories
+                categories=categories,
+                text_embedding=text_embedding
             )
+
+            doc_id = build_result["document_id"]
+            logging.info(f"Document 생성 완료: {doc_id}")
             return {
                 "metadata": metadata,
                 "categories": categories,
-                "document_id": build_result["document_id"],
-                "similarity_relations": build_result["similarity_relations"]
+                "document_id": doc_id,
+                "status": "success"
             }
         except ValueError as e:
             raise ApplicationError(
@@ -82,7 +95,7 @@ class MetadataService:
         for idx, line in enumerate(lines, start=1):
             try:
                 json.loads(line)
-                await self.extract_and_load_to_graph(line, analyze_relations=True)
+                await self.extract_and_load_to_graph(line)
                 success_count += 1
             except json.JSONDecodeError as e:
                 errors.append({"line": idx, "error": f"JSON 파싱 실패: {str(e)}"})
