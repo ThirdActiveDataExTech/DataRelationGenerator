@@ -73,7 +73,7 @@ class MetadataService:
                 result={"error": str(e)}
             )
 
-    def batch_extract_and_load_from_jsonl(self, content: str) -> Dict[str, Any]:
+    async def batch_extract_and_load_from_jsonl(self, content: str) -> Dict[str, Any]:
         """JSONL 콘텐츠를 배치 처리하여 메타데이터 추출 및 Graph DB 적재"""
         lines = [line for line in content.strip().split("\n") if line.strip()]
         success_count = 0
@@ -82,7 +82,7 @@ class MetadataService:
         for idx, line in enumerate(lines, start=1):
             try:
                 json.loads(line)
-                self.extract_and_load_to_graph(line)
+                await self.extract_and_load_to_graph(line, analyze_relations=True)
                 success_count += 1
             except json.JSONDecodeError as e:
                 errors.append({"line": idx, "error": f"JSON 파싱 실패: {str(e)}"})
