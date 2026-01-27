@@ -18,17 +18,24 @@ class GraphBuilder:
             self,
             metadata: Dict[str, Any],
             text: str,
-            categories: List[Dict[str, Any]]
+            categories: List[Dict[str, Any]],
+            text_embedding: List[float],
+            graph_embedding: List[float] = None
     ) -> Dict[str, Any]:
-        """메타데이터로부터 Graph 구축 (Document + Embedding + Categories)"""
-        embedding = self._generate_embedding(metadata.get("description", ""))
-        doc_id = self._create_document(metadata, text, embedding)
-        similarity_count = self._create_similarity_relations(doc_id, embedding)
+        """메타데이터로부터 Graph 구축 (Document + Embeddings + Categories)
+
+        Args:
+            metadata: 메타데이터
+            text: 문서 텍스트
+            categories: 카테고리 목록
+            text_embedding: 텍스트 기반 임베딩 (768차원)
+            graph_embedding: 그래프 기반 임베딩 (128차원, optional)
+        """
+        doc_id = self._create_document(metadata, text, text_embedding, graph_embedding)
         self._create_categories(categories)
 
         return {
             "document_id": doc_id,
-            "similarity_relations": similarity_count,
             "categories_created": len(categories)
         }
 
@@ -48,7 +55,14 @@ class GraphBuilder:
             text: str,
             embedding: List[float]
     ) -> str:
-        """Document 노드 및 Topic/Tag 관계 생성"""
+        """Document 노드 및 Topic/Tag 관계 생성
+
+        Args:
+            metadata: 메타데이터
+            text: 문서 텍스트
+            text_embedding: 텍스트 기반 임베딩
+            graph_embedding: 그래프 기반 임베딩 (optional)
+        """
         doc_id = f"doc_{uuid.uuid4().hex[:12]}"
 
         doc_query = """
