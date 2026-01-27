@@ -11,16 +11,16 @@ from app.src.meta_extract.llm_response import LLMResponse
 
 
 class MetadataService:
-    """메타데이터 추출 서비스 클래스"""
+    """메타데이터 추출 서비스 - 메타데이터 추출 및 문서 생성만 담당"""
 
     @cached_property
     def graph_repo(self) -> GraphRepository:
-        """Lazy initialization: 최초 접근 시 한 번만 생성"""
+        """Lazy initialization: GraphRepository"""
         return GraphRepository()
 
     @cached_property
     def graph_builder(self) -> GraphBuilder:
-        """Lazy initialization: 최초 접근 시 한 번만 생성"""
+        """Lazy initialization: GraphBuilder"""
         return GraphBuilder(graph_repo=self.graph_repo)
 
     @staticmethod
@@ -50,8 +50,8 @@ class MetadataService:
         logging.info(f"카테고리 생성: {len(categories)}개")
         return categories
 
-    def extract_and_load_to_graph(self, data_text: str) -> Dict[str, Any]:
-        """메타데이터 추출 후 Graph DB 적재 - Embedding & 카테고리 포함"""
+    async def extract_and_load_to_graph(self, data_text: str) -> Dict[str, Any]:
+        """메타데이터 추출 후 Graph DB 적재"""
         try:
             metadata = self._extract_metadata(data_text)
             categories = self._generate_categories(metadata.get("topics", []))
