@@ -1,11 +1,19 @@
-from typing import Dict, Any, Union
 import time
+from typing import Dict, Any, Union
 
 import logging
 from langfuse.model import PromptClient
-from openai import InternalServerError, APIError
+from openai import APIError
 
 from app.config import langfuse_handler
+from app.constants import (
+    GENERATE_METADATA_PROMPT_NAME,
+    GENERATE_METADATA_PROMPT_LABEL,
+    GENERATE_CYPHER_PROMPT_NAME,
+    GENERATE_CYPHER_PROMPT_LABEL,
+    DOCUMENT_RELATION_INFERENCE_PROMPT_NAME,
+    DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL
+)
 from app.dependencies import chatopenai_client, get_langfuse_prompt
 from app.exceptions.base import ApplicationError
 from app.schemas.meta import (
@@ -15,14 +23,6 @@ from app.schemas.meta import (
     document_relation_tool
 )
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
-from app.constants import (
-    GENERATE_METADATA_PROMPT_NAME,
-    GENERATE_METADATA_PROMPT_LABEL,
-    GENERATE_CYPHER_PROMPT_NAME,
-    GENERATE_CYPHER_PROMPT_LABEL,
-    DOCUMENT_RELATION_INFERENCE_PROMPT_NAME,
-    DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL
-)
 
 
 class LLMResponse:
