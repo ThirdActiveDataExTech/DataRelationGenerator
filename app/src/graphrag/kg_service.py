@@ -13,6 +13,7 @@ class KnowledgeGraphService:
     """neo4j-graphrag-python 기반 Knowledge Graph 서비스"""
 
     def __init__(self, graph_repo: GraphRepository):
+        """Init 매서드 - GraphRepository 및 임베딩 모델 초기화"""
         self.graph_repo = graph_repo
         self.driver = graph_repo.driver
 
