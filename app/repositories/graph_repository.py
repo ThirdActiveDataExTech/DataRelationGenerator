@@ -73,6 +73,25 @@ class GraphRepository:
         """
         self.execute_query(query)
 
+    def create_graph_embedding_index(self, dimensions: int = 128) -> None:
+        """Document 노드의 graph_embedding property에 대한 vector index 생성
+
+        Args:
+            dimensions: 그래프 임베딩 차원 (기본: 128)
+        """
+        query = f"""
+        CREATE VECTOR INDEX graph_embedding_index IF NOT EXISTS
+        FOR (d:Document)
+        ON d.graph_embedding
+        OPTIONS {{
+            indexConfig: {{
+                `vector.dimensions`: {dimensions},
+                `vector.similarity_function`: 'cosine'
+            }}
+        }}
+        """
+        self.execute_query(query)
+
     def find_and_create_similarity_relations(
             self,
             doc_id: str,
