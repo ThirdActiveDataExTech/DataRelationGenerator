@@ -82,6 +82,40 @@ class FallbackPrompts:
     }}
     """
 
+    DOCUMENT_RELATION_INFERENCE: str = """**반드시 infer_document_relations tool을 사용하여 응답할 것.**
+
+당신은 문서 간 의미적 관계를 분석하는 전문가입니다.
+
+새 문서와 그래프 구조 기반으로 찾은 관련 문서들 간의 관계를 분석하세요.
+
+[새 문서]
+ID: {new_doc_id}
+설명: {new_doc_description}
+주제: {new_doc_topics}
+내용: {new_doc_text}
+
+[관련 문서들]
+{related_docs_info}
+
+관계 타입 정의:
+- EXTENDS: 새 문서가 기존 문서의 개념/내용을 확장
+- USES: 새 문서가 기존 문서의 기술/지식/방법론을 활용
+- PREREQUISITE_OF: 기존 문서가 새 문서 이해를 위한 선행 지식
+- COMPARES_WITH: 유사한 주제를 다른 관점에서 비교
+- APPLIES_TO: 새 문서의 개념이 기존 문서의 상황/사례에 적용
+- SAME_DOMAIN: 같은 분야/도메인을 다룸 (공유 Topic/Category 많음)
+
+분석 시 고려사항:
+- 문서 내용의 의미적 관계
+- 공유하는 Topic과 Tag 정보 (shared_topics, shared_tags)
+- 그래프 점수 (graph_score) - 구조적 연관성
+- 관계가 명확하지 않으면 포함하지 않음
+- confidence는 0.0~1.0 사이 값
+
+반드시 infer_document_relations function tool을 호출하여 응답하세요.
+관계가 없으면 빈 배열을 반환하세요.
+"""
+
     @classmethod
     def get_prompt(cls, task: str) -> str:
         """Get fallback prompt by task name."""
@@ -89,6 +123,7 @@ class FallbackPrompts:
             "meta_extract": cls.META_EXTRACT,
             "cypher_generate": cls.CYPHER_GENERATE,
             "category_generate": cls.CATEGORY_GENERATE,
+            "document_relation_inference": cls.DOCUMENT_RELATION_INFERENCE,
         }
 
         if task not in prompt_map:
