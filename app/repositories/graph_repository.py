@@ -61,9 +61,9 @@ class GraphRepository:
     def create_vector_index(self) -> None:
         """Document 노드의 embedding property에 대한 vector index 생성"""
         query = """
-        CREATE VECTOR INDEX document_embedding_index IF NOT EXISTS
+        CREATE VECTOR INDEX text_embedding_index IF NOT EXISTS
         FOR (d:Document)
-        ON d.embedding
+        ON d.text_embedding
         OPTIONS {
             indexConfig: {
                 `vector.dimensions`: 768,
