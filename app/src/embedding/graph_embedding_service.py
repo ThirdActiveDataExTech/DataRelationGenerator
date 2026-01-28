@@ -221,7 +221,7 @@ class GraphEmbeddingService:
                     doc_id = node_props["id"]
                     embedding = row["propertyValue"]
 
-                    if embedding and isinstance(embedding, list):
+                    if embedding is not None and isinstance(embedding, list):
                         embeddings[doc_id] = embedding
 
             logging.info(f"총 {len(embeddings)}개 Document 임베딩 추출 완료")
@@ -256,7 +256,13 @@ class GraphEmbeddingService:
                 # nodeId는 Neo4j internal ID이므로, 실제 id 속성과 매칭해야 함
                 node_props = self._get_node_properties(row["nodeId"])
                 if node_props and node_props.get("id") == doc_id:
-                    return row["propertyValue"]
+                    embedding_value = row["propertyValue"]
+                    # numpy array인 경우 list로 변환
+                    if hasattr(embedding_value, "tolist"):
+                        return embedding_value.tolist()
+                    if isinstance(embedding_value, list):
+                        return embedding_value
+                    return None
 
             return None
 
