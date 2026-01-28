@@ -8,13 +8,20 @@ from openai import InternalServerError, APIError
 from app.config import langfuse_handler
 from app.dependencies import chatopenai_client, get_langfuse_prompt
 from app.exceptions.base import ApplicationError
-from app.schemas.meta import metadata_tool, cypher_tool, category_generation_tool
+from app.schemas.meta import (
+    metadata_tool,
+    cypher_tool,
+    category_generation_tool,
+    document_relation_tool
+)
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 from app.constants import (
     GENERATE_METADATA_PROMPT_NAME,
     GENERATE_METADATA_PROMPT_LABEL,
     GENERATE_CYPHER_PROMPT_NAME,
-    GENERATE_CYPHER_PROMPT_LABEL
+    GENERATE_CYPHER_PROMPT_LABEL,
+    DOCUMENT_RELATION_INFERENCE_PROMPT_NAME,
+    DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL
 )
 
 
@@ -33,6 +40,9 @@ class LLMResponse:
         elif task == "category_generate":
             self.prompt_name = "generate_category"
             self.prompt_label = "production"
+        elif task == "document_relation_inference":
+            self.prompt_name = DOCUMENT_RELATION_INFERENCE_PROMPT_NAME
+            self.prompt_label = DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL
         else:
             self.prompt_name = GENERATE_CYPHER_PROMPT_NAME
             self.prompt_label = GENERATE_CYPHER_PROMPT_LABEL
@@ -88,6 +98,8 @@ class LLMResponse:
             tools = [cypher_tool]
         elif self.task == "category_generate":
             tools = [category_generation_tool]
+        elif self.task == "document_relation_inference":
+            tools = [document_relation_tool]
         else:
             tools = []
 
