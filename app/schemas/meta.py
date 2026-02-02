@@ -34,6 +34,15 @@ class CypherQueryInfo(BaseModel):
 
 TopicRelation = Literal["SIMILAR_TO", "SUBTYPE_OF", "SAME_AS", "BELONGS_TO"]
 
+DocumentRelationType = Literal[
+    "SIMILAR_TO",  # 유사한 내용/주제
+    "CONTRADICTS",  # 상반된 견해
+    "EXTENDS",  # 확장/발전
+    "PREREQUISITE_OF",  # 선행 지식 필요
+    "IMPLEMENTS",  # 이론→실제 구현
+    "CO_OCCURS"  # 그래프 구조상 자주 함께 나타남
+]
+
 
 class TopicCategoryMapping(BaseModel):
     """Topic과 Category 간 매핑 정보"""
@@ -50,6 +59,22 @@ class CategoryInfo(BaseModel):
 class CategoryGenerationResult(BaseModel):
     """카테고리 생성 결과"""
     categories: List[CategoryInfo] = Field(default_factory=list, description="생성된 카테고리 목록")
+
+
+class DocumentRelationInfo(BaseModel):
+    """Document 간 관계 정보"""
+    target_doc_id: str = Field(..., description="관계 대상 문서 ID")
+    relation_type: DocumentRelationType = Field(..., description="관계 타입")
+    reason: str = Field(..., description="관계가 성립하는 이유")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="관계 확신도 (0.0 ~ 1.0)")
+
+
+class DocumentRelationResult(BaseModel):
+    """Document 관계 추론 결과"""
+    relations: List[DocumentRelationInfo] = Field(
+        default_factory=list,
+        description="추출된 Document 간 관계 목록. 관계가 없으면 빈 배열 반환"
+    )
 
 
 Base = declarative_base()
@@ -82,4 +107,10 @@ category_generation_tool = pydantic_function_tool(
     CategoryGenerationResult,
     name="generate_categories",
     description="Topic 목록을 분석하여 의미적으로 묶일 수 있는 상위 Category를 생성합니다."
+)
+
+document_relation_tool = pydantic_function_tool(
+    DocumentRelationResult,
+    name="infer_document_relations",
+    description="새 문서와 기존 유사 문서들 간의 의미적 관계를 추론합니다."
 )

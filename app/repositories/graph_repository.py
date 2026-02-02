@@ -61,9 +61,9 @@ class GraphRepository:
     def create_vector_index(self) -> None:
         """Document 노드의 embedding property에 대한 vector index 생성"""
         query = """
-        CREATE VECTOR INDEX document_embedding_index IF NOT EXISTS
+        CREATE VECTOR INDEX text_embedding_index IF NOT EXISTS
         FOR (d:Document)
-        ON d.embedding
+        ON d.text_embedding
         OPTIONS {
             indexConfig: {
                 `vector.dimensions`: 768,
@@ -73,44 +73,126 @@ class GraphRepository:
         """
         self.execute_query(query)
 
-    def find_and_create_similarity_relations(
-            self,
-            doc_id: str,
-            embedding: List[float],
-            threshold: float = settings.SIMILARITY_THRESHOLD,
-            top_k: int = settings.SIMILARITY_TOP_K
-    ) -> List[Dict[str, Any]]:
-        """
-        Vector search로 유사한 문서를 찾고 SIMILAR_TO 관계 생성
+    def create_graph_embedding_index(self, dimensions: int = 128) -> None:
+        """Document 노드의 graph_embedding property에 대한 vector index 생성
 
         Args:
-            doc_id: 현재 문서 ID
-            embedding: 현재 문서의 embedding 벡터
-            threshold: 유사도 임계값 (0.0 ~ 1.0), None이면 settings에서 가져옴
-            top_k: 최대 관계 생성 개수, None이면 settings에서 가져옴
+            dimensions: 그래프 임베딩 차원 (기본: 128)
+        """
+        query = f"""
+        CREATE VECTOR INDEX graph_embedding_index IF NOT EXISTS
+        FOR (d:Document)
+        ON d.graph_embedding
+        OPTIONS {{
+            indexConfig: {{
+                `vector.dimensions`: {dimensions},
+                `vector.similarity_function`: 'cosine'
+            }}
+        }}
+        """
+        self.execute_query(query)
+
+    def create_document_relations(
+            self,
+            source_doc_id: str,
+            relations: List[Dict[str, Any]]
+    ) -> int:
+        """Document 간 의미적 관계 생성 (중복 방지)
+
+        Args:
+            source_doc_id: 출발 문서 ID
+            relations: 관계 정보 리스트
+                [{
+                    "target_doc_id": "doc_xxx",
+                    "relation_type": "EXTENDS",
+                    "reason": "이유",
+                    "confidence": 0.85
+                }]
 
         Returns:
-            생성된 관계 정보 리스트
+            생성된 관계 개수
         """
+        if not relations:
+            return 0
 
+        # APOC 사용 시도 (MERGE로 중복 방지)
         query = """
-        MATCH (d1:Document {id: $doc_id})
-        WITH d1
-        CALL db.index.vector.queryNodes('document_embedding_index', $top_k, $embedding)
-        YIELD node AS d2, score
-        WHERE d2.id <> $doc_id AND score >= $threshold
-        MERGE (d1)-[r:SIMILAR_TO]->(d2)
-        SET r.similarity_score = score
-        RETURN d2.id AS related_doc_id, score
+        UNWIND $relations AS rel
+        MATCH (source:Document {id: $source_doc_id})
+        MATCH (target:Document {id: rel.target_doc_id})
+        WITH source, target, rel
+        CALL apoc.merge.relationship(
+            source,
+            rel.relation_type,
+            {},
+            {
+                reason: rel.reason,
+                confidence: rel.confidence,
+                updated_at: datetime()
+            },
+            target,
+            {}
+        ) YIELD rel AS created_rel
+        RETURN count(created_rel) as count
         """
 
         parameters = {
-            "doc_id": doc_id,
-            "embedding": embedding,
-            "threshold": threshold,
-            "top_k": top_k
+            "source_doc_id": source_doc_id,
+            "relations": relations
         }
 
-        results = self.execute_query(query, parameters)
-        logging.info(f"Document {doc_id}에 대해 {len(results)}개의 유사도 관계 생성")
-        return results
+        try:
+            results = self.execute_query(query, parameters)
+            count = results[0]["count"] if results else 0
+            logging.info(f"Document {source_doc_id}에 대해 {count}개의 관계 처리 완료")
+            return count
+        except Exception as e:
+            logging.error(f"Document 관계 생성 실패 (APOC): {e}")
+            # APOC이 없을 경우 대체 쿼리 시도
+            return self._create_document_relations_without_apoc(source_doc_id, relations)
+
+    def _create_document_relations_without_apoc(
+            self,
+            source_doc_id: str,
+            relations: List[Dict[str, Any]]
+    ) -> int:
+        """APOC 없이 Document 관계 생성 (동적 관계 타입 대체)
+
+        Args:
+            source_doc_id: 출발 문서 ID
+            relations: 관계 정보 리스트
+
+        Returns:
+            생성된 관계 개수
+        """
+        count = 0
+
+        for rel in relations:
+            relation_type = rel["relation_type"]
+            query = f"""
+            MATCH (source:Document {{id: $source_doc_id}})
+            MATCH (target:Document {{id: $target_doc_id}})
+            MERGE (source)-[r:{relation_type}]->(target)
+            SET r.reason = $reason,
+                r.confidence = $confidence,
+                r.created_at = datetime()
+            RETURN r
+            """
+
+            parameters = {
+                "source_doc_id": source_doc_id,
+                "target_doc_id": rel["target_doc_id"],
+                "reason": rel["reason"],
+                "confidence": rel["confidence"]
+            }
+
+            try:
+                self.execute_query(query, parameters)
+                count += 1
+            except Exception as e:
+                logging.error(
+                    f"관계 생성 실패 ({source_doc_id} -[{relation_type}]-> {rel['target_doc_id']}): {e}"
+                )
+
+        logging.info(f"Document {source_doc_id}에 대해 {count}개의 관계 생성 완료 (APOC 없이)")
+        return count
