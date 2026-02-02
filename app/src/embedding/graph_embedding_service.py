@@ -1,6 +1,7 @@
+import traceback
 from typing import List, Dict, Optional
-import logging
 
+import logging
 from graphdatascience import GraphDataScience
 
 from app.config import settings
@@ -27,10 +28,10 @@ class GraphEmbeddingService:
         logging.info("GraphEmbeddingService 초기화 완료")
 
     def generate_all_graph_embeddings(
-        self,
-        embedding_dim: int = 128,
-        walk_length: int = 80,
-        walks_per_node: int = 10
+            self,
+            embedding_dim: int = 128,
+            walk_length: int = 80,
+            walks_per_node: int = 10
     ) -> Dict[str, List[float]]:
         """전체 그래프에 대해 Node2Vec 실행하여 모든 Document 노드의 임베딩 생성
 
@@ -57,7 +58,7 @@ class GraphEmbeddingService:
             # 3. 관계 projection 설정 (존재하는 것만)
             relationship_projection = {}
 
-            # 기본 관계 (항상 존재)
+            # 메타데이터 관계
             if "HAS_TOPIC" in existing_rel_types:
                 relationship_projection["HAS_TOPIC"] = {"orientation": "UNDIRECTED"}
             if "HAS_TAG" in existing_rel_types:
@@ -65,19 +66,19 @@ class GraphEmbeddingService:
             if "BELONGS_TO" in existing_rel_types:
                 relationship_projection["BELONGS_TO"] = {"orientation": "UNDIRECTED"}
 
-            # 의미적 관계 (Step 3 이후 존재)
+            # Document 간 관계
+            if "SIMILAR_TO" in existing_rel_types:
+                relationship_projection["SIMILAR_TO"] = {"orientation": "UNDIRECTED"}
+            if "CONTRADICTS" in existing_rel_types:
+                relationship_projection["CONTRADICTS"] = {"orientation": "UNDIRECTED"}
             if "EXTENDS" in existing_rel_types:
                 relationship_projection["EXTENDS"] = {"orientation": "NATURAL"}
-            if "USES" in existing_rel_types:
-                relationship_projection["USES"] = {"orientation": "NATURAL"}
             if "PREREQUISITE_OF" in existing_rel_types:
                 relationship_projection["PREREQUISITE_OF"] = {"orientation": "NATURAL"}
-            if "COMPARES_WITH" in existing_rel_types:
-                relationship_projection["COMPARES_WITH"] = {"orientation": "UNDIRECTED"}
-            if "APPLIES_TO" in existing_rel_types:
-                relationship_projection["APPLIES_TO"] = {"orientation": "NATURAL"}
-            if "SAME_DOMAIN" in existing_rel_types:
-                relationship_projection["SAME_DOMAIN"] = {"orientation": "UNDIRECTED"}
+            if "IMPLEMENTS" in existing_rel_types:
+                relationship_projection["IMPLEMENTS"] = {"orientation": "NATURAL"}
+            if "CO_OCCURS" in existing_rel_types:
+                relationship_projection["CO_OCCURS"] = {"orientation": "UNDIRECTED"}
 
             if not relationship_projection:
                 raise ValueError("그래프에 관계가 하나도 없습니다")
@@ -121,49 +122,12 @@ class GraphEmbeddingService:
 
         except Exception as e:
             logging.error(f"전체 그래프 임베딩 생성 중 오류: {e}")
-            import traceback
             logging.error(traceback.format_exc())
-
             # 에러 발생 시 그래프 삭제
             if self._graph_exists(graph_name):
                 self.gds.graph.drop(graph_name)
 
             return {}
-
-    def generate_graph_embedding(
-        self,
-        doc_id: str,
-        embedding_dim: int = 128,
-        walk_length: int = 80,
-        walks_per_node: int = 10
-    ) -> Optional[List[float]]:
-        """특정 Document 노드에 대한 Graph Embedding 생성 (전체 그래프 기반)
-
-        Args:
-            doc_id: Document ID
-            embedding_dim: 임베딩 차원 (기본: 128)
-            walk_length: Random walk 길이 (기본: 80)
-            walks_per_node: 노드당 walk 횟수 (기본: 10)
-
-        Returns:
-            Graph embedding 벡터 또는 None
-
-        Note:
-            개별 문서보다는 generate_all_graph_embeddings() 사용 권장
-        """
-        try:
-            # 전체 그래프 임베딩 생성 후 특정 문서만 추출
-            all_embeddings = self.generate_all_graph_embeddings(
-                embedding_dim=embedding_dim,
-                walk_length=walk_length,
-                walks_per_node=walks_per_node
-            )
-
-            return all_embeddings.get(doc_id)
-
-        except Exception as e:
-            logging.error(f"Graph embedding 생성 중 오류 (doc_id: {doc_id}): {e}")
-            return None
 
     def _graph_exists(self, graph_name: str) -> bool:
         """In-memory graph 존재 여부 확인"""
@@ -232,43 +196,6 @@ class GraphEmbeddingService:
             import traceback
             logging.error(traceback.format_exc())
             return {}
-
-    def _extract_node_embedding(self, graph_name: str, doc_id: str) -> Optional[List[float]]:
-        """In-memory graph에서 특정 노드의 임베딩 추출 (레거시)
-
-        Args:
-            graph_name: In-memory graph 이름
-            doc_id: Document ID
-
-        Returns:
-            임베딩 벡터 또는 None
-        """
-        try:
-            # GDS stream을 사용하여 임베딩 추출
-            result = self.gds.graph.nodeProperty.stream(
-                graph_name,
-                "graph_embedding",
-                ["Document"]
-            )
-
-            # doc_id에 해당하는 노드 찾기
-            for _, row in result.iterrows():
-                # nodeId는 Neo4j internal ID이므로, 실제 id 속성과 매칭해야 함
-                node_props = self._get_node_properties(row["nodeId"])
-                if node_props and node_props.get("id") == doc_id:
-                    embedding_value = row["propertyValue"]
-                    # numpy array인 경우 list로 변환
-                    if hasattr(embedding_value, "tolist"):
-                        return embedding_value.tolist()
-                    if isinstance(embedding_value, list):
-                        return embedding_value
-                    return None
-
-            return None
-
-        except Exception as e:
-            logging.error(f"임베딩 추출 실패 (graph: {graph_name}, doc_id: {doc_id}): {e}")
-            return None
 
     def _get_node_properties(self, node_id: int) -> Optional[Dict]:
         """Neo4j internal ID로 노드 속성 조회

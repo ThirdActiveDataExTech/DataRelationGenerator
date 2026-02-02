@@ -126,6 +126,12 @@ def index():
     return RedirectResponse('/docs')
 
 
+@app.get("/api/config", include_in_schema=False)
+async def get_config():
+    """Frontend config 제공"""
+    return {"x_token": settings.X_TOKEN}
+
+
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
     return get_swagger_ui_html(

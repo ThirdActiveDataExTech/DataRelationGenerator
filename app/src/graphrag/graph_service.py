@@ -6,6 +6,7 @@ import logging
 from app.exceptions.base import ApplicationError
 from app.repositories.graph_repository import GraphRepository
 from app.src.embedding.graph_embedding_service import GraphEmbeddingService
+from app.src.graphrag.graphrag_service import GraphRAGService
 from app.src.graphrag.kg_service import KnowledgeGraphService
 from app.src.meta_extract.llm_response import LLMResponse
 
@@ -27,6 +28,11 @@ class GraphService:
     def graph_embedding_service(self) -> GraphEmbeddingService:
         """Lazy initialization: Graph Embedding 서비스"""
         return GraphEmbeddingService(graph_repo=self.graph_repo)
+
+    @cached_property
+    def graphrag_service(self) -> GraphRAGService:
+        """Lazy initialization: GraphRAG 서비스"""
+        return GraphRAGService(graph_repo=self.graph_repo)
 
     def check_graph_embedding_exists(self, doc_id: str) -> bool:
         """Document에 graph_embedding이 있는지 확인"""
@@ -195,12 +201,20 @@ class GraphService:
             )
 
     def _get_target_documents(self, doc_id: str = None) -> List[Dict[str, str]]:
-        """분석 대상 문서 조회"""
+        """분석 대상 문서 조회 (이미 관계가 있는 문서 제외)"""
         if doc_id:
+            # 특정 문서 지정 시: 해당 문서만 (이미 관계가 있어도 재분석)
             query = "MATCH (d:Document {id: $doc_id}) RETURN d.id as doc_id, d.text as text"
             return self.graph_repo.execute_query(query, {"doc_id": doc_id})
         else:
-            query = "MATCH (d:Document) RETURN d.id as doc_id, d.text as text"
+            # 전체 문서 분석 시: 아직 outgoing 관계가 없는 문서만
+            query = """
+            MATCH (d:Document)
+            WHERE NOT EXISTS {
+                MATCH (d)-[r:SIMILAR_TO|CONTRADICTS|EXTENDS|PREREQUISITE_OF|IMPLEMENTS|CO_OCCURS]->(:Document)
+            }
+            RETURN d.id as doc_id, d.text as text
+            """
             return self.graph_repo.execute_query(query)
 
     def _analyze_single_document(
@@ -231,8 +245,20 @@ class GraphService:
                 "related_docs_found": 0
             }
 
+        doc_ids_debug = []
+        for d in related_docs:
+            if isinstance(d, dict) and 'doc_id' in d:
+                doc_ids_debug.append(d['doc_id'])
+            else:
+                doc_ids_debug.append(f"INVALID:{type(d).__name__}")
+        logging.info(f"{doc_id}: 검색된 관련 문서 {len(related_docs)}개 - {doc_ids_debug}")
+
         metadata = self._get_document_metadata(doc_id)
         relations = self._infer_document_relations(doc_id, doc_text, metadata, related_docs)
+
+        logging.info(f"{doc_id}: LLM이 추론한 관계 {len(relations)}개")
+        for rel in relations:
+            logging.info(f"  -> {rel.get('target_doc_id')}: {rel.get('relation_type')}")
 
         created_count = 0
         if relations:
@@ -272,18 +298,77 @@ class GraphService:
             metadata: Dict[str, Any],
             related_docs: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """LLM으로 Document 간 관계 추론"""
+        """LLM으로 Document 간 관계 추론 (각 문서 쌍 1:1로 처리)"""
         if not related_docs:
             logging.info(f"Document {doc_id}: 관련 문서 없음")
             return []
+
+        # 중복 제거: doc_id 기준으로
+        seen_doc_ids = set()
+        unique_related_docs = []
+        for doc in related_docs:
+            related_doc_id = doc.get("doc_id")
+            if related_doc_id and related_doc_id not in seen_doc_ids:
+                seen_doc_ids.add(related_doc_id)
+                unique_related_docs.append(doc)
+            else:
+                logging.warning(f"중복 관련 문서 제거: {related_doc_id}")
+
+        logging.info(f"Document {doc_id}: 중복 제거 후 {len(unique_related_docs)}개 문서 처리")
+
+        all_relations = []
+
+        for related_doc in unique_related_docs:
+            # 각 관련 문서와 1:1 관계 추론
+            relation = self._infer_single_relation(
+                doc_id=doc_id,
+                doc_text=doc_text,
+                metadata=metadata,
+                related_doc=related_doc
+            )
+
+            if relation:
+                all_relations.append(relation)
+
+        logging.info(f"Document {doc_id}: 총 {len(all_relations)}개 관계 추출")
+        return all_relations
+
+    def _infer_single_relation(
+            self,
+            doc_id: str,
+            doc_text: str,
+            metadata: Dict[str, Any],
+            related_doc: Dict[str, Any]
+    ) -> Dict[str, Any] | None:
+        """단일 문서 쌍에 대한 관계 추론"""
+        # 관련 문서 ID 확인
+        related_doc_id = related_doc.get("doc_id", "unknown")
+
+        # 자기 자신과의 비교 방지 (최종 안전장치)
+        if related_doc_id == doc_id:
+            logging.warning(f"자기 자신과의 관계 추론 시도 방지: {doc_id}")
+            return None
 
         variables = {
             "new_doc_id": doc_id,
             "new_doc_description": metadata.get("description", ""),
             "new_doc_topics": ", ".join(metadata.get("topics", [])),
             "new_doc_text": doc_text[:1000],
-            "related_docs_info": self._format_related_docs(related_docs)
+            "related_doc_id": related_doc_id,
+            "related_doc_description": related_doc.get("description", "N/A"),
+            "related_doc_topics": ", ".join(related_doc.get("shared_topics", [])),
+            "related_doc_tags": ", ".join(related_doc.get("shared_tags", [])),
+            "graph_score": related_doc.get("graph_score", 0),
+            "related_doc_text": related_doc.get("text", "")[:500]
         }
+
+        # 디버그: 프롬프트 변수 확인
+        logging.debug(
+            f"관계 추론 변수: {doc_id} -> {related_doc_id} | "
+            f"Topics: {variables['related_doc_topics'][:50] if variables['related_doc_topics'] else '없음'} | "
+            f"Tags: {variables['related_doc_tags'][:50] if variables['related_doc_tags'] else '없음'} | "
+            f"Graph Score: {variables['graph_score']}"
+        )
 
         result = LLMResponse("document_relation_inference").generate_llm_response(
             variables=variables
@@ -291,28 +376,18 @@ class GraphService:
 
         if not isinstance(result, dict):
             logging.warning(f"관계 추론 결과가 dict가 아님: {type(result).__name__}")
-            return []
+            return None
 
         relations = result.get("relations", [])
-        logging.info(f"Document {doc_id}: 관계 {len(relations)}개 추출")
 
-        return relations
+        # 단일 문서 쌍이므로 관계가 있으면 첫 번째 것만 반환
+        if relations and len(relations) > 0:
+            return relations[0]
 
-    @staticmethod
-    def _format_related_docs(related_docs: List[Dict[str, Any]]) -> str:
-        """관련 문서를 LLM 프롬프트용 텍스트로 포맷팅"""
-        formatted = [
-            f"""[Document {idx}]
-ID: {doc.get('doc_id', 'unknown')}
-설명: {doc.get('description', 'N/A')}
-공유 Topic: {', '.join(doc.get('shared_topics', []))}
-공유 Tag: {', '.join(doc.get('shared_tags', []))}
-Graph Score: {doc.get('graph_score', 0)}
-내용: {doc.get('text', '')[:300]}..."""
-            for idx, doc in enumerate(related_docs, 1)
-        ]
-        return "\n\n".join(formatted)
+        return None
 
+
+# TODO: 이 내용 어떻게 전달할지 더 고민해보기
 
 # 싱글톤 인스턴스
 graph_service = GraphService()
