@@ -30,10 +30,13 @@ def get_session() -> Generator[Session, None, None]:
 @lru_cache(maxsize=1)
 def get_openai_client() -> OpenAI:
     return openai.get_client()
+
+
 @lru_cache(maxsize=1)
 def get_chatopenai_client() -> ChatOpenAI:
     """Langchain OpenAI 클라이언트 생성 및 도구 바인딩"""
     return openai.get_chat_client()
+
 
 @lru_cache(maxsize=3)
 def get_langfuse_prompt(prompt_name: str, prompt_label: str) -> PromptClient | None:
