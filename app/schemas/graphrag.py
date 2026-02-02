@@ -1,7 +1,7 @@
 """neo4j-graphrag-python Knowledge Graph 스키마 정의"""
 from typing import Dict, Any, List, Tuple
-from neo4j_graphrag.experimental.components.schema import NodeType, RelationshipType
 
+from neo4j_graphrag.experimental.components.schema import NodeType, RelationshipType
 
 # Node 타입 정의
 KG_NODE_TYPES: List[NodeType] = [
@@ -30,21 +30,28 @@ KG_NODE_TYPES: List[NodeType] = [
     )
 ]
 
-
 # Relationship 타입 정의
 KG_RELATIONSHIP_TYPES: List[RelationshipType] = [
-    # Document 간 의미적 관계 (LLM이 판단)
+    # ========== Document 간 의미적 관계 ==========
     RelationshipType(
-        label="EXTENDS",
-        description="Document extends or builds upon concepts from another document",
+        label="SIMILAR_TO",
+        description="Documents discuss similar concepts, topics, or share comparable content",
         properties=[
             {"name": "reason", "type": "STRING"},
             {"name": "confidence", "type": "FLOAT"}
         ]
     ),
     RelationshipType(
-        label="USES",
-        description="Document uses or references another document",
+        label="CONTRADICTS",
+        description="Documents present conflicting or opposing views on the same subject",
+        properties=[
+            {"name": "reason", "type": "STRING"},
+            {"name": "confidence", "type": "FLOAT"}
+        ]
+    ),
+    RelationshipType(
+        label="EXTENDS",
+        description="Document extends, elaborates, or develops concepts from another document",
         properties=[
             {"name": "reason", "type": "STRING"},
             {"name": "confidence", "type": "FLOAT"}
@@ -52,37 +59,31 @@ KG_RELATIONSHIP_TYPES: List[RelationshipType] = [
     ),
     RelationshipType(
         label="PREREQUISITE_OF",
-        description="Document is a prerequisite for understanding another document",
+        description="Document contains prerequisite knowledge required to understand another document",
         properties=[
             {"name": "reason", "type": "STRING"},
             {"name": "confidence", "type": "FLOAT"}
         ]
     ),
     RelationshipType(
-        label="COMPARES_WITH",
-        description="Document compares or contrasts with another document",
+        label="IMPLEMENTS",
+        description="Document implements or applies theories, concepts, or plans from another document",
         properties=[
             {"name": "reason", "type": "STRING"},
             {"name": "confidence", "type": "FLOAT"}
         ]
     ),
     RelationshipType(
-        label="APPLIES_TO",
-        description="Concepts in document apply to situations in another document",
+        label="CO_OCCURS",
+        description="Documents frequently appear together in graph structure (shared topics, tags, connections)",
         properties=[
             {"name": "reason", "type": "STRING"},
-            {"name": "confidence", "type": "FLOAT"}
+            {"name": "confidence", "type": "FLOAT"},
+            {"name": "graph_score", "type": "FLOAT"}
         ]
     ),
-    RelationshipType(
-        label="SAME_DOMAIN",
-        description="Documents discuss the same domain or field",
-        properties=[
-            {"name": "reason", "type": "STRING"},
-            {"name": "confidence", "type": "FLOAT"}
-        ]
-    ),
-    # Document와 메타데이터 간 관계
+
+    # ========== Document와 메타데이터 간 관계 ==========
     RelationshipType(
         label="HAS_TOPIC",
         description="Document belongs to a topic"
@@ -93,19 +94,19 @@ KG_RELATIONSHIP_TYPES: List[RelationshipType] = [
     )
 ]
 
-
 # 허용 패턴 정의
 KG_PATTERNS: List[Tuple[str, str, str]] = [
+    # Document 간 관계
+    ("Document", "SIMILAR_TO", "Document"),
+    ("Document", "CONTRADICTS", "Document"),
     ("Document", "EXTENDS", "Document"),
-    ("Document", "USES", "Document"),
     ("Document", "PREREQUISITE_OF", "Document"),
-    ("Document", "COMPARES_WITH", "Document"),
-    ("Document", "APPLIES_TO", "Document"),
-    ("Document", "SAME_DOMAIN", "Document"),
+    ("Document", "IMPLEMENTS", "Document"),
+    ("Document", "CO_OCCURS", "Document"),
+    # 메타데이터 관계
     ("Document", "HAS_TOPIC", "Topic"),
     ("Document", "HAS_TAG", "Tag")
 ]
-
 
 # SimpleKGPipeline에서 사용할 전체 스키마
 KG_SCHEMA: Dict[str, Any] = {

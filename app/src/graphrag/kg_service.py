@@ -42,6 +42,8 @@ class KnowledgeGraphService:
                 doc_id, text_results, graph_embedding_scores, text_weight, graph_weight
             )
 
+            logging.info(f"결합된 결과: {len(combined_results)}개 고유 문서")
+
             if use_graph_structure:
                 self._add_graph_structure_info(doc_id, combined_results)
 
@@ -51,7 +53,20 @@ class KnowledgeGraphService:
                 reverse=True
             )[:top_k]
 
+            logging.info(f"정렬 후 상위 {top_k}개 선택: {len(sorted_results)}개")
+
+            # 중복 제거 확인
+            unique_doc_ids = set(r["doc_id"] for r in sorted_results)
+            if len(unique_doc_ids) != len(sorted_results):
+                logging.warning(f"중복 문서 발견! 전체: {len(sorted_results)}, 고유: {len(unique_doc_ids)}")
+                # 중복 제거
+                seen = set()
+                sorted_results = [r for r in sorted_results if r["doc_id"] not in seen and not seen.add(r["doc_id"])]
+
             related_docs = self._enrich_with_document_info(sorted_results)
+
+            # 자기 자신 제거 (최종 안전장치)
+            related_docs = [doc for doc in related_docs if doc["doc_id"] != doc_id]
 
             logging.info(f"하이브리드 검색 완료: {len(related_docs)}개 (doc_id: {doc_id})")
 
@@ -123,7 +138,7 @@ class KnowledgeGraphService:
             combined_results[candidate_id]["graph_score"] = graph_data["graph_score"]
 
     def _enrich_with_document_info(self, sorted_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """문서 상세 정보 추가"""
+        """문서 상세 정보 추가 (필요한 필드만 선택)"""
         related_docs = []
         for result in sorted_results:
             doc_info = self.graph_repo.execute_query(
@@ -131,25 +146,48 @@ class KnowledgeGraphService:
                 {'doc_id': result["doc_id"]}
             )
 
+            # 필요한 필드만 명시적으로 선택 (임베딩 등 불필요한 데이터 제외)
             related_docs.append({
-                **result,
+                "doc_id": result["doc_id"],
                 "text": doc_info[0]["text"] if doc_info else "",
-                "description": doc_info[0]["description"] if doc_info else ""
+                "description": doc_info[0]["description"] if doc_info else "",
+                "shared_topics": result.get("shared_topics", []),
+                "shared_tags": result.get("shared_tags", []),
+                "graph_score": result.get("graph_score", 0),
+                "combined_score": result.get("combined_score", 0),
+                "text_score": result.get("text_score", 0),
+                "graph_embedding_score": result.get("graph_embedding_score", 0)
             })
 
         return related_docs
 
     @staticmethod
     def _extract_doc_id(content) -> str | None:
-        """content에서 doc_id 추출"""
+        """content에서 doc_id 추출 (문자열만 반환, 파싱 실패 시 None)"""
         if isinstance(content, str):
             try:
+                # ast.literal_eval로 dict 파싱 시도
                 content_dict = ast.literal_eval(content)
-                return content_dict.get("id")
-            except Exception:
-                return content
+                if isinstance(content_dict, dict):
+                    doc_id = content_dict.get("id")
+                    if isinstance(doc_id, str):
+                        return doc_id
+                    logging.warning(f"추출된 doc_id가 문자열이 아님: {type(doc_id).__name__}")
+                return None
+            except (ValueError, SyntaxError) as e:
+                # Neo4j DateTime 등 특수 타입 때문에 파싱 실패 시 정규식으로 id 추출 시도
+                import re
+                match = re.search(r"'id':\s*'([^']+)'", content)
+                if match:
+                    return match.group(1)
+                logging.warning(f"content 파싱 실패, id 추출 불가: {str(e)[:100]}")
+                return None
         elif isinstance(content, dict):
-            return content.get("id")
+            doc_id = content.get("id")
+            if isinstance(doc_id, str):
+                return doc_id
+            logging.warning(f"dict에서 추출된 doc_id가 문자열이 아님: {type(doc_id).__name__}")
+            return None
         return None
 
     def _search_by_graph_embedding(self, doc_id: str, top_k: int = 50) -> Dict[str, float]:

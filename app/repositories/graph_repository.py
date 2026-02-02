@@ -97,7 +97,7 @@ class GraphRepository:
             source_doc_id: str,
             relations: List[Dict[str, Any]]
     ) -> int:
-        """Document 간 의미적 관계 생성
+        """Document 간 의미적 관계 생성 (중복 방지)
 
         Args:
             source_doc_id: 출발 문서 ID
@@ -115,20 +115,23 @@ class GraphRepository:
         if not relations:
             return 0
 
+        # APOC 사용 시도 (MERGE로 중복 방지)
         query = """
         UNWIND $relations AS rel
         MATCH (source:Document {id: $source_doc_id})
         MATCH (target:Document {id: rel.target_doc_id})
         WITH source, target, rel
-        CALL apoc.create.relationship(
+        CALL apoc.merge.relationship(
             source,
             rel.relation_type,
+            {},
             {
                 reason: rel.reason,
                 confidence: rel.confidence,
-                created_at: datetime()
+                updated_at: datetime()
             },
-            target
+            target,
+            {}
         ) YIELD rel AS created_rel
         RETURN count(created_rel) as count
         """
@@ -141,10 +144,10 @@ class GraphRepository:
         try:
             results = self.execute_query(query, parameters)
             count = results[0]["count"] if results else 0
-            logging.info(f"Document {source_doc_id}에 대해 {count}개의 관계 생성 완료")
+            logging.info(f"Document {source_doc_id}에 대해 {count}개의 관계 처리 완료")
             return count
         except Exception as e:
-            logging.error(f"Document 관계 생성 실패: {e}")
+            logging.error(f"Document 관계 생성 실패 (APOC): {e}")
             # APOC이 없을 경우 대체 쿼리 시도
             return self._create_document_relations_without_apoc(source_doc_id, relations)
 

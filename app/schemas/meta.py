@@ -34,7 +34,14 @@ class CypherQueryInfo(BaseModel):
 
 TopicRelation = Literal["SIMILAR_TO", "SUBTYPE_OF", "SAME_AS", "BELONGS_TO"]
 
-DocumentRelationType = Literal["EXTENDS", "USES", "PREREQUISITE_OF", "COMPARES_WITH", "APPLIES_TO", "SAME_DOMAIN"]
+DocumentRelationType = Literal[
+    "SIMILAR_TO",  # 유사한 내용/주제
+    "CONTRADICTS",  # 상반된 견해
+    "EXTENDS",  # 확장/발전
+    "PREREQUISITE_OF",  # 선행 지식 필요
+    "IMPLEMENTS",  # 이론→실제 구현
+    "CO_OCCURS"  # 그래프 구조상 자주 함께 나타남
+]
 
 
 class TopicCategoryMapping(BaseModel):
