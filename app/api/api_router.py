@@ -8,4 +8,3 @@ api_router = APIRouter(dependencies=[Depends(get_token_header)], default_respons
 
 api_router.include_router(meta_extract.router)
 api_router.include_router(graph.router)
-api_router.include_router(invoke.router)
