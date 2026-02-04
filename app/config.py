@@ -95,27 +95,21 @@ class Settings(BaseSettings):
     # DB Config
     SQLITE_FILE_NAME: str = "database.db"
     # llm config
-    MAIN_MODEL_NAME: str = "claude"
-    API_KEY: str = "claude-api-key"
-    BASE_URL: str = "http://litellme.base.url"
+    MAIN_MODEL_NAME: str = "wise-lloa"
     FALLBACK_MODEL_LIST: List[str] = ["claude", "gpt"]
-    CLAUDE_MODEL_NAME: str = "claude"
+    CLAUDE_MODEL_NAME: str = "claude-3-7-sonnet"
     CLAUDE_API_KEY: str = "sk-..."
-    LITE_LLM_BASE_URL: str = "https://..."
+    LITE_LLM_BASE_URL: str = "http://litellme.base.url"
 
     # Langfuse Config
-    LANGFUSE_SECRET_KEY: str = "sk-lf-79919ab7-8fd0-4555-b92f-b2b195190a0c"
-    LANGFUSE_PUBLIC_KEY: str = "pk-lf-c8e507fe-262a-4fed-ba0d-14d169b4b3a1"
-    LANGFUSE_HOST: str = "http://web.langfuse.dev.cluster.wisenut"
+    LANGFUSE_SECRET_KEY: str = "sk-lf..."
+    LANGFUSE_PUBLIC_KEY: str = "pk-lf..."
+    LANGFUSE_HOST: str = "http://web.langfuse"
 
     # Neo4j Config
     NEO4J_URI: str = "bolt://localhost:7687"
     NEO4J_USER: str = "neo4j"
     NEO4J_PASSWORD: str = "password"
-
-    # Fallback Models Config
-    FALLBACK_MODEL_LIST: List[str] = ["wise-model-32b", "wise-next-80b",
-                                      "bedrock/apac.anthropic.claude-sonnet-4-20250514-v1:0"]
 
     # MCP Server Config
     NEO4J_TRANSPORT: str = "http"
