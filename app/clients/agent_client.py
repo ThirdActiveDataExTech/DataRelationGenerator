@@ -13,8 +13,8 @@ class LLMClient:
         """LLM 클라이언트 초기화"""
         self.primary_model = ChatOpenAI(
             model=settings.MAIN_MODEL_NAME,
-            api_key=settings.API_KEY,
-            base_url=settings.BASE_URL,
+            api_key=settings.CLAUDE_API_KEY,
+            base_url=settings.LITE_LLM_BASE_URL,
             temperature=0.0
         )
 
@@ -38,8 +38,8 @@ class LLMClient:
             try:
                 model = ChatOpenAI(
                     model=model_name,
-                    api_key=settings.API_KEY,
-                    base_url=settings.BASE_URL,
+                    api_key=settings.CLAUDE_API_KEY,
+                    base_url=settings.LITE_LLM_BASE_URL,
                     temperature=0.0
                 )
                 fallback_models.append(model)
