@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: Annotated[Union[List[AnyUrl], str], BeforeValidator(parse_cors)] = []
 
     # Service Config
-    X_TOKEN: str = "wisenut"
+    X_TOKEN: str = ""
     # DB Config
     SQLITE_FILE_NAME: str = "database.db"
     # llm config
