@@ -313,30 +313,25 @@ class GraphService:
             logging.info(f"Document {doc_id}: 관련 문서 없음")
             return []
 
-        seen = set()
-        unique_related_docs = [
-            doc for doc in related_docs
-            if doc.get("doc_id") and doc["doc_id"] not in seen and not seen.add(doc["doc_id"])
-        ]
-
+        unique_related_docs = self._deduplicate_related_docs(related_docs)
         logging.info(f"Document {doc_id}: 중복 제거 후 {len(unique_related_docs)}개 문서 처리")
 
-        all_relations = []
-
-        for related_doc in unique_related_docs:
-            # 각 관련 문서와 1:1 관계 추론
-            relation = self._infer_single_relation(
-                doc_id=doc_id,
-                doc_text=doc_text,
-                metadata=metadata,
-                related_doc=related_doc
-            )
-
-            if relation:
-                all_relations.append(relation)
+        all_relations = [
+            relation for related_doc in unique_related_docs
+            if (relation := self._infer_single_relation(doc_id, doc_text, metadata, related_doc))
+        ]
 
         logging.info(f"Document {doc_id}: 총 {len(all_relations)}개 관계 추출")
         return all_relations
+
+    @staticmethod
+    def _deduplicate_related_docs(related_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """관련 문서 목록에서 중복 제거"""
+        seen = set()
+        return [
+            doc for doc in related_docs
+            if doc.get("doc_id") and doc["doc_id"] not in seen and not seen.add(doc["doc_id"])
+        ]
 
     def _infer_single_relation(
             self,
@@ -350,24 +345,8 @@ class GraphService:
         if related_doc_id == doc_id:
             return None
 
-        variables = {
-            "new_doc_id": doc_id,
-            "new_doc_description": metadata.get("description", ""),
-            "new_doc_topics": ", ".join(metadata.get("topics", [])),
-            "new_doc_text": doc_text[:1000],
-            "related_doc_id": related_doc_id,
-            "related_doc_description": related_doc.get("description", "N/A"),
-            "related_doc_topics": ", ".join(related_doc.get("shared_topics", [])),
-            "related_doc_tags": ", ".join(related_doc.get("shared_tags", [])),
-            "graph_score": related_doc.get("graph_score", 0),
-            "related_doc_text": related_doc.get("text", "")[:500]
-        }
-
-        logging.debug(
-            f"관계 추론 변수: {doc_id} -> {related_doc_id} | "
-            f"Topics: {variables['related_doc_topics'][:50] if variables['related_doc_topics'] else '없음'} | "
-            f"Tags: {variables['related_doc_tags'][:50] if variables['related_doc_tags'] else '없음'} | "
-            f"Graph Score: {variables['graph_score']}"
+        variables = self._build_relation_inference_variables(
+            doc_id, doc_text, metadata, related_doc_id, related_doc
         )
 
         result = LLMResponse("document_relation_inference").generate_llm_response(
@@ -380,6 +359,28 @@ class GraphService:
 
         relations = result.get("relations", [])
         return relations[0] if relations else None
+
+    @staticmethod
+    def _build_relation_inference_variables(
+            doc_id: str,
+            doc_text: str,
+            metadata: Dict[str, Any],
+            related_doc_id: str,
+            related_doc: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """관계 추론을 위한 LLM 입력 변수 구성"""
+        return {
+            "new_doc_id": doc_id,
+            "new_doc_description": metadata.get("description", ""),
+            "new_doc_topics": ", ".join(metadata.get("topics", [])),
+            "new_doc_text": doc_text[:1000],
+            "related_doc_id": related_doc_id,
+            "related_doc_description": related_doc.get("description", "N/A"),
+            "related_doc_topics": ", ".join(related_doc.get("shared_topics", [])),
+            "related_doc_tags": ", ".join(related_doc.get("shared_tags", [])),
+            "graph_score": related_doc.get("graph_score", 0),
+            "related_doc_text": related_doc.get("text", "")[:500]
+        }
 
 
 # 싱글톤 인스턴스
