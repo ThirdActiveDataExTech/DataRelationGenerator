@@ -3,6 +3,7 @@ from functools import cached_property
 from typing import Dict, Any, List
 
 import logging
+from neo4j.exceptions import ServiceUnavailable, ClientError
 
 from app.exceptions.base import ApplicationError
 from app.repositories.graph_repository import GraphRepository
@@ -112,10 +113,14 @@ class MetadataService:
             except json.JSONDecodeError as e:
                 logging.error(f"[{idx}/{len(lines)}] JSON 파싱 실패: {e}")
                 errors.append({"line": idx, "error": f"JSON 파싱 실패: {str(e)}"})
-            except Exception as e:
-                logging.error(f"[{idx}/{len(lines)}] 처리 실패: {e}")
-                import traceback
-                logging.error(traceback.format_exc())
+            except ApplicationError as e:
+                logging.exception(f"[{idx}/{len(lines)}] 처리 실패 (비즈니스 로직 오류)")
+                errors.append({"line": idx, "error": str(e.message)})
+            except (ServiceUnavailable, ClientError) as e:
+                logging.exception(f"[{idx}/{len(lines)}] 처리 실패 (DB 오류)")
+                errors.append({"line": idx, "error": f"DB 오류: {str(e)}"})
+            except (ValueError, KeyError, AttributeError, RuntimeError) as e:
+                logging.exception(f"[{idx}/{len(lines)}] 처리 실패 (데이터 처리 오류)")
                 errors.append({"line": idx, "error": str(e)})
 
         logging.info(f"배치 처리 완료: 성공 {success_count}개, 실패 {len(errors)}개")

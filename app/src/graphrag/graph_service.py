@@ -3,6 +3,8 @@ from typing import Dict, Any, List
 
 import logging
 
+from neo4j.exceptions import ServiceUnavailable, ClientError
+
 from app.exceptions.base import ApplicationError
 from app.repositories.graph_repository import GraphRepository
 from app.src.embedding.graph_embedding_service import GraphEmbeddingService
@@ -80,8 +82,15 @@ class GraphService:
                 "errors": result["errors"][:10]
             }
 
-        except Exception as e:
-            logging.error(f"그래프 임베딩 일괄 생성 실패: {e}")
+        except (ServiceUnavailable, ClientError) as e:
+            logging.exception(f"그래프 임베딩 일괄 생성 실패 (DB 오류)")
+            raise ApplicationError(
+                code=500,
+                message="그래프 임베딩 생성에 실패했습니다 (DB 연결 문제)",
+                result={"error": str(e)}
+            )
+        except (ValueError, KeyError, AttributeError, RuntimeError) as e:
+            logging.exception(f"그래프 임베딩 일괄 생성 실패 (데이터 처리 오류)")
             raise ApplicationError(
                 code=500,
                 message="그래프 임베딩 생성에 실패했습니다.",
@@ -138,10 +147,10 @@ class GraphService:
                 else:
                     failed_count += 1
                     errors.append({"doc_id": doc_id, "error": "임베딩 생성되지 않음"})
-            except Exception as e:
+            except (ServiceUnavailable, ClientError, ValueError, KeyError) as e:
                 failed_count += 1
                 errors.append({"doc_id": doc_id, "error": str(e)})
-                logging.error(f"Document {doc_id} 임베딩 업데이트 실패: {e}")
+                logging.exception(f"Document {doc_id} 임베딩 업데이트 실패")
 
         return {
             "total": len(doc_ids),
@@ -192,8 +201,15 @@ class GraphService:
                 "results": results[:10]
             }
 
-        except Exception as e:
-            logging.error(f"관계 분석 실패: {e}")
+        except (ServiceUnavailable, ClientError) as e:
+            logging.exception(f"관계 분석 실패 (DB 오류)")
+            raise ApplicationError(
+                code=500,
+                message="관계 분석에 실패했습니다 (DB 연결 문제)",
+                result={"error": str(e)}
+            )
+        except (ValueError, KeyError, AttributeError, RuntimeError) as e:
+            logging.exception(f"관계 분석 실패 (데이터 처리 오류)")
             raise ApplicationError(
                 code=500,
                 message="관계 분석에 실패했습니다.",

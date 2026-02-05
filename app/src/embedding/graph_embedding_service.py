@@ -1,8 +1,8 @@
-import traceback
 from typing import List, Dict, Optional
 
 import logging
 from graphdatascience import GraphDataScience
+from neo4j.exceptions import ServiceUnavailable, ClientError
 
 from app.config import settings
 from app.repositories.graph_repository import GraphRepository
@@ -120,13 +120,15 @@ class GraphEmbeddingService:
 
             return embeddings
 
-        except Exception as e:
-            logging.error(f"전체 그래프 임베딩 생성 중 오류: {e}")
-            logging.error(traceback.format_exc())
-            # 에러 발생 시 그래프 삭제
+        except (ServiceUnavailable, ClientError) as e:
+            logging.exception(f"전체 그래프 임베딩 생성 중 DB 오류")
             if self._graph_exists(graph_name):
                 self.gds.graph.drop(graph_name)
-
+            return {}
+        except (ValueError, RuntimeError, KeyError) as e:
+            logging.exception(f"전체 그래프 임베딩 생성 중 처리 오류")
+            if self._graph_exists(graph_name):
+                self.gds.graph.drop(graph_name)
             return {}
 
     def _graph_exists(self, graph_name: str) -> bool:
@@ -134,7 +136,7 @@ class GraphEmbeddingService:
         try:
             graphs = self.gds.graph.list()
             return graph_name in graphs["graphName"].values
-        except Exception:
+        except (ValueError, KeyError, AttributeError):
             return False
 
     def _get_existing_relationship_types(self) -> list:
@@ -155,8 +157,8 @@ class GraphEmbeddingService:
 
             return []
 
-        except Exception as e:
-            logging.error(f"관계 타입 조회 실패: {e}")
+        except (ServiceUnavailable, ClientError) as e:
+            logging.exception(f"관계 타입 조회 실패 (DB 오류)")
             return []
 
     def _extract_all_document_embeddings(self, G) -> Dict[str, List[float]]:
@@ -191,10 +193,8 @@ class GraphEmbeddingService:
             logging.info(f"총 {len(embeddings)}개 Document 임베딩 추출 완료")
             return embeddings
 
-        except Exception as e:
-            logging.error(f"임베딩 추출 실패: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
+        except (ValueError, KeyError, AttributeError, RuntimeError) as e:
+            logging.exception(f"임베딩 추출 실패")
             return {}
 
     def _get_node_properties(self, node_id: int) -> Optional[Dict]:

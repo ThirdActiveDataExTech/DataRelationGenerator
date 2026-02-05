@@ -16,6 +16,7 @@ from neo4j_graphrag.retrievers import VectorRetriever
 
 from app.config import settings
 from app.repositories.graph_repository import GraphRepository
+from app.exceptions.graphrag import handle_graph_error
 
 
 class GraphRAGService:
@@ -114,26 +115,8 @@ class GraphRAGService:
                 "graph": graph
             }
 
-        except (ServiceUnavailable, TransientError) as e:
-            logging.exception(f"Graph RAG 검색 실패 (연결 오류): {e}")
-            return {
-                "query": query,
-                "documents": [],
-                "common_metadata": {"categories": [], "common_tags": []},
-                "graph": {"nodes": [], "relationships": []},
-                "error": str(e)
-            }
-        except ClientError as e:
-            logging.exception(f"Graph RAG 검색 실패 (쿼리 오류): {e}")
-            return {
-                "query": query,
-                "documents": [],
-                "common_metadata": {"categories": [], "common_tags": []},
-                "graph": {"nodes": [], "relationships": []},
-                "error": str(e)
-            }
-        except (ValueError, KeyError, AttributeError) as e:
-            logging.exception(f"Graph RAG 검색 실패 (데이터 처리 오류): {e}")
+        except (ServiceUnavailable, TransientError, ClientError, ValueError, KeyError, AttributeError) as e:
+            handle_graph_error(e, "Graph RAG 검색")
             return {
                 "query": query,
                 "documents": [],
@@ -202,11 +185,8 @@ class GraphRAGService:
             logging.info(f"Document 검색 완료: {len(documents)}개")
             return documents
 
-        except (ServiceUnavailable, ClientError) as e:
-            logging.exception(f"Document 검색 실패 (DB 오류): {e}")
-            return []
-        except (ValueError, AttributeError) as e:
-            logging.exception(f"Document 검색 실패 (데이터 처리 오류): {e}")
+        except (ServiceUnavailable, ClientError, ValueError, AttributeError) as e:
+            handle_graph_error(e, "Document 검색")
             return []
 
     def _extract_doc_id(self, content) -> str | None:
@@ -272,7 +252,7 @@ class GraphRAGService:
             return None
 
         except (ServiceUnavailable, ClientError) as e:
-            logging.exception(f"Document 정보 조회 실패 (doc_id: {doc_id}): {e}")
+            handle_graph_error(e, f"Document 정보 조회 (doc_id: {doc_id})")
             return None
 
     def _get_related_documents(self, doc_id: str, limit: int = 5) -> List[Dict[str, Any]]:
@@ -313,7 +293,7 @@ class GraphRAGService:
             return related_docs
 
         except (ServiceUnavailable, ClientError) as e:
-            logging.exception(f"연관 문서 조회 실패 (doc_id: {doc_id}): {e}")
+            handle_graph_error(e, f"연관 문서 조회 (doc_id: {doc_id})")
             return []
 
     def _extract_graph_structure(
@@ -361,7 +341,7 @@ class GraphRAGService:
             }
 
         except (ServiceUnavailable, ClientError) as e:
-            logging.exception(f"그래프 구조 추출 실패: {e}")
+            handle_graph_error(e, "그래프 구조 추출")
             return {"nodes": [], "relationships": []}
 
     def _build_graph_extraction_query(self, depth: int) -> str:
@@ -597,7 +577,7 @@ class GraphRAGService:
             }
 
         except (ServiceUnavailable, ClientError) as e:
-            logging.exception(f"공통 메타데이터 계산 실패: {e}")
+            handle_graph_error(e, "공통 메타데이터 계산")
             return {"categories": [], "common_tags": []}
 
     def _build_simple_graph(
@@ -725,7 +705,7 @@ class GraphRAGService:
             }
 
         except (ServiceUnavailable, ClientError) as e:
-            logging.exception(f"간단한 그래프 생성 실패: {e}")
+            handle_graph_error(e, "간단한 그래프 생성")
             return {"nodes": [], "relationships": []}
 
     def explore_node(self, node_id: str) -> Dict[str, Any]:
@@ -904,7 +884,7 @@ class GraphRAGService:
             }
 
         except (ServiceUnavailable, ClientError) as e:
-            logging.exception(f"노드 탐색 실패 (node_id: {node_id}): {e}")
+            handle_graph_error(e, f"노드 탐색 (node_id: {node_id})")
             return {
                 "center_node": None,
                 "connected_documents": [],
@@ -979,7 +959,7 @@ class GraphRAGService:
                 return None
 
         except (ServiceUnavailable, ClientError) as e:
-            logging.exception(f"노드 정보 조회 실패 (node_id: {node_id}): {e}")
+            handle_graph_error(e, f"노드 정보 조회 (node_id: {node_id})")
             return None
 
     def _format_nodes_with_synthetic_id(self, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
