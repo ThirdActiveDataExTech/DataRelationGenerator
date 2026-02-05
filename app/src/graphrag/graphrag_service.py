@@ -487,6 +487,37 @@ class GraphRAGService:
 
         return formatted
 
+    @staticmethod
+    def _aggregate_metadata_counts(
+            results: List[Dict[str, Any]],
+            field_name: str,
+            total_docs: int
+    ) -> List[Dict[str, Any]]:
+        """메타데이터 카운트 집계
+
+        Args:
+            results: 쿼리 결과 목록
+            field_name: 집계할 필드명 ("categories" or "tags")
+            total_docs: 전체 문서 수
+
+        Returns:
+            집계된 메타데이터 목록
+        """
+        counts = {}
+        for row in results:
+            for item in row.get(field_name, []):
+                if item:
+                    counts[item] = counts.get(item, 0) + 1
+
+        return [
+            {
+                "name": name,
+                "doc_count": count,
+                "coverage": round(count / total_docs, 2)
+            }
+            for name, count in sorted(counts.items(), key=lambda x: x[1], reverse=True)
+        ]
+
     def _calculate_common_metadata(self, doc_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
         """검색된 Document들의 공통 Category/Tag 집계
 
@@ -503,77 +534,188 @@ class GraphRAGService:
             query = """
             MATCH (d:Document)
             WHERE d.id IN $doc_ids
-
-            // Category 수집 (Topic을 통해)
             OPTIONAL MATCH (d)-[:HAS_TOPIC]->(t:Topic)-[:BELONGS_TO]->(c:Category)
             WITH d, collect(DISTINCT c.name) as categories
-
-            // Tag 수집
             OPTIONAL MATCH (d)-[:HAS_TAG]->(tag:Tag)
             WITH d, categories, collect(DISTINCT tag.name) as tags
-
             RETURN d.id as doc_id, categories, tags
             """
 
             results = self.graph_repo.execute_query(query, {"doc_ids": doc_ids})
-
             if not results:
                 return {"categories": [], "common_tags": []}
 
             total_docs = len(doc_ids)
-
-            # Category 집계
-            category_counts = {}
-            for row in results:
-                for cat in row.get("categories", []):
-                    if cat:
-                        category_counts[cat] = category_counts.get(cat, 0) + 1
-
-            categories = [
-                {
-                    "name": cat,
-                    "doc_count": count,
-                    "coverage": round(count / total_docs, 2)
-                }
-                for cat, count in sorted(
-                    category_counts.items(),
-                    key=lambda x: x[1],
-                    reverse=True
-                )
-            ]
-
-            # Tag 집계
-            tag_counts = {}
-            for row in results:
-                for tag in row.get("tags", []):
-                    if tag:
-                        tag_counts[tag] = tag_counts.get(tag, 0) + 1
-
-            common_tags = [
-                {
-                    "name": tag,
-                    "doc_count": count,
-                    "coverage": round(count / total_docs, 2)
-                }
-                for tag, count in sorted(
-                    tag_counts.items(),
-                    key=lambda x: x[1],
-                    reverse=True
-                )
-            ]
+            categories = self._aggregate_metadata_counts(results, "categories", total_docs)
+            common_tags = self._aggregate_metadata_counts(results, "tags", total_docs)
 
             logging.info(
                 f"공통 메타데이터 집계: Category {len(categories)}개, Tag {len(common_tags)}개"
             )
 
-            return {
-                "categories": categories,
-                "common_tags": common_tags
-            }
+            return {"categories": categories, "common_tags": common_tags}
 
         except (ServiceUnavailable, ClientError) as e:
             handle_graph_error(e, "공통 메타데이터 계산")
             return {"categories": [], "common_tags": []}
+
+    def _get_document_nodes(self, doc_ids: List[str]) -> List[Dict[str, Any]]:
+        """Document 노드 조회
+
+        Args:
+            doc_ids: Document ID 목록
+
+        Returns:
+            Document 노드 목록
+        """
+        doc_query = """
+        MATCH (d:Document)
+        WHERE d.id IN $doc_ids
+        RETURN d.id as id, d.description as description
+        """
+        doc_results = self.graph_repo.execute_query(doc_query, {"doc_ids": doc_ids})
+
+        return [
+            {
+                "id": doc["id"],
+                "labels": ["Document"],
+                "properties": {
+                    "id": doc["id"],
+                    "description": doc.get("description", "")
+                }
+            }
+            for doc in doc_results
+        ]
+
+    @staticmethod
+    def _filter_common_metadata(
+            metadata_list: List[Dict[str, Any]],
+            min_coverage: float = 0.5
+    ) -> List[Dict[str, Any]]:
+        """coverage 기준으로 메타데이터 필터링
+
+        Args:
+            metadata_list: 메타데이터 목록
+            min_coverage: 최소 coverage 값
+
+        Returns:
+            필터링된 메타데이터 목록
+        """
+        return [item for item in metadata_list if item.get("coverage", 0) >= min_coverage]
+
+    def _create_metadata_nodes(
+            self,
+            categories: List[Dict[str, Any]],
+            tags: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Category/Tag 노드 생성
+
+        Args:
+            categories: 카테고리 목록
+            tags: 태그 목록
+
+        Returns:
+            생성된 노드 목록
+        """
+        nodes = []
+
+        for cat in categories:
+            nodes.append({
+                "id": f"category_{cat['name']}",
+                "labels": ["Category"],
+                "properties": {
+                    "name": cat["name"],
+                    "doc_count": cat["doc_count"],
+                    "coverage": cat["coverage"]
+                }
+            })
+
+        for tag in tags:
+            nodes.append({
+                "id": f"tag_{tag['name']}",
+                "labels": ["Tag"],
+                "properties": {
+                    "name": tag["name"],
+                    "doc_count": tag["doc_count"],
+                    "coverage": tag["coverage"]
+                }
+            })
+
+        return nodes
+
+    def _get_category_relationships(
+            self,
+            doc_ids: List[str],
+            category_names: List[str]
+    ) -> List[Dict[str, Any]]:
+        """Document-Category 관계 조회
+
+        Args:
+            doc_ids: Document ID 목록
+            category_names: Category 이름 목록
+
+        Returns:
+            관계 목록
+        """
+        if not category_names:
+            return []
+
+        cat_rel_query = """
+        MATCH (d:Document)-[:HAS_TOPIC]->(t:Topic)-[:BELONGS_TO]->(c:Category)
+        WHERE d.id IN $doc_ids AND c.name IN $category_names
+        RETURN DISTINCT d.id as doc_id, c.name as category_name
+        """
+        cat_rels = self.graph_repo.execute_query(
+            cat_rel_query,
+            {"doc_ids": doc_ids, "category_names": category_names}
+        )
+
+        return [
+            {
+                "type": "BELONGS_TO",
+                "start": rel["doc_id"],
+                "end": f"category_{rel['category_name']}",
+                "properties": {}
+            }
+            for rel in cat_rels
+        ]
+
+    def _get_tag_relationships(
+            self,
+            doc_ids: List[str],
+            tag_names: List[str]
+    ) -> List[Dict[str, Any]]:
+        """Document-Tag 관계 조회
+
+        Args:
+            doc_ids: Document ID 목록
+            tag_names: Tag 이름 목록
+
+        Returns:
+            관계 목록
+        """
+        if not tag_names:
+            return []
+
+        tag_rel_query = """
+        MATCH (d:Document)-[:HAS_TAG]->(tag:Tag)
+        WHERE d.id IN $doc_ids AND tag.name IN $tag_names
+        RETURN DISTINCT d.id as doc_id, tag.name as tag_name
+        """
+        tag_rels = self.graph_repo.execute_query(
+            tag_rel_query,
+            {"doc_ids": doc_ids, "tag_names": tag_names}
+        )
+
+        return [
+            {
+                "type": "HAS_TAG",
+                "start": rel["doc_id"],
+                "end": f"tag_{rel['tag_name']}",
+                "properties": {}
+            }
+            for rel in tag_rels
+        ]
 
     def _build_simple_graph(
             self,
@@ -593,111 +735,25 @@ class GraphRAGService:
             }
         """
         try:
-            nodes = []
+            nodes = self._get_document_nodes(doc_ids)
+
+            common_categories = self._filter_common_metadata(common_metadata.get("categories", []))
+            common_tags = self._filter_common_metadata(common_metadata.get("common_tags", []))
+
+            nodes.extend(self._create_metadata_nodes(common_categories, common_tags))
+
+            category_names = [cat["name"] for cat in common_categories]
+            tag_names = [tag["name"] for tag in common_tags]
+
             relationships = []
-
-            # 1. Document 노드 조회
-            doc_query = """
-            MATCH (d:Document)
-            WHERE d.id IN $doc_ids
-            RETURN d.id as id, d.description as description
-            """
-            doc_results = self.graph_repo.execute_query(doc_query, {"doc_ids": doc_ids})
-
-            for doc in doc_results:
-                nodes.append({
-                    "id": doc["id"],
-                    "labels": ["Document"],
-                    "properties": {
-                        "id": doc["id"],
-                        "description": doc.get("description", "")
-                    }
-                })
-
-            # 2. 공통 Category 노드 (coverage >= 50%)
-            common_categories = [
-                cat for cat in common_metadata.get("categories", [])
-                if cat["coverage"] >= 0.5
-            ]
-
-            for cat in common_categories:
-                nodes.append({
-                    "id": f"category_{cat['name']}",
-                    "labels": ["Category"],
-                    "properties": {
-                        "name": cat["name"],
-                        "doc_count": cat["doc_count"],
-                        "coverage": cat["coverage"]
-                    }
-                })
-
-            # 3. 공통 Tag 노드 (coverage >= 50%)
-            common_tags = [
-                tag for tag in common_metadata.get("common_tags", [])
-                if tag["coverage"] >= 0.5
-            ]
-
-            for tag in common_tags:
-                nodes.append({
-                    "id": f"tag_{tag['name']}",
-                    "labels": ["Tag"],
-                    "properties": {
-                        "name": tag["name"],
-                        "doc_count": tag["doc_count"],
-                        "coverage": tag["coverage"]
-                    }
-                })
-
-            # 4. Document-Category 관계 조회
-            if common_categories:
-                category_names = [cat["name"] for cat in common_categories]
-                cat_rel_query = """
-                MATCH (d:Document)-[:HAS_TOPIC]->(t:Topic)-[:BELONGS_TO]->(c:Category)
-                WHERE d.id IN $doc_ids AND c.name IN $category_names
-                RETURN DISTINCT d.id as doc_id, c.name as category_name
-                """
-                cat_rels = self.graph_repo.execute_query(
-                    cat_rel_query,
-                    {"doc_ids": doc_ids, "category_names": category_names}
-                )
-
-                for rel in cat_rels:
-                    relationships.append({
-                        "type": "BELONGS_TO",
-                        "start": rel["doc_id"],
-                        "end": f"category_{rel['category_name']}",
-                        "properties": {}
-                    })
-
-            # 5. Document-Tag 관계 조회
-            if common_tags:
-                tag_names = [tag["name"] for tag in common_tags]
-                tag_rel_query = """
-                MATCH (d:Document)-[:HAS_TAG]->(tag:Tag)
-                WHERE d.id IN $doc_ids AND tag.name IN $tag_names
-                RETURN DISTINCT d.id as doc_id, tag.name as tag_name
-                """
-                tag_rels = self.graph_repo.execute_query(
-                    tag_rel_query,
-                    {"doc_ids": doc_ids, "tag_names": tag_names}
-                )
-
-                for rel in tag_rels:
-                    relationships.append({
-                        "type": "HAS_TAG",
-                        "start": rel["doc_id"],
-                        "end": f"tag_{rel['tag_name']}",
-                        "properties": {}
-                    })
+            relationships.extend(self._get_category_relationships(doc_ids, category_names))
+            relationships.extend(self._get_tag_relationships(doc_ids, tag_names))
 
             logging.info(
                 f"간단한 그래프 생성: {len(nodes)}개 노드, {len(relationships)}개 관계"
             )
 
-            return {
-                "nodes": nodes,
-                "relationships": relationships
-            }
+            return {"nodes": nodes, "relationships": relationships}
 
         except (ServiceUnavailable, ClientError) as e:
             handle_graph_error(e, "간단한 그래프 생성")

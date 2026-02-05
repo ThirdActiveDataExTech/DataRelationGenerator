@@ -147,27 +147,33 @@ class KnowledgeGraphService:
 
     def _enrich_with_document_info(self, sorted_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """문서 상세 정보 추가 (필요한 필드만 선택)"""
-        related_docs = []
-        for result in sorted_results:
-            doc_info = self.graph_repo.execute_query(
-                'MATCH (d:Document {id: $doc_id}) RETURN d.text as text, d.description as description',
-                {'doc_id': result["doc_id"]}
-            )
+        if not sorted_results:
+            return []
 
-            # 필요한 필드만 명시적으로 선택 (임베딩 등 불필요한 데이터 제외)
-            related_docs.append({
+        doc_ids = [result["doc_id"] for result in sorted_results]
+
+        # N+1 쿼리 문제 해결: 일괄 조회
+        doc_infos = self.graph_repo.execute_query(
+            'MATCH (d:Document) WHERE d.id IN $doc_ids RETURN d.id as doc_id, d.text as text, d.description as description',
+            {'doc_ids': doc_ids}
+        )
+
+        doc_info_map = {doc["doc_id"]: doc for doc in doc_infos}
+
+        return [
+            {
                 "doc_id": result["doc_id"],
-                "text": doc_info[0]["text"] if doc_info else "",
-                "description": doc_info[0]["description"] if doc_info else "",
+                "text": doc_info_map.get(result["doc_id"], {}).get("text", ""),
+                "description": doc_info_map.get(result["doc_id"], {}).get("description", ""),
                 "shared_topics": result.get("shared_topics", []),
                 "shared_tags": result.get("shared_tags", []),
                 "graph_score": result.get("graph_score", 0),
                 "combined_score": result.get("combined_score", 0),
                 "text_score": result.get("text_score", 0),
                 "graph_embedding_score": result.get("graph_embedding_score", 0)
-            })
-
-        return related_docs
+            }
+            for result in sorted_results
+        ]
 
     @staticmethod
     def _extract_doc_id(content) -> str | None:
