@@ -2,6 +2,7 @@ import ast
 from typing import Dict, Any, List
 
 import logging
+from neo4j.exceptions import ServiceUnavailable, ClientError
 from neo4j_graphrag.embeddings import SentenceTransformerEmbeddings
 from neo4j_graphrag.retrievers import VectorRetriever
 
@@ -72,8 +73,11 @@ class KnowledgeGraphService:
 
             return related_docs
 
-        except Exception as e:
-            logging.error(f"하이브리드 검색 실패 (doc_id: {doc_id}): {e}")
+        except (ServiceUnavailable, ClientError) as e:
+            logging.exception(f"하이브리드 검색 실패 (doc_id: {doc_id}) - DB 오류")
+            return []
+        except (ValueError, KeyError, AttributeError) as e:
+            logging.exception(f"하이브리드 검색 실패 (doc_id: {doc_id}) - 데이터 처리 오류")
             return []
 
     def _search_by_text_embedding(self, doc_text: str):
@@ -206,8 +210,11 @@ class KnowledgeGraphService:
 
             return {row["doc_id"]: row["score"] for row in results}
 
-        except Exception as e:
-            logging.warning(f"그래프 임베딩 검색 실패 (doc_id: {doc_id}): {e}")
+        except (ServiceUnavailable, ClientError) as e:
+            logging.warning(f"그래프 임베딩 검색 실패 (doc_id: {doc_id}) - DB 오류: {e}")
+            return {}
+        except (ValueError, KeyError) as e:
+            logging.warning(f"그래프 임베딩 검색 실패 (doc_id: {doc_id}) - 데이터 오류: {e}")
             return {}
 
     def _get_graph_connections(self, source_doc_id: str, target_doc_id: str) -> Dict[str, Any]:
