@@ -4,18 +4,17 @@ import re
 from typing import Dict, Any, List
 
 import logging
-from neo4j.time import DateTime
 from neo4j.exceptions import (
     ClientError,
     ServiceUnavailable,
-    TransientError,
-    CypherSyntaxError
+    TransientError
 )
+from neo4j.time import DateTime
 from neo4j_graphrag.embeddings import SentenceTransformerEmbeddings
 from neo4j_graphrag.retrievers import VectorRetriever
 
 from app.config import settings
-from app.repositories.graph_repository import GraphRepository
+from app.exceptions.graphrag import handle_graph_error
 from app.repositories.graph_queries import (
     GET_DOCUMENT_INFO,
     GET_RELATED_DOCUMENTS,
@@ -31,7 +30,14 @@ from app.repositories.graph_queries import (
     EXPLORE_NODE_TEMPLATE,
     GET_DOCUMENT_DETAILS
 )
-from app.exceptions.graphrag import handle_graph_error
+from app.repositories.graph_repository import GraphRepository
+from app.schemas.graphrag_api import (
+    GraphRAGSearchResponse,
+    NodeExploreResponse,
+    GraphStructure,
+    CommonMetadata,
+    GraphNode
+)
 
 
 class GraphRAGService:
@@ -87,34 +93,16 @@ class GraphRAGService:
             top_k: 반환할 Document 개수 (기본: 5)
 
         Returns:
-            {
-                "query": "사용자 질의",
-                "documents": [...],  # 검색된 Document 목록
-                "common_metadata": {
-                    "categories": [...],  # 공통 Category 집계
-                    "common_tags": [...]  # 공통 Tag 집계
-                }
-            }
+            GraphRAGSearchResponse를 dict로 변환한 결과
         """
         try:
-            # 벡터 검색으로 관련 Document 찾기
             documents = self._search_documents(query, top_k)
 
             if not documents:
-                return {
-                    "query": query,
-                    "documents": [],
-                    "common_metadata": {"categories": [], "common_tags": []},
-                    "graph": {"nodes": [], "relationships": []}
-                }
+                return GraphRAGSearchResponse.empty(query).model_dump()
 
-            # Document ID 목록 추출
             doc_ids = [doc["doc_id"] for doc in documents]
-
-            # 공통 메타데이터 계산
             common_metadata = self._calculate_common_metadata(doc_ids)
-
-            # 간단한 그래프 구조 생성 (Document + 공통 메타데이터만)
             graph = self._build_simple_graph(doc_ids, common_metadata)
 
             logging.info(
@@ -122,22 +110,17 @@ class GraphRAGService:
                 f"{len(graph['nodes'])}개 노드, {len(graph['relationships'])}개 관계"
             )
 
-            return {
-                "query": query,
-                "documents": documents,
-                "common_metadata": common_metadata,
-                "graph": graph
-            }
+            response = GraphRAGSearchResponse(
+                query=query,
+                documents=documents,
+                common_metadata=CommonMetadata(**common_metadata),
+                graph=GraphStructure(**graph)
+            )
+            return response.model_dump()
 
         except (ServiceUnavailable, TransientError, ClientError, ValueError, KeyError, AttributeError) as e:
             handle_graph_error(e, "Graph RAG 검색")
-            return {
-                "query": query,
-                "documents": [],
-                "common_metadata": {"categories": [], "common_tags": []},
-                "graph": {"nodes": [], "relationships": []},
-                "error": str(e)
-            }
+            return GraphRAGSearchResponse.empty(query, error=str(e)).model_dump()
 
     def _search_documents(self, query: str, top_k: int) -> List[Dict[str, Any]]:
         """텍스트 임베딩 기반 Document 검색
@@ -772,34 +755,22 @@ class GraphRAGService:
             node_id: 탐색할 노드 ID
 
         Returns:
-            {
-                "center_node": {...},
-                "connected_documents": [...],
-                "graph": {
-                    "nodes": [...],
-                    "relationships": [...]
-                }
-            }
+            NodeExploreResponse를 dict로 변환한 결과
         """
         try:
             center_node = self._get_node_info(node_id)
             if not center_node:
-                return {
-                    "center_node": None,
-                    "connected_documents": [],
-                    "graph": {"nodes": [], "relationships": []},
-                    "error": f"노드를 찾을 수 없습니다: {node_id}"
-                }
+                return NodeExploreResponse.empty(
+                    error=f"노드를 찾을 수 없습니다: {node_id}"
+                ).model_dump()
 
             graph_query, query_params = self._build_explore_query(node_id)
             result = self.graph_repo.execute_query(graph_query, query_params)
 
             if not result:
-                return {
-                    "center_node": center_node,
-                    "connected_documents": [],
-                    "graph": {"nodes": [], "relationships": []}
-                }
+                return NodeExploreResponse.empty(
+                    center_node=GraphNode(**center_node)
+                ).model_dump()
 
             raw_nodes = result[0].get("nodes", [])
             raw_relationships = result[0].get("relationships", [])
@@ -815,23 +786,16 @@ class GraphRAGService:
                 f"{len(nodes)}개 노드, {len(relationships)}개 관계"
             )
 
-            return {
-                "center_node": center_node,
-                "connected_documents": connected_documents,
-                "graph": {
-                    "nodes": nodes,
-                    "relationships": relationships
-                }
-            }
+            response = NodeExploreResponse(
+                center_node=GraphNode(**center_node),
+                connected_documents=connected_documents,
+                graph=GraphStructure(nodes=nodes, relationships=relationships)
+            )
+            return response.model_dump()
 
         except (ServiceUnavailable, ClientError) as e:
             handle_graph_error(e, f"노드 탐색 (node_id: {node_id})")
-            return {
-                "center_node": None,
-                "connected_documents": [],
-                "graph": {"nodes": [], "relationships": []},
-                "error": str(e)
-            }
+            return NodeExploreResponse.empty(error=str(e)).model_dump()
 
     def _get_node_info(self, node_id: str) -> Dict[str, Any] | None:
         """노드 정보 조회
