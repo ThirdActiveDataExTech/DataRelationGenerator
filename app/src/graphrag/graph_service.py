@@ -261,13 +261,7 @@ class GraphService:
                 "related_docs_found": 0
             }
 
-        doc_ids_debug = []
-        for d in related_docs:
-            if isinstance(d, dict) and 'doc_id' in d:
-                doc_ids_debug.append(d['doc_id'])
-            else:
-                doc_ids_debug.append(f"INVALID:{type(d).__name__}")
-        logging.info(f"{doc_id}: 검색된 관련 문서 {len(related_docs)}개 - {doc_ids_debug}")
+        logging.info(f"{doc_id}: 검색된 관련 문서 {len(related_docs)}개")
 
         metadata = self._get_document_metadata(doc_id)
         relations = self._infer_document_relations(doc_id, doc_text, metadata, related_docs)
@@ -319,16 +313,11 @@ class GraphService:
             logging.info(f"Document {doc_id}: 관련 문서 없음")
             return []
 
-        # 중복 제거: doc_id 기준으로
-        seen_doc_ids = set()
-        unique_related_docs = []
-        for doc in related_docs:
-            related_doc_id = doc.get("doc_id")
-            if related_doc_id and related_doc_id not in seen_doc_ids:
-                seen_doc_ids.add(related_doc_id)
-                unique_related_docs.append(doc)
-            else:
-                logging.warning(f"중복 관련 문서 제거: {related_doc_id}")
+        seen = set()
+        unique_related_docs = [
+            doc for doc in related_docs
+            if doc.get("doc_id") and doc["doc_id"] not in seen and not seen.add(doc["doc_id"])
+        ]
 
         logging.info(f"Document {doc_id}: 중복 제거 후 {len(unique_related_docs)}개 문서 처리")
 
@@ -357,12 +346,8 @@ class GraphService:
             related_doc: Dict[str, Any]
     ) -> Dict[str, Any] | None:
         """단일 문서 쌍에 대한 관계 추론"""
-        # 관련 문서 ID 확인
         related_doc_id = related_doc.get("doc_id", "unknown")
-
-        # 자기 자신과의 비교 방지 (최종 안전장치)
         if related_doc_id == doc_id:
-            logging.warning(f"자기 자신과의 관계 추론 시도 방지: {doc_id}")
             return None
 
         variables = {
@@ -378,7 +363,6 @@ class GraphService:
             "related_doc_text": related_doc.get("text", "")[:500]
         }
 
-        # 디버그: 프롬프트 변수 확인
         logging.debug(
             f"관계 추론 변수: {doc_id} -> {related_doc_id} | "
             f"Topics: {variables['related_doc_topics'][:50] if variables['related_doc_topics'] else '없음'} | "
@@ -395,15 +379,8 @@ class GraphService:
             return None
 
         relations = result.get("relations", [])
+        return relations[0] if relations else None
 
-        # 단일 문서 쌍이므로 관계가 있으면 첫 번째 것만 반환
-        if relations and len(relations) > 0:
-            return relations[0]
-
-        return None
-
-
-# TODO: 이 내용 어떻게 전달할지 더 고민해보기
 
 # 싱글톤 인스턴스
 graph_service = GraphService()
