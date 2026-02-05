@@ -53,8 +53,6 @@ class GraphService:
     ) -> Dict[str, Any]:
         """전체 Document 노드에 대해 그래프 임베딩 일괄 생성"""
         try:
-            logging.info("전체 그래프 임베딩 생성 시작")
-
             doc_ids = self._get_all_document_ids()
             if not doc_ids:
                 return {"status": "no_documents", "message": "업데이트할 Document가 없습니다"}
@@ -72,7 +70,7 @@ class GraphService:
                 }
 
             result = self._update_document_embeddings(doc_ids, all_embeddings)
-            logging.info(f"그래프 임베딩 생성 완료: 성공 {result['success']}개, 실패 {result['failed']}개")
+            logging.info(f"그래프 임베딩 완료: 성공 {result['success']}/{len(doc_ids)}")
 
             return {
                 "status": "completed",
@@ -101,9 +99,7 @@ class GraphService:
         """전체 Document ID 조회"""
         query = "MATCH (d:Document) RETURN d.id as doc_id"
         docs = self.graph_repo.execute_query(query)
-        doc_ids = [doc["doc_id"] for doc in docs]
-        logging.info(f"총 {len(doc_ids)}개 Document 노드 발견")
-        return doc_ids
+        return [doc["doc_id"] for doc in docs]
 
     def _generate_embeddings(
             self,
@@ -112,7 +108,6 @@ class GraphService:
             walks_per_node: int
     ) -> Dict[str, List[float]]:
         """Node2Vec으로 그래프 임베딩 생성"""
-        logging.info("전체 그래프 Node2Vec 실행 중...")
         return self.graph_embedding_service.generate_all_graph_embeddings(
             embedding_dim=embedding_dim,
             walk_length=walk_length,
@@ -142,8 +137,6 @@ class GraphService:
                         {"doc_id": doc_id, "graph_embedding": all_embeddings[doc_id]}
                     )
                     success_count += 1
-                    if success_count % 10 == 0:
-                        logging.info(f"[{success_count}/{len(doc_ids)}] 임베딩 업데이트 중...")
                 else:
                     failed_count += 1
                     errors.append({"doc_id": doc_id, "error": "임베딩 생성되지 않음"})
@@ -172,16 +165,12 @@ class GraphService:
             if not docs:
                 return {"status": "no_documents", "message": "분석할 Document가 없습니다"}
 
-            logging.info(f"총 {len(docs)}개 Document 관계 분석 시작")
-
             total_relations_created = 0
             results = []
 
-            for idx, doc in enumerate(docs, 1):
+            for doc in docs:
                 current_doc_id = doc["doc_id"]
                 current_doc_text = doc["text"]
-
-                logging.info(f"[{idx}/{len(docs)}] {current_doc_id} 분석 중...")
 
                 doc_result = self._analyze_single_document(
                     current_doc_id, current_doc_text, top_k, text_weight, graph_weight
@@ -190,9 +179,7 @@ class GraphService:
                 total_relations_created += doc_result["relations_created"]
                 results.append(doc_result)
 
-                logging.info(f"{current_doc_id}: {doc_result['relations_created']}개 관계 생성")
-
-            logging.info(f"관계 분석 완료: 총 {total_relations_created}개 관계 생성")
+            logging.info(f"관계 분석 완료: {len(docs)}개 문서, 총 {total_relations_created}개 관계 생성")
 
             return {
                 "status": "completed",
@@ -254,21 +241,14 @@ class GraphService:
         )
 
         if not related_docs:
-            logging.info(f"{doc_id}: 관련 문서 없음")
             return {
                 "doc_id": doc_id,
                 "relations_created": 0,
                 "related_docs_found": 0
             }
 
-        logging.info(f"{doc_id}: 검색된 관련 문서 {len(related_docs)}개")
-
         metadata = self._get_document_metadata(doc_id)
         relations = self._infer_document_relations(doc_id, doc_text, metadata, related_docs)
-
-        logging.info(f"{doc_id}: LLM이 추론한 관계 {len(relations)}개")
-        for rel in relations:
-            logging.info(f"  -> {rel.get('target_doc_id')}: {rel.get('relation_type')}")
 
         created_count = 0
         if relations:
@@ -310,19 +290,14 @@ class GraphService:
     ) -> List[Dict[str, Any]]:
         """LLM으로 Document 간 관계 추론 (각 문서 쌍 1:1로 처리)"""
         if not related_docs:
-            logging.info(f"Document {doc_id}: 관련 문서 없음")
             return []
 
         unique_related_docs = self._deduplicate_related_docs(related_docs)
-        logging.info(f"Document {doc_id}: 중복 제거 후 {len(unique_related_docs)}개 문서 처리")
 
-        all_relations = [
+        return [
             relation for related_doc in unique_related_docs
             if (relation := self._infer_single_relation(doc_id, doc_text, metadata, related_doc))
         ]
-
-        logging.info(f"Document {doc_id}: 총 {len(all_relations)}개 관계 추출")
-        return all_relations
 
     @staticmethod
     def _deduplicate_related_docs(related_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

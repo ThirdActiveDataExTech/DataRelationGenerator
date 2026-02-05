@@ -25,8 +25,6 @@ class GraphEmbeddingService:
             auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD)
         )
 
-        logging.info("GraphEmbeddingService 초기화 완료")
-
     def generate_all_graph_embeddings(
             self,
             embedding_dim: int = 128,
@@ -46,12 +44,9 @@ class GraphEmbeddingService:
         graph_name = "full_graph_for_embedding"
 
         try:
-            # 1. 기존 그래프 삭제 (있다면)
             if self._graph_exists(graph_name):
                 self.gds.graph.drop(graph_name)
-                logging.info(f"기존 그래프 '{graph_name}' 삭제 완료")
 
-            # 2. 존재하는 관계 타입 확인
             existing_rel_types = self._get_existing_relationship_types()
             logging.info(f"존재하는 관계 타입: {existing_rel_types}")
 
@@ -83,9 +78,6 @@ class GraphEmbeddingService:
             if not relationship_projection:
                 raise ValueError("그래프에 관계가 하나도 없습니다")
 
-            # 4. 전체 그래프 projection 생성
-            logging.info(f"전체 그래프 projection 생성 시작 (관계 타입: {list(relationship_projection.keys())})")
-
             G, result = self.gds.graph.project(
                 graph_name,
                 ["Document", "Topic", "Tag", "Category"],
@@ -97,9 +89,6 @@ class GraphEmbeddingService:
                 f"{result['relationshipCount']} relationships"
             )
 
-            # 3. Node2Vec 실행 (전체 그래프)
-            logging.info("Node2Vec 실행 시작 (전체 그래프)")
-
             node2vec_result = self.gds.node2vec.mutate(
                 G,
                 embeddingDimension=embedding_dim,
@@ -110,12 +99,9 @@ class GraphEmbeddingService:
 
             logging.info(f"Node2Vec 완료: {node2vec_result}")
 
-            # 4. 모든 Document 노드의 임베딩 추출
             embeddings = self._extract_all_document_embeddings(G)
-
             logging.info(f"총 {len(embeddings)}개 Document 임베딩 추출 완료")
 
-            # 5. Graph 삭제 (메모리 절약)
             self.gds.graph.drop(G)
 
             return embeddings
@@ -190,7 +176,6 @@ class GraphEmbeddingService:
                     if embedding is not None and isinstance(embedding, list):
                         embeddings[doc_id] = embedding
 
-            logging.info(f"총 {len(embeddings)}개 Document 임베딩 추출 완료")
             return embeddings
 
         except (ValueError, KeyError, AttributeError, RuntimeError) as e:
