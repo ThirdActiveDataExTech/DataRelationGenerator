@@ -16,6 +16,21 @@ from neo4j_graphrag.retrievers import VectorRetriever
 
 from app.config import settings
 from app.repositories.graph_repository import GraphRepository
+from app.repositories.graph_queries import (
+    GET_DOCUMENT_INFO,
+    GET_RELATED_DOCUMENTS,
+    EXTRACT_GRAPH_1HOP,
+    EXTRACT_GRAPH_2HOP,
+    CALCULATE_COMMON_METADATA,
+    GET_DOCUMENT_NODES,
+    GET_CATEGORY_RELATIONSHIPS,
+    GET_TAG_RELATIONSHIPS,
+    GET_NODE_BY_TAG,
+    GET_NODE_BY_CATEGORY,
+    GET_NODE_BY_ID,
+    EXPLORE_NODE_TEMPLATE,
+    GET_DOCUMENT_DETAILS
+)
 from app.exceptions.graphrag import handle_graph_error
 
 
@@ -206,11 +221,7 @@ class GraphRAGService:
     def _get_document_info(self, doc_id: str) -> Dict[str, Any] | None:
         """Document 상세 정보 조회"""
         try:
-            query = """
-            MATCH (d:Document {id: $doc_id})
-            RETURN d.text as text, d.description as description
-            """
-            result = self.graph_repo.execute_query(query, {"doc_id": doc_id})
+            result = self.graph_repo.execute_query(GET_DOCUMENT_INFO, {"doc_id": doc_id})
 
             if result:
                 return {
@@ -234,18 +245,10 @@ class GraphRAGService:
             연관 문서 목록 [{target_doc_id, target_description, relation_type, reason, confidence}]
         """
         try:
-            query = """
-            MATCH (source:Document {id: $doc_id})-[r]->(target:Document)
-            WHERE type(r) IN ['SIMILAR_TO', 'EXTENDS', 'CONTRADICTS', 'PREREQUISITE_OF', 'IMPLEMENTS', 'CO_OCCURS']
-            RETURN target.id as target_doc_id,
-                   target.description as target_description,
-                   type(r) as relation_type,
-                   r.reason as reason,
-                   r.confidence as confidence
-            ORDER BY r.confidence DESC
-            LIMIT $limit
-            """
-            result = self.graph_repo.execute_query(query, {"doc_id": doc_id, "limit": limit})
+            result = self.graph_repo.execute_query(
+                GET_RELATED_DOCUMENTS,
+                {"doc_id": doc_id, "limit": limit}
+            )
 
             return [
                 {
@@ -320,51 +323,11 @@ class GraphRAGService:
             Cypher 쿼리
         """
         if depth == 1:
-            # 1-hop: Document와 직접 연결된 노드/관계
-            return """
-            MATCH (d:Document)
-            WHERE d.id IN $doc_ids
-            OPTIONAL MATCH path = (d)-[r]-(n)
-            WHERE n:Topic OR n:Tag OR n:Category OR n:Document
-            WITH collect(DISTINCT d) + collect(DISTINCT n) as nodes,
-                 collect(DISTINCT r) as rels
-            RETURN [node IN nodes | {
-                id: COALESCE(node.id, elementId(node)),
-                labels: labels(node),
-                properties: properties(node)
-            }] as nodes,
-            [rel IN rels WHERE rel IS NOT NULL | {
-                type: type(rel),
-                start: COALESCE(startNode(rel).id, elementId(startNode(rel))),
-                end: COALESCE(endNode(rel).id, elementId(endNode(rel))),
-                properties: properties(rel)
-            }] as relationships
-            """
+            return EXTRACT_GRAPH_1HOP
         elif depth == 2:
-            # 2-hop: 2단계 연결까지 포함
-            return """
-            MATCH (d:Document)
-            WHERE d.id IN $doc_ids
-            OPTIONAL MATCH path = (d)-[r1]-(n1)-[r2]-(n2)
-            WHERE (n1:Topic OR n1:Tag OR n1:Category OR n1:Document)
-              AND (n2:Topic OR n2:Tag OR n2:Category OR n2:Document)
-            WITH collect(DISTINCT d) + collect(DISTINCT n1) + collect(DISTINCT n2) as nodes,
-                 collect(DISTINCT r1) + collect(DISTINCT r2) as rels
-            RETURN [node IN nodes | {
-                id: COALESCE(node.id, elementId(node)),
-                labels: labels(node),
-                properties: properties(node)
-            }] as nodes,
-            [rel IN rels WHERE rel IS NOT NULL | {
-                type: type(rel),
-                start: COALESCE(startNode(rel).id, elementId(startNode(rel))),
-                end: COALESCE(endNode(rel).id, elementId(endNode(rel))),
-                properties: properties(rel)
-            }] as relationships
-            """
+            return EXTRACT_GRAPH_2HOP
         else:
-            # 기본: 1-hop
-            return self._build_graph_extraction_query(1)
+            return EXTRACT_GRAPH_1HOP
 
     def _format_nodes(
             self,
@@ -514,17 +477,10 @@ class GraphRAGService:
             }
         """
         try:
-            query = """
-            MATCH (d:Document)
-            WHERE d.id IN $doc_ids
-            OPTIONAL MATCH (d)-[:HAS_TOPIC]->(t:Topic)-[:BELONGS_TO]->(c:Category)
-            WITH d, collect(DISTINCT c.name) as categories
-            OPTIONAL MATCH (d)-[:HAS_TAG]->(tag:Tag)
-            WITH d, categories, collect(DISTINCT tag.name) as tags
-            RETURN d.id as doc_id, categories, tags
-            """
-
-            results = self.graph_repo.execute_query(query, {"doc_ids": doc_ids})
+            results = self.graph_repo.execute_query(
+                CALCULATE_COMMON_METADATA,
+                {"doc_ids": doc_ids}
+            )
             if not results:
                 return {"categories": [], "common_tags": []}
 
@@ -551,12 +507,7 @@ class GraphRAGService:
         Returns:
             Document 노드 목록
         """
-        doc_query = """
-        MATCH (d:Document)
-        WHERE d.id IN $doc_ids
-        RETURN d.id as id, d.description as description
-        """
-        doc_results = self.graph_repo.execute_query(doc_query, {"doc_ids": doc_ids})
+        doc_results = self.graph_repo.execute_query(GET_DOCUMENT_NODES, {"doc_ids": doc_ids})
 
         return [
             {
@@ -643,13 +594,8 @@ class GraphRAGService:
         if not category_names:
             return []
 
-        cat_rel_query = """
-        MATCH (d:Document)-[:HAS_TOPIC]->(t:Topic)-[:BELONGS_TO]->(c:Category)
-        WHERE d.id IN $doc_ids AND c.name IN $category_names
-        RETURN DISTINCT d.id as doc_id, c.name as category_name
-        """
         cat_rels = self.graph_repo.execute_query(
-            cat_rel_query,
+            GET_CATEGORY_RELATIONSHIPS,
             {"doc_ids": doc_ids, "category_names": category_names}
         )
 
@@ -680,13 +626,8 @@ class GraphRAGService:
         if not tag_names:
             return []
 
-        tag_rel_query = """
-        MATCH (d:Document)-[:HAS_TAG]->(tag:Tag)
-        WHERE d.id IN $doc_ids AND tag.name IN $tag_names
-        RETURN DISTINCT d.id as doc_id, tag.name as tag_name
-        """
         tag_rels = self.graph_repo.execute_query(
-            tag_rel_query,
+            GET_TAG_RELATIONSHIPS,
             {"doc_ids": doc_ids, "tag_names": tag_names}
         )
 
@@ -751,26 +692,6 @@ class GraphRAGService:
         Returns:
             (쿼리 문자열, 파라미터) 튜플
         """
-        # 공통 쿼리 템플릿
-        query_template = """
-        {match_clause}
-        OPTIONAL MATCH (center)-[r]-(connected)
-        WHERE connected:Document OR connected:Topic OR connected:Tag OR connected:Category
-        WITH center, collect(DISTINCT connected) as connected_nodes, collect(DISTINCT r) as relationships
-        WITH [center] + connected_nodes as all_nodes, relationships
-        RETURN [node IN all_nodes WHERE node IS NOT NULL | {{
-            id: COALESCE(node.id, node.name, elementId(node)),
-            labels: labels(node),
-            properties: properties(node)
-        }}] as nodes,
-        [rel IN relationships WHERE rel IS NOT NULL | {{
-            type: type(rel),
-            start: COALESCE(startNode(rel).id, startNode(rel).name, elementId(startNode(rel))),
-            end: COALESCE(endNode(rel).id, endNode(rel).name, elementId(endNode(rel))),
-            properties: properties(rel)
-        }}] as relationships
-        """
-
         if node_id.startswith("tag_"):
             match_clause = "MATCH (center:Tag {name: $name})"
             params = {"name": node_id[4:]}
@@ -781,7 +702,7 @@ class GraphRAGService:
             match_clause = "MATCH (center) WHERE center.id = $node_id OR elementId(center) = $node_id"
             params = {"node_id": node_id}
 
-        return query_template.format(match_clause=match_clause), params
+        return EXPLORE_NODE_TEMPLATE.format(match_clause=match_clause), params
 
     def _build_id_mapping(self, nodes: List[Dict[str, Any]]) -> Dict[str, str]:
         """노드 ID 매핑 생성 (원본 ID -> synthetic ID)
@@ -832,12 +753,7 @@ class GraphRAGService:
         if not doc_ids:
             return []
 
-        doc_query = """
-        MATCH (d:Document)
-        WHERE d.id IN $doc_ids
-        RETURN d.id as doc_id, d.text as text, d.description as description
-        """
-        doc_results = self.graph_repo.execute_query(doc_query, {"doc_ids": doc_ids})
+        doc_results = self.graph_repo.execute_query(GET_DOCUMENT_DETAILS, {"doc_ids": doc_ids})
 
         return [
             {
@@ -927,52 +843,34 @@ class GraphRAGService:
             노드 정보 또는 None
         """
         try:
-            # Tag/Category synthetic ID 처리
             if node_id.startswith("tag_"):
-                tag_name = node_id[4:]  # "tag_" 제거
-                query = """
-                MATCH (n:Tag {name: $name})
-                RETURN elementId(n) as id, labels(n) as labels, properties(n) as properties
-                LIMIT 1
-                """
-                result = self.graph_repo.execute_query(query, {"name": tag_name})
+                tag_name = node_id[4:]
+                result = self.graph_repo.execute_query(GET_NODE_BY_TAG, {"name": tag_name})
 
                 if result:
                     node = result[0]
                     return {
-                        "id": node_id,  # synthetic ID 유지
+                        "id": node_id,
                         "labels": node.get("labels", []),
                         "properties": self._sanitize_properties(node.get("properties", {}))
                     }
                 return None
 
             elif node_id.startswith("category_"):
-                category_name = node_id[9:]  # "category_" 제거
-                query = """
-                MATCH (n:Category {name: $name})
-                RETURN elementId(n) as id, labels(n) as labels, properties(n) as properties
-                LIMIT 1
-                """
-                result = self.graph_repo.execute_query(query, {"name": category_name})
+                category_name = node_id[9:]
+                result = self.graph_repo.execute_query(GET_NODE_BY_CATEGORY, {"name": category_name})
 
                 if result:
                     node = result[0]
                     return {
-                        "id": node_id,  # synthetic ID 유지
+                        "id": node_id,
                         "labels": node.get("labels", []),
                         "properties": self._sanitize_properties(node.get("properties", {}))
                     }
                 return None
 
-            # 일반 노드 (Document 등)
             else:
-                query = """
-                MATCH (n)
-                WHERE n.id = $node_id OR elementId(n) = $node_id
-                RETURN elementId(n) as id, labels(n) as labels, properties(n) as properties
-                LIMIT 1
-                """
-                result = self.graph_repo.execute_query(query, {"node_id": node_id})
+                result = self.graph_repo.execute_query(GET_NODE_BY_ID, {"node_id": node_id})
 
                 if result:
                     node = result[0]

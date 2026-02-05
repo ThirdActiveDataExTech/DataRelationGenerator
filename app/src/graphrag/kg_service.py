@@ -8,6 +8,11 @@ from neo4j_graphrag.retrievers import VectorRetriever
 
 from app.config import settings
 from app.repositories.graph_repository import GraphRepository
+from app.repositories.graph_queries import (
+    GET_DOCUMENTS_BY_IDS,
+    SEARCH_BY_GRAPH_EMBEDDING,
+    GET_GRAPH_CONNECTIONS
+)
 
 
 class KnowledgeGraphService:
@@ -145,7 +150,7 @@ class KnowledgeGraphService:
 
         # N+1 쿼리 문제 해결: 일괄 조회
         doc_infos = self.graph_repo.execute_query(
-            'MATCH (d:Document) WHERE d.id IN $doc_ids RETURN d.id as doc_id, d.text as text, d.description as description',
+            GET_DOCUMENTS_BY_IDS,
             {'doc_ids': doc_ids}
         )
 
@@ -198,16 +203,10 @@ class KnowledgeGraphService:
     def _search_by_graph_embedding(self, doc_id: str, top_k: int = 50) -> Dict[str, float]:
         """그래프 임베딩 기반 유사 문서 검색"""
         try:
-            query = """
-            MATCH (source:Document {id: $doc_id})
-            WHERE source.graph_embedding IS NOT NULL
-            CALL db.index.vector.queryNodes('graph_embedding_index', $top_k, source.graph_embedding)
-            YIELD node, score
-            WHERE node.id <> $doc_id
-            RETURN node.id as doc_id, score
-            """
-
-            results = self.graph_repo.execute_query(query, {"doc_id": doc_id, "top_k": top_k})
+            results = self.graph_repo.execute_query(
+                SEARCH_BY_GRAPH_EMBEDDING,
+                {"doc_id": doc_id, "top_k": top_k}
+            )
 
             return {row["doc_id"]: row["score"] for row in results}
 
@@ -220,31 +219,8 @@ class KnowledgeGraphService:
 
     def _get_graph_connections(self, source_doc_id: str, target_doc_id: str) -> Dict[str, Any]:
         """두 문서 간의 그래프 연결 정보 조회"""
-        query = """
-        MATCH (source:Document {id: $source_id})
-        MATCH (target:Document {id: $target_id})
-
-        // 공유 Topic
-        OPTIONAL MATCH (source)-[:HAS_TOPIC]->(t:Topic)<-[:HAS_TOPIC]-(target)
-        WITH source, target, collect(DISTINCT t.name) as shared_topics
-
-        // 공유 Tag
-        OPTIONAL MATCH (source)-[:HAS_TAG]->(tag:Tag)<-[:HAS_TAG]-(target)
-        WITH source, target, shared_topics, collect(DISTINCT tag.name) as shared_tags
-
-        // 공유 Category (2-hop)
-        OPTIONAL MATCH (source)-[:HAS_TOPIC]->(:Topic)-[:BELONGS_TO]->(c:Category)
-                      <-[:BELONGS_TO]-(:Topic)<-[:HAS_TOPIC]-(target)
-        WITH shared_topics, shared_tags, count(DISTINCT c) as shared_categories
-
-        // Graph Score 계산 (Topic: 3점, Tag: 1점, Category: 2점)
-        RETURN shared_topics,
-               shared_tags,
-               size(shared_topics) * 3 + size(shared_tags) * 1 + shared_categories * 2 as graph_score
-        """
-
         result = self.graph_repo.execute_query(
-            query,
+            GET_GRAPH_CONNECTIONS,
             {'source_id': source_doc_id, 'target_id': target_doc_id}
         )
 
