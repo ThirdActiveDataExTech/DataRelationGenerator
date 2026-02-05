@@ -21,7 +21,6 @@ class KnowledgeGraphService:
         self.embedder = SentenceTransformerEmbeddings(
             model=settings.EMBEDDING_MODEL_NAME
         )
-        logging.info("KnowledgeGraphService 초기화 완료")
 
     def find_related_documents_hybrid(
             self,
@@ -37,13 +36,9 @@ class KnowledgeGraphService:
             text_results = self._search_by_text_embedding(doc_text)
             graph_embedding_scores = self._search_by_graph_embedding(doc_id, top_k=50)
 
-            logging.info(f"텍스트 검색: {len(text_results.items)}개, 그래프 검색: {len(graph_embedding_scores)}개")
-
             combined_results = self._combine_search_scores(
                 doc_id, text_results, graph_embedding_scores, text_weight, graph_weight
             )
-
-            logging.info(f"결합된 결과: {len(combined_results)}개 고유 문서")
 
             if use_graph_structure:
                 self._add_graph_structure_info(doc_id, combined_results)
@@ -54,13 +49,9 @@ class KnowledgeGraphService:
                 reverse=True
             )[:top_k]
 
-            logging.info(f"정렬 후 상위 {top_k}개 선택: {len(sorted_results)}개")
-
             sorted_results = KnowledgeGraphService._deduplicate_results(sorted_results)
             related_docs = self._enrich_with_document_info(sorted_results)
             related_docs = [doc for doc in related_docs if doc["doc_id"] != doc_id]
-
-            logging.info(f"하이브리드 검색 완료: {len(related_docs)}개 (doc_id: {doc_id})")
 
             return related_docs
 

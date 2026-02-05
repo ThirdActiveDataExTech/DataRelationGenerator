@@ -34,7 +34,6 @@ class GraphRAGService:
         self.embedder = SentenceTransformerEmbeddings(
             model=settings.EMBEDDING_MODEL_NAME
         )
-        logging.info("GraphRAGService 초기화 완료")
 
     @staticmethod
     def _sanitize_properties(properties: Dict[str, Any]) -> Dict[str, Any]:
@@ -142,7 +141,6 @@ class GraphRAGService:
                 embedder=self.embedder
             )
             result = retriever.search(query_text=query, top_k=top_k)
-            logging.info(f"VectorRetriever 검색 결과: {len(result.items)}개")
 
             documents = []
             for item in result.items:
@@ -165,7 +163,6 @@ class GraphRAGService:
                     "related_documents": related_docs
                 })
 
-            logging.info(f"Document 검색 완료: {len(documents)}개")
             return documents
 
         except (ServiceUnavailable, ClientError, ValueError, AttributeError) as e:
@@ -176,39 +173,27 @@ class GraphRAGService:
         """content에서 doc_id 추출"""
         try:
             if isinstance(content, dict):
-                doc_id = content.get("id")
-                logging.info(f"Extracted doc_id from dict: {doc_id}")
-                return doc_id
+                return content.get("id")
 
             if isinstance(content, str):
-                # 방법 1: 정규표현식으로 'id' 필드 추출 (가장 빠르고 안정적)
                 match = re.search(r"'id':\s*'([^']+)'", content)
                 if match:
-                    doc_id = match.group(1)
-                    logging.info(f"Extracted doc_id via regex: {doc_id}")
-                    return doc_id
+                    return match.group(1)
 
-                # 방법 2: JSON 파싱 시도
                 try:
-                    # Python dict literal을 JSON으로 변환 ('를 "로 변경)
                     json_str = content.replace("'", '"')
                     content_dict = json.loads(json_str)
-                    doc_id = content_dict.get("id")
-                    logging.info(f"Extracted doc_id via JSON: {doc_id}")
-                    return doc_id
+                    return content_dict.get("id")
                 except:
                     pass
 
-                # 방법 3: ast.literal_eval 시도
                 try:
                     content_dict = ast.literal_eval(content)
-                    doc_id = content_dict.get("id")
-                    logging.info(f"Extracted doc_id via ast: {doc_id}")
-                    return doc_id
+                    return content_dict.get("id")
                 except:
                     pass
 
-                logging.warning(f"All extraction methods failed for content")
+                logging.warning("All extraction methods failed for content")
                 return None
 
             logging.warning(f"Unknown content type: {type(content)}")
@@ -262,18 +247,16 @@ class GraphRAGService:
             """
             result = self.graph_repo.execute_query(query, {"doc_id": doc_id, "limit": limit})
 
-            related_docs = []
-            for row in result:
-                related_docs.append({
+            return [
+                {
                     "target_doc_id": row.get("target_doc_id", ""),
                     "target_description": row.get("target_description", ""),
                     "relation_type": row.get("relation_type", ""),
                     "reason": row.get("reason", ""),
                     "confidence": row.get("confidence", 0.0)
-                })
-
-            logging.info(f"문서 {doc_id}의 연관 문서: {len(related_docs)}개")
-            return related_docs
+                }
+                for row in result
+            ]
 
         except (ServiceUnavailable, ClientError) as e:
             handle_graph_error(e, f"연관 문서 조회 (doc_id: {doc_id})")
