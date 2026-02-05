@@ -136,51 +136,34 @@ class GraphRAGService:
             Document 목록
         """
         try:
-            # VectorRetriever로 검색 (기본 벡터 검색)
             retriever = VectorRetriever(
                 driver=self.driver,
                 index_name="text_embedding_index",
                 embedder=self.embedder
             )
-
             result = retriever.search(query_text=query, top_k=top_k)
-
             logging.info(f"VectorRetriever 검색 결과: {len(result.items)}개")
 
             documents = []
-            for idx, item in enumerate(result.items):
-                # 디버깅: item 구조 확인
-                logging.info(f"[{idx}] item.content type: {type(item.content)}, value: {str(item.content)[:200]}")
-
-                # item.content에서 doc_id 추출
+            for item in result.items:
                 doc_id = self._extract_doc_id(item.content)
-                logging.info(f"[{idx}] extracted doc_id: {doc_id}")
-
                 if not doc_id:
-                    logging.warning(f"[{idx}] doc_id 추출 실패")
                     continue
 
-                # score 추출
-                score = item.metadata.get("score", 0) if hasattr(item, 'metadata') and item.metadata else 0
-                logging.info(f"[{idx}] score: {score}")
-
-                # Document 상세 정보 조회
                 doc_info = self._get_document_info(doc_id)
-                logging.info(f"[{idx}] doc_info: {doc_info is not None}")
+                if not doc_info:
+                    continue
 
-                if doc_info:
-                    # 연관 문서 조회
-                    related_docs = self._get_related_documents(doc_id, limit=5)
+                score = item.metadata.get("score", 0) if hasattr(item, 'metadata') and item.metadata else 0
+                related_docs = self._get_related_documents(doc_id, limit=5)
 
-                    documents.append({
-                        "doc_id": doc_id,
-                        "text": doc_info.get("text", ""),
-                        "description": doc_info.get("description", ""),
-                        "score": score,
-                        "related_documents": related_docs
-                    })
-                else:
-                    logging.warning(f"[{idx}] Document 정보 조회 실패 (doc_id: {doc_id})")
+                documents.append({
+                    "doc_id": doc_id,
+                    "text": doc_info.get("text", ""),
+                    "description": doc_info.get("description", ""),
+                    "score": score,
+                    "related_documents": related_docs
+                })
 
             logging.info(f"Document 검색 완료: {len(documents)}개")
             return documents
@@ -400,12 +383,16 @@ class GraphRAGService:
             # 기본: 1-hop
             return self._build_graph_extraction_query(1)
 
-    @staticmethod
-    def _format_nodes(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _format_nodes(
+            self,
+            nodes: List[Dict[str, Any]],
+            use_synthetic_id: bool = False
+    ) -> List[Dict[str, Any]]:
         """노드 포맷팅
 
         Args:
             nodes: 원본 노드 목록
+            use_synthetic_id: Tag/Category에 synthetic ID 사용 여부
 
         Returns:
             포맷팅된 노드 목록
@@ -417,43 +404,48 @@ class GraphRAGService:
             if not node:
                 continue
 
-            node_id = node.get("id")
+            labels = node.get("labels", [])
+            props = node.get("properties", {})
+
+            # synthetic ID 생성 (필요시)
+            if use_synthetic_id:
+                if "Tag" in labels:
+                    node_id = f"tag_{props.get('name')}"
+                elif "Category" in labels:
+                    node_id = f"category_{props.get('name')}"
+                else:
+                    node_id = node.get("id")
+            else:
+                node_id = node.get("id")
+
             if not node_id or node_id in seen_ids:
                 continue
 
             seen_ids.add(node_id)
 
-            # properties 정리 (시각화에 필요한 것만, DateTime 등 제거)
-            props = node.get("properties", {})
-            clean_props = {}
-            for key, value in props.items():
-                # 큰 데이터나 특수 타입 제외
-                if key in ("graph_embedding", "text_embedding"):
-                    continue
-
-                # Neo4j DateTime을 문자열로 변환
-                if hasattr(value, "__class__") and "DateTime" in value.__class__.__name__:
-                    clean_props[key] = str(value)
-                # 일반 타입만 포함 (str, int, float, bool, list, dict)
-                elif isinstance(value, (str, int, float, bool, list, dict, type(None))):
-                    clean_props[key] = value
+            # properties 정리
+            clean_props = self._sanitize_properties(props)
+            clean_props.pop("graph_embedding", None)
+            clean_props.pop("text_embedding", None)
 
             formatted.append({
                 "id": node_id,
-                "labels": node.get("labels", []),
+                "labels": labels,
                 "properties": clean_props
             })
 
         return formatted
 
-    @staticmethod
     def _format_relationships(
-            relationships: List[Dict[str, Any]]
+            self,
+            relationships: List[Dict[str, Any]],
+            id_mapping: Dict[str, str] = None
     ) -> List[Dict[str, Any]]:
         """관계 포맷팅
 
         Args:
             relationships: 원본 관계 목록
+            id_mapping: 원본 ID -> synthetic ID 매핑 (옵셔널)
 
         Returns:
             포맷팅된 관계 목록
@@ -465,28 +457,31 @@ class GraphRAGService:
             if not rel:
                 continue
 
-            # 중복 제거를 위한 키
-            key = (rel.get("type"), rel.get("start"), rel.get("end"))
+            rel_type = rel.get("type")
+            start = rel.get("start")
+            end = rel.get("end")
+
+            if not start or not end or not rel_type:
+                continue
+
+            # ID 매핑 적용 (있으면)
+            if id_mapping:
+                start = id_mapping.get(start, start)
+                end = id_mapping.get(end, end)
+
+            key = (rel_type, start, end)
             if key in seen:
                 continue
 
             seen.add(key)
 
-            # properties 정리 (DateTime 등 특수 타입 제거)
-            props = rel.get("properties", {})
-            clean_props = {}
-            for key, value in props.items():
-                # Neo4j DateTime을 문자열로 변환
-                if hasattr(value, "__class__") and "DateTime" in value.__class__.__name__:
-                    clean_props[key] = str(value)
-                # 일반 타입만 포함
-                elif isinstance(value, (str, int, float, bool, list, dict, type(None))):
-                    clean_props[key] = value
+            # properties 정리
+            clean_props = self._sanitize_properties(rel.get("properties", {}))
 
             formatted.append({
-                "type": rel.get("type"),
-                "start": rel.get("start"),
-                "end": rel.get("end"),
+                "type": rel_type,
+                "start": start,
+                "end": end,
                 "properties": clean_props
             })
 
@@ -708,6 +703,113 @@ class GraphRAGService:
             handle_graph_error(e, "간단한 그래프 생성")
             return {"nodes": [], "relationships": []}
 
+    def _build_explore_query(self, node_id: str) -> tuple[str, Dict[str, Any]]:
+        """노드 탐색 쿼리 생성
+
+        Args:
+            node_id: 노드 ID
+
+        Returns:
+            (쿼리 문자열, 파라미터) 튜플
+        """
+        # 공통 쿼리 템플릿
+        query_template = """
+        {match_clause}
+        OPTIONAL MATCH (center)-[r]-(connected)
+        WHERE connected:Document OR connected:Topic OR connected:Tag OR connected:Category
+        WITH center, collect(DISTINCT connected) as connected_nodes, collect(DISTINCT r) as relationships
+        WITH [center] + connected_nodes as all_nodes, relationships
+        RETURN [node IN all_nodes WHERE node IS NOT NULL | {{
+            id: COALESCE(node.id, node.name, elementId(node)),
+            labels: labels(node),
+            properties: properties(node)
+        }}] as nodes,
+        [rel IN relationships WHERE rel IS NOT NULL | {{
+            type: type(rel),
+            start: COALESCE(startNode(rel).id, startNode(rel).name, elementId(startNode(rel))),
+            end: COALESCE(endNode(rel).id, endNode(rel).name, elementId(endNode(rel))),
+            properties: properties(rel)
+        }}] as relationships
+        """
+
+        if node_id.startswith("tag_"):
+            match_clause = "MATCH (center:Tag {name: $name})"
+            params = {"name": node_id[4:]}
+        elif node_id.startswith("category_"):
+            match_clause = "MATCH (center:Category {name: $name})"
+            params = {"name": node_id[9:]}
+        else:
+            match_clause = "MATCH (center) WHERE center.id = $node_id OR elementId(center) = $node_id"
+            params = {"node_id": node_id}
+
+        return query_template.format(match_clause=match_clause), params
+
+    def _build_id_mapping(self, nodes: List[Dict[str, Any]]) -> Dict[str, str]:
+        """노드 ID 매핑 생성 (원본 ID -> synthetic ID)
+
+        Args:
+            nodes: 노드 목록
+
+        Returns:
+            ID 매핑 딕셔너리
+        """
+        id_mapping = {}
+        for node in nodes:
+            if not node:
+                continue
+
+            labels = node.get("labels", [])
+            props = node.get("properties", {})
+            original_id = node.get("id")
+
+            if "Tag" in labels:
+                synthetic_id = f"tag_{props.get('name')}"
+                id_mapping[original_id] = synthetic_id
+                id_mapping[props.get('name')] = synthetic_id
+            elif "Category" in labels:
+                synthetic_id = f"category_{props.get('name')}"
+                id_mapping[original_id] = synthetic_id
+                id_mapping[props.get('name')] = synthetic_id
+            else:
+                id_mapping[original_id] = original_id
+
+        return id_mapping
+
+    def _get_connected_documents(self, nodes: List[Dict[str, Any]], exclude_id: str) -> List[Dict[str, Any]]:
+        """연결된 Document 정보 조회
+
+        Args:
+            nodes: 포맷팅된 노드 목록
+            exclude_id: 제외할 노드 ID (중심 노드)
+
+        Returns:
+            연결된 Document 목록
+        """
+        doc_ids = [
+            node["id"] for node in nodes
+            if "Document" in node.get("labels", []) and node["id"] != exclude_id
+        ]
+
+        if not doc_ids:
+            return []
+
+        doc_query = """
+        MATCH (d:Document)
+        WHERE d.id IN $doc_ids
+        RETURN d.id as doc_id, d.text as text, d.description as description
+        """
+        doc_results = self.graph_repo.execute_query(doc_query, {"doc_ids": doc_ids})
+
+        return [
+            {
+                "doc_id": doc["doc_id"],
+                "text": doc.get("text", ""),
+                "description": doc.get("description", ""),
+                "score": 0.0
+            }
+            for doc in doc_results
+        ]
+
     def explore_node(self, node_id: str) -> Dict[str, Any]:
         """노드 중심 1-hop 그래프 탐색
 
@@ -725,7 +827,6 @@ class GraphRAGService:
             }
         """
         try:
-            # 1. 중심 노드 정보 조회
             center_node = self._get_node_info(node_id)
             if not center_node:
                 return {
@@ -735,75 +836,7 @@ class GraphRAGService:
                     "error": f"노드를 찾을 수 없습니다: {node_id}"
                 }
 
-            # 2. 1-hop 연결된 모든 노드 및 관계 조회
-            # Tag/Category synthetic ID 처리
-            if node_id.startswith("tag_"):
-                tag_name = node_id[4:]
-                graph_query = """
-                MATCH (center:Tag {name: $name})
-                OPTIONAL MATCH (center)-[r]-(connected)
-                WHERE connected:Document OR connected:Topic OR connected:Tag OR connected:Category
-                WITH center, collect(DISTINCT connected) as connected_nodes, collect(DISTINCT r) as relationships
-                WITH [center] + connected_nodes as all_nodes, relationships
-                RETURN [node IN all_nodes WHERE node IS NOT NULL | {
-                    id: COALESCE(node.id, node.name, elementId(node)),
-                    labels: labels(node),
-                    properties: properties(node)
-                }] as nodes,
-                [rel IN relationships WHERE rel IS NOT NULL | {
-                    type: type(rel),
-                    start: COALESCE(startNode(rel).id, startNode(rel).name, elementId(startNode(rel))),
-                    end: COALESCE(endNode(rel).id, endNode(rel).name, elementId(endNode(rel))),
-                    properties: properties(rel)
-                }] as relationships
-                """
-                query_params = {"name": tag_name}
-
-            elif node_id.startswith("category_"):
-                category_name = node_id[9:]
-                graph_query = """
-                MATCH (center:Category {name: $name})
-                OPTIONAL MATCH (center)-[r]-(connected)
-                WHERE connected:Document OR connected:Topic OR connected:Tag OR connected:Category
-                WITH center, collect(DISTINCT connected) as connected_nodes, collect(DISTINCT r) as relationships
-                WITH [center] + connected_nodes as all_nodes, relationships
-                RETURN [node IN all_nodes WHERE node IS NOT NULL | {
-                    id: COALESCE(node.id, node.name, elementId(node)),
-                    labels: labels(node),
-                    properties: properties(node)
-                }] as nodes,
-                [rel IN relationships WHERE rel IS NOT NULL | {
-                    type: type(rel),
-                    start: COALESCE(startNode(rel).id, startNode(rel).name, elementId(startNode(rel))),
-                    end: COALESCE(endNode(rel).id, endNode(rel).name, elementId(endNode(rel))),
-                    properties: properties(rel)
-                }] as relationships
-                """
-                query_params = {"name": category_name}
-
-            else:
-                # 일반 노드 (Document 등)
-                graph_query = """
-                MATCH (center)
-                WHERE center.id = $node_id OR elementId(center) = $node_id
-                OPTIONAL MATCH (center)-[r]-(connected)
-                WHERE connected:Document OR connected:Topic OR connected:Tag OR connected:Category
-                WITH center, collect(DISTINCT connected) as connected_nodes, collect(DISTINCT r) as relationships
-                WITH [center] + connected_nodes as all_nodes, relationships
-                RETURN [node IN all_nodes WHERE node IS NOT NULL | {
-                    id: COALESCE(node.id, node.name, elementId(node)),
-                    labels: labels(node),
-                    properties: properties(node)
-                }] as nodes,
-                [rel IN relationships WHERE rel IS NOT NULL | {
-                    type: type(rel),
-                    start: COALESCE(startNode(rel).id, startNode(rel).name, elementId(startNode(rel))),
-                    end: COALESCE(endNode(rel).id, endNode(rel).name, elementId(endNode(rel))),
-                    properties: properties(rel)
-                }] as relationships
-                """
-                query_params = {"node_id": node_id}
-
+            graph_query, query_params = self._build_explore_query(node_id)
             result = self.graph_repo.execute_query(graph_query, query_params)
 
             if not result:
@@ -813,60 +846,13 @@ class GraphRAGService:
                     "graph": {"nodes": [], "relationships": []}
                 }
 
-            # 3. 그래프 데이터 포맷팅 (Tag/Category는 synthetic ID 사용)
             raw_nodes = result[0].get("nodes", [])
             raw_relationships = result[0].get("relationships", [])
 
-            # 노드 ID 매핑 생성 (원본 ID -> synthetic ID)
-            id_mapping = {}
-            for node in raw_nodes:
-                if not node:
-                    continue
-                labels = node.get("labels", [])
-                props = node.get("properties", {})
-                original_id = node.get("id")
-
-                if "Tag" in labels:
-                    synthetic_id = f"tag_{props.get('name')}"
-                    id_mapping[original_id] = synthetic_id
-                    id_mapping[props.get('name')] = synthetic_id
-                elif "Category" in labels:
-                    synthetic_id = f"category_{props.get('name')}"
-                    id_mapping[original_id] = synthetic_id
-                    id_mapping[props.get('name')] = synthetic_id
-                else:
-                    id_mapping[original_id] = original_id
-
-            nodes = self._format_nodes_with_synthetic_id(raw_nodes)
-            relationships = self._format_relationships_with_synthetic_id(raw_relationships, id_mapping)
-
-            # 4. 연결된 Document 목록 추출
-            connected_doc_ids = [
-                node["id"] for node in nodes
-                if "Document" in node.get("labels", []) and node["id"] != node_id
-            ]
-
-            connected_documents = []
-            if connected_doc_ids:
-                doc_query = """
-                MATCH (d:Document)
-                WHERE d.id IN $doc_ids
-                RETURN d.id as doc_id, d.text as text, d.description as description
-                """
-                doc_results = self.graph_repo.execute_query(
-                    doc_query,
-                    {"doc_ids": connected_doc_ids}
-                )
-
-                connected_documents = [
-                    {
-                        "doc_id": doc["doc_id"],
-                        "text": doc.get("text", ""),
-                        "description": doc.get("description", ""),
-                        "score": 0.0
-                    }
-                    for doc in doc_results
-                ]
+            id_mapping = self._build_id_mapping(raw_nodes)
+            nodes = self._format_nodes(raw_nodes, use_synthetic_id=True)
+            relationships = self._format_relationships(raw_relationships, id_mapping=id_mapping)
+            connected_documents = self._get_connected_documents(nodes, node_id)
 
             logging.info(
                 f"노드 탐색 완료: {node_id}, "
@@ -961,107 +947,3 @@ class GraphRAGService:
         except (ServiceUnavailable, ClientError) as e:
             handle_graph_error(e, f"노드 정보 조회 (node_id: {node_id})")
             return None
-
-    def _format_nodes_with_synthetic_id(self, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """노드 포맷팅 (Tag/Category는 synthetic ID 사용)
-
-        Args:
-            nodes: 원본 노드 목록
-
-        Returns:
-            포맷팅된 노드 목록
-        """
-        formatted = []
-        seen_ids = set()
-
-        for node in nodes:
-            if not node:
-                continue
-
-            labels = node.get("labels", [])
-            props = node.get("properties", {})
-
-            # Tag/Category는 synthetic ID 생성
-            if "Tag" in labels:
-                node_id = f"tag_{props.get('name')}"
-            elif "Category" in labels:
-                node_id = f"category_{props.get('name')}"
-            else:
-                node_id = node.get("id")
-
-            if not node_id or node_id in seen_ids:
-                continue
-
-            seen_ids.add(node_id)
-
-            # properties 정리 (DateTime 변환 + 불필요한 필드 제거)
-            clean_props = self._sanitize_properties(props)
-            # 임베딩 필드 제거
-            clean_props.pop("graph_embedding", None)
-            clean_props.pop("text_embedding", None)
-
-            formatted.append({
-                "id": node_id,
-                "labels": labels,
-                "properties": clean_props
-            })
-
-        return formatted
-
-    def _format_relationships_with_synthetic_id(
-            self,
-            relationships: List[Dict[str, Any]],
-            id_mapping: Dict[str, str]
-    ) -> List[Dict[str, Any]]:
-        """관계 포맷팅 (Tag/Category는 synthetic ID 사용)
-
-        Args:
-            relationships: 원본 관계 목록
-            id_mapping: 원본 ID -> synthetic ID 매핑
-
-        Returns:
-            포맷팅된 관계 목록
-        """
-        formatted = []
-        seen = set()
-
-        for rel in relationships:
-            if not rel:
-                continue
-
-            rel_type = rel.get("type")
-            start = rel.get("start")
-            end = rel.get("end")
-
-            # None 체크
-            if not start or not end or not rel_type:
-                continue
-
-            # ID 매핑 적용
-            start = id_mapping.get(start, start)
-            end = id_mapping.get(end, end)
-
-            key = (rel_type, start, end)
-            if key in seen:
-                continue
-
-            seen.add(key)
-
-            # properties 정리 (DateTime 변환)
-            props = rel.get("properties", {})
-            clean_props = self._sanitize_properties(props)
-
-            # reason, confidence 명시적 추출
-            reason = clean_props.get("reason", "")
-            confidence = clean_props.get("confidence", 0.0)
-
-            formatted.append({
-                "type": rel_type,
-                "start": start,
-                "end": end,
-                "properties": clean_props,
-                "reason": reason,
-                "confidence": confidence
-            })
-
-        return formatted

@@ -56,17 +56,8 @@ class KnowledgeGraphService:
 
             logging.info(f"정렬 후 상위 {top_k}개 선택: {len(sorted_results)}개")
 
-            # 중복 제거 확인
-            unique_doc_ids = set(r["doc_id"] for r in sorted_results)
-            if len(unique_doc_ids) != len(sorted_results):
-                logging.warning(f"중복 문서 발견! 전체: {len(sorted_results)}, 고유: {len(unique_doc_ids)}")
-                # 중복 제거
-                seen = set()
-                sorted_results = [r for r in sorted_results if r["doc_id"] not in seen and not seen.add(r["doc_id"])]
-
+            sorted_results = KnowledgeGraphService._deduplicate_results(sorted_results)
             related_docs = self._enrich_with_document_info(sorted_results)
-
-            # 자기 자신 제거 (최종 안전장치)
             related_docs = [doc for doc in related_docs if doc["doc_id"] != doc_id]
 
             logging.info(f"하이브리드 검색 완료: {len(related_docs)}개 (doc_id: {doc_id})")
@@ -79,6 +70,19 @@ class KnowledgeGraphService:
         except (ValueError, KeyError, AttributeError) as e:
             logging.exception(f"하이브리드 검색 실패 (doc_id: {doc_id}) - 데이터 처리 오류")
             return []
+
+    @staticmethod
+    def _deduplicate_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """결과에서 중복 doc_id 제거
+
+        Args:
+            results: 검색 결과 목록
+
+        Returns:
+            중복 제거된 결과 목록
+        """
+        seen = set()
+        return [r for r in results if r["doc_id"] not in seen and not seen.add(r["doc_id"])]
 
     def _search_by_text_embedding(self, doc_text: str):
         """텍스트 임베딩 기반 검색"""
