@@ -22,12 +22,6 @@ WHERE d.id IN $doc_ids
 RETURN d.id as id, d.description as description
 """
 
-GET_DOCUMENT_DETAILS = """
-MATCH (d:Document)
-WHERE d.id IN $doc_ids
-RETURN d.id as doc_id, d.text as text, d.description as description
-"""
-
 # ========== 검색 관련 ==========
 
 SEARCH_BY_GRAPH_EMBEDDING = """
@@ -40,8 +34,8 @@ RETURN node.id as doc_id, score
 """
 
 GET_RELATED_DOCUMENTS = """
-MATCH (source:Document {id: $doc_id})-[r]->(target:Document)
-WHERE type(r) IN ['SIMILAR_TO', 'EXTENDS', 'CONTRADICTS', 'PREREQUISITE_OF', 'IMPLEMENTS', 'CO_OCCURS']
+MATCH (source:Document {id: $doc_id})
+MATCH (source)-[r:SIMILAR_TO|EXTENDS|CONTRADICTS|PREREQUISITE_OF|IMPLEMENTS|CO_OCCURS]->(target:Document)
 RETURN target.id as target_doc_id,
        target.description as target_description,
        type(r) as relation_type,
@@ -80,8 +74,7 @@ RETURN shared_topics,
 EXTRACT_GRAPH_1HOP = """
 MATCH (d:Document)
 WHERE d.id IN $doc_ids
-OPTIONAL MATCH path = (d)-[r]-(n)
-WHERE n:Topic OR n:Tag OR n:Category OR n:Document
+OPTIONAL MATCH path = (d)-[r]-(n:Topic|Tag|Category|Document)
 WITH collect(DISTINCT d) + collect(DISTINCT n) as nodes,
      collect(DISTINCT r) as rels
 RETURN [node IN nodes | {
@@ -101,9 +94,7 @@ RETURN [node IN nodes | {
 EXTRACT_GRAPH_2HOP = """
 MATCH (d:Document)
 WHERE d.id IN $doc_ids
-OPTIONAL MATCH path = (d)-[r1]-(n1)-[r2]-(n2)
-WHERE (n1:Topic OR n1:Tag OR n1:Category OR n1:Document)
-  AND (n2:Topic OR n2:Tag OR n2:Category OR n2:Document)
+OPTIONAL MATCH path = (d)-[r1]-(n1:Topic|Tag|Category|Document)-[r2]-(n2:Topic|Tag|Category|Document)
 WITH collect(DISTINCT d) + collect(DISTINCT n1) + collect(DISTINCT n2) as nodes,
      collect(DISTINCT r1) + collect(DISTINCT r2) as rels
 RETURN [node IN nodes | {
@@ -166,8 +157,7 @@ LIMIT 1
 
 EXPLORE_NODE_TEMPLATE = """
 {match_clause}
-OPTIONAL MATCH (center)-[r]-(connected)
-WHERE connected:Document OR connected:Topic OR connected:Tag OR connected:Category
+OPTIONAL MATCH (center)-[r]-(connected:Document|Topic|Tag|Category)
 WITH center, collect(DISTINCT connected) as connected_nodes, collect(DISTINCT r) as relationships
 WITH [center] + connected_nodes as all_nodes, relationships
 RETURN [node IN all_nodes WHERE node IS NOT NULL | {{

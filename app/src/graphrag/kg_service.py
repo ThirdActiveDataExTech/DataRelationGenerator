@@ -19,6 +19,7 @@ class KnowledgeGraphService:
     """neo4j-graphrag-python 기반 Knowledge Graph 서비스"""
 
     def __init__(self, graph_repo: GraphRepository):
+        """KnowledgeGraphService 초기화"""
         self.graph_repo = graph_repo
         self.driver = graph_repo.driver
         self.embedder = SentenceTransformerEmbeddings(model=settings.EMBEDDING_MODEL_NAME)
