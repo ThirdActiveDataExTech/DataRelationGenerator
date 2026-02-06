@@ -1,19 +1,48 @@
-FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim AS builder-base
+# Global ARG for use in FROM statements
+ARG VARIANT=cpu
+
+# Production base images
+FROM python:3.11-slim AS base-cpu
+
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04 AS base-cu124-raw
+
+# Install Python on CUDA image
+FROM base-cu124-raw AS base-cu124
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3-pip && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# CUDA library 환경변수 추가
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12.4/compat:${LD_LIBRARY_PATH}
+
+# Builder stage - uses VARIANT-specific base
+FROM base-${VARIANT} AS builder-base
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 ENV PYTHONUNBUFFERED=1 \
-    # prevents python creating .pyc files
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
 COPY uv.lock pyproject.toml ./
 
+ARG VARIANT
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --link-mode=copy
+    if [ "$VARIANT" = "cu124" ]; then \
+        uv sync --frozen --no-install-project --link-mode=copy --extra $VARIANT; \
+    else \
+        uv sync --frozen --no-install-project --link-mode=copy; \
+    fi
 
-
-# `production` image used for runtime
-FROM python:3.11-slim AS production
+# Final production stage
+FROM base-${VARIANT} AS production
 
 # Setting home directory and user name
 ENV APP_HOME=/home/wisenut/app \
@@ -25,6 +54,7 @@ RUN groupadd -r $GROUP_NAME && useradd -r -g $GROUP_NAME -d $APP_HOME $APP_USER
 
 # Set the working directory
 WORKDIR $APP_HOME
+RUN chown -R $APP_USER:$GROUP_NAME $APP_HOME
 
 # Set environment variables
 ARG DEBIAN_FRONTEND=noninteractive
@@ -34,20 +64,27 @@ ENV TZ=Asia/Seoul \
     VIRTUAL_ENV=/app/.venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# Copy necessary files and directory (as root)
-COPY --from=builder-base $VIRTUAL_ENV $VIRTUAL_ENV
-COPY pyproject.toml .env ./
-COPY ./static ./static/
-COPY ./app ./app/
-
-# Generate version info file with proper environment (as root)
-RUN python app/version.py
-
-# Set ownership of all files to the app user
-RUN chown -R $APP_USER:$GROUP_NAME $APP_HOME
-
 # Switch to the non-root user
 USER $APP_USER
+
+# Copy virtual environment from builder
+COPY --from=builder-base --chown=$APP_USER:$GROUP_NAME $VIRTUAL_ENV $VIRTUAL_ENV
+
+# Copy files in order of change frequency (least to most)
+# Static files change rarely
+COPY --chown=$APP_USER:$GROUP_NAME ./static ./static/
+
+# Model files (if any) - these are large but rarely change
+# COPY --chown=$APP_USER:$GROUP_NAME ./model ./model/
+
+# Config files
+COPY --chown=$APP_USER:$GROUP_NAME pyproject.toml .env ./
+
+# Application code changes most frequently
+COPY --chown=$APP_USER:$GROUP_NAME ./app ./app/
+
+# Generate version info file
+RUN python app/version.py
 
 # Expose the port
 EXPOSE 8000
