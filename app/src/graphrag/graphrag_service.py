@@ -1,5 +1,4 @@
 import ast
-import json
 import re
 from typing import Dict, Any, List
 
@@ -14,7 +13,6 @@ from neo4j_graphrag.embeddings import SentenceTransformerEmbeddings
 from neo4j_graphrag.retrievers import VectorRetriever
 
 from app.config import settings
-from app.exceptions.graphrag import handle_graph_error
 from app.repositories.graph_queries import (
     GET_DOCUMENT_INFO,
     GET_RELATED_DOCUMENTS,
@@ -44,39 +42,19 @@ class GraphRAGService:
     """Graph RAG 검색 서비스 - 사용자 질의 기반 그래프 구조 반환"""
 
     def __init__(self, graph_repo: GraphRepository):
-        """GraphRAGService 초기화
-
-        Args:
-            graph_repo: GraphRepository 인스턴스
-        """
         self.graph_repo = graph_repo
         self.driver = graph_repo.driver
-
-        self.embedder = SentenceTransformerEmbeddings(
-            model=settings.EMBEDDING_MODEL_NAME
-        )
+        self.embedder = SentenceTransformerEmbeddings(model=settings.EMBEDDING_MODEL_NAME)
 
     @staticmethod
     def _sanitize_properties(properties: Dict[str, Any]) -> Dict[str, Any]:
-        """Neo4j 속성을 JSON 직렬화 가능한 형태로 변환
-
-        Args:
-            properties: Neo4j 노드/관계 속성
-
-        Returns:
-            직렬화 가능한 속성 dict
-        """
+        """Neo4j 속성을 JSON 직렬화 가능한 형태로 변환"""
         sanitized = {}
         for key, value in properties.items():
             if isinstance(value, DateTime):
-                # Neo4j DateTime을 ISO 형식 문자열로 변환
                 sanitized[key] = value.isoformat()
             elif isinstance(value, (list, tuple)):
-                # 리스트 내부의 DateTime도 변환
-                sanitized[key] = [
-                    v.isoformat() if isinstance(v, DateTime) else v
-                    for v in value
-                ]
+                sanitized[key] = [v.isoformat() if isinstance(v, DateTime) else v for v in value]
             else:
                 sanitized[key] = value
         return sanitized
@@ -86,15 +64,7 @@ class GraphRAGService:
             query: str,
             top_k: int = 5
     ) -> Dict[str, Any]:
-        """사용자 질의 기반 Graph RAG 검색
-
-        Args:
-            query: 사용자 질의
-            top_k: 반환할 Document 개수 (기본: 5)
-
-        Returns:
-            GraphRAGSearchResponse를 dict로 변환한 결과
-        """
+        """사용자 질의 기반 Graph RAG 검색"""
         try:
             documents = self._search_documents(query, top_k)
 
@@ -119,19 +89,11 @@ class GraphRAGService:
             return response.model_dump()
 
         except (ServiceUnavailable, TransientError, ClientError, ValueError, KeyError, AttributeError) as e:
-            handle_graph_error(e, "Graph RAG 검색")
+            logging.exception(f"Graph RAG 검색 실패: {e}")
             return GraphRAGSearchResponse.empty(query, error=str(e)).model_dump()
 
     def _search_documents(self, query: str, top_k: int) -> List[Dict[str, Any]]:
-        """텍스트 임베딩 기반 Document 검색
-
-        Args:
-            query: 사용자 질의
-            top_k: 반환할 Document 개수
-
-        Returns:
-            Document 목록
-        """
+        """텍스트 임베딩 기반 Document 검색"""
         try:
             retriever = VectorRetriever(
                 driver=self.driver,
@@ -164,89 +126,59 @@ class GraphRAGService:
             return documents
 
         except (ServiceUnavailable, ClientError, ValueError, AttributeError) as e:
-            handle_graph_error(e, "Document 검색")
+            logging.exception(f"Document 검색 실패: {e}")
             return []
 
-    def _extract_doc_id(self, content) -> str | None:
-        """content에서 doc_id 추출"""
-        try:
-            if isinstance(content, dict):
-                return content.get("id")
+    @staticmethod
+    def _extract_doc_id(content) -> str | None:
+        """Content에서 doc_id 추출 (Neo4j에서 가져온 검증된 데이터)"""
+        if isinstance(content, dict):
+            return content.get("id")
 
-            if isinstance(content, str):
+        if isinstance(content, str):
+            try:
+                content_dict = ast.literal_eval(content)
+                return content_dict.get("id") if isinstance(content_dict, dict) else None
+            except (ValueError, SyntaxError):
                 match = re.search(r"'id':\s*'([^']+)'", content)
-                if match:
-                    return match.group(1)
+                return match.group(1) if match else None
 
-                try:
-                    json_str = content.replace("'", '"')
-                    content_dict = json.loads(json_str)
-                    return content_dict.get("id")
-                except:
-                    pass
-
-                try:
-                    content_dict = ast.literal_eval(content)
-                    return content_dict.get("id")
-                except:
-                    pass
-
-                logging.warning("All extraction methods failed for content")
-                return None
-
-            logging.warning(f"Unknown content type: {type(content)}")
-            return None
-
-        except Exception as e:
-            logging.error(f"Failed to extract doc_id: {e}")
-            return None
+        return None
 
     def _get_document_info(self, doc_id: str) -> Dict[str, Any] | None:
         """Document 상세 정보 조회"""
-        try:
-            result = self.graph_repo.execute_query(GET_DOCUMENT_INFO, {"doc_id": doc_id})
+        result = self.graph_repo.execute_query(GET_DOCUMENT_INFO, {"doc_id": doc_id})
 
-            if result:
-                return {
-                    "text": result[0].get("text", ""),
-                    "description": result[0].get("description", "")
-                }
+        if not result:
             return None
 
-        except (ServiceUnavailable, ClientError) as e:
-            handle_graph_error(e, f"Document 정보 조회 (doc_id: {doc_id})")
-            return None
+        return {
+            "text": result[0].get("text", ""),
+            "description": result[0].get("description", "")
+        }
 
     def _get_related_documents(self, doc_id: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """문서의 연관 문서 조회 (함께 보면 좋은 문서)
+        """문서의 연관 문서 조회
 
         Args:
             doc_id: 문서 ID
             limit: 최대 반환 개수
 
         Returns:
-            연관 문서 목록 [{target_doc_id, target_description, relation_type, reason, confidence}]
+            연관 문서 목록
         """
-        try:
-            result = self.graph_repo.execute_query(
-                GET_RELATED_DOCUMENTS,
-                {"doc_id": doc_id, "limit": limit}
-            )
+        result = self.graph_repo.execute_query(GET_RELATED_DOCUMENTS, {"doc_id": doc_id, "limit": limit})
 
-            return [
-                {
-                    "target_doc_id": row.get("target_doc_id", ""),
-                    "target_description": row.get("target_description", ""),
-                    "relation_type": row.get("relation_type", ""),
-                    "reason": row.get("reason", ""),
-                    "confidence": row.get("confidence", 0.0)
-                }
-                for row in result
-            ]
-
-        except (ServiceUnavailable, ClientError) as e:
-            handle_graph_error(e, f"연관 문서 조회 (doc_id: {doc_id})")
-            return []
+        return [
+            {
+                "target_doc_id": row.get("target_doc_id", ""),
+                "target_description": row.get("target_description", ""),
+                "relation_type": row.get("relation_type", ""),
+                "reason": row.get("reason", ""),
+                "confidence": row.get("confidence", 0.0)
+            }
+            for row in result
+        ]
 
     def _extract_graph_structure(
             self,
@@ -257,75 +189,36 @@ class GraphRAGService:
 
         Args:
             doc_ids: Document ID 목록
-            depth: 그래프 탐색 깊이 (1 = 1-hop, 2 = 2-hop)
-
-        Returns:
-            {
-                "nodes": [...],
-                "relationships": [...]
-            }
-        """
-        try:
-            # Cypher 쿼리로 그래프 구조 추출
-            query = self._build_graph_extraction_query(depth)
-
-            result = self.graph_repo.execute_query(
-                query,
-                {"doc_ids": doc_ids}
-            )
-
-            if not result:
-                return {"nodes": [], "relationships": []}
-
-            # 결과 파싱
-            nodes = result[0].get("nodes", [])
-            relationships = result[0].get("relationships", [])
-
-            # 노드 포맷팅
-            formatted_nodes = self._format_nodes(nodes)
-
-            # 관계 포맷팅
-            formatted_relationships = self._format_relationships(relationships)
-
-            return {
-                "nodes": formatted_nodes,
-                "relationships": formatted_relationships
-            }
-
-        except (ServiceUnavailable, ClientError) as e:
-            handle_graph_error(e, "그래프 구조 추출")
-            return {"nodes": [], "relationships": []}
-
-    def _build_graph_extraction_query(self, depth: int) -> str:
-        """그래프 추출 Cypher 쿼리 생성
-
-        Args:
             depth: 그래프 탐색 깊이
 
         Returns:
-            Cypher 쿼리
+            그래프 구조 dict
         """
-        if depth == 1:
-            return EXTRACT_GRAPH_1HOP
-        elif depth == 2:
-            return EXTRACT_GRAPH_2HOP
-        else:
-            return EXTRACT_GRAPH_1HOP
+        query = self._build_graph_extraction_query(depth)
+        result = self.graph_repo.execute_query(query, {"doc_ids": doc_ids})
+
+        if not result:
+            return {"nodes": [], "relationships": []}
+
+        nodes = result[0].get("nodes", [])
+        relationships = result[0].get("relationships", [])
+
+        return {
+            "nodes": self._format_nodes(nodes),
+            "relationships": self._format_relationships(relationships)
+        }
+
+    @staticmethod
+    def _build_graph_extraction_query(depth: int) -> str:
+        """그래프 추출 Cypher 쿼리 생성"""
+        return EXTRACT_GRAPH_2HOP if depth == 2 else EXTRACT_GRAPH_1HOP
 
     def _format_nodes(
             self,
             nodes: List[Dict[str, Any]],
             use_synthetic_id: bool = False
     ) -> List[Dict[str, Any]]:
-        """노드 포맷팅
-
-        Args:
-            nodes: 원본 노드 목록
-            use_synthetic_id: Tag/Category에 synthetic ID 사용 여부
-
-        Returns:
-            포맷팅된 노드 목록
-        """
+        """노드 포맷팅"""
         formatted = []
         seen_ids = set()
 
@@ -448,48 +341,21 @@ class GraphRAGService:
         ]
 
     def _calculate_common_metadata(self, doc_ids: List[str]) -> Dict[str, List[Dict[str, Any]]]:
-        """검색된 Document들의 공통 Category/Tag 집계
-
-        Args:
-            doc_ids: Document ID 목록
-
-        Returns:
-            {
-                "categories": [{"name": "카테고리명", "doc_count": 3, "coverage": 0.6}],
-                "common_tags": [{"name": "태그명", "doc_count": 4, "coverage": 0.8}]
-            }
-        """
-        try:
-            results = self.graph_repo.execute_query(
-                CALCULATE_COMMON_METADATA,
-                {"doc_ids": doc_ids}
-            )
-            if not results:
-                return {"categories": [], "common_tags": []}
-
-            total_docs = len(doc_ids)
-            categories = self._aggregate_metadata_counts(results, "categories", total_docs)
-            common_tags = self._aggregate_metadata_counts(results, "tags", total_docs)
-
-            logging.info(
-                f"공통 메타데이터 집계: Category {len(categories)}개, Tag {len(common_tags)}개"
-            )
-
-            return {"categories": categories, "common_tags": common_tags}
-
-        except (ServiceUnavailable, ClientError) as e:
-            handle_graph_error(e, "공통 메타데이터 계산")
+        """검색된 Document들의 공통 Category/Tag 집계"""
+        results = self.graph_repo.execute_query(CALCULATE_COMMON_METADATA, {"doc_ids": doc_ids})
+        if not results:
             return {"categories": [], "common_tags": []}
 
+        total_docs = len(doc_ids)
+        categories = self._aggregate_metadata_counts(results, "categories", total_docs)
+        common_tags = self._aggregate_metadata_counts(results, "tags", total_docs)
+
+        logging.info(f"공통 메타데이터 집계: Category {len(categories)}개, Tag {len(common_tags)}개")
+
+        return {"categories": categories, "common_tags": common_tags}
+
     def _get_document_nodes(self, doc_ids: List[str]) -> List[Dict[str, Any]]:
-        """Document 노드 조회
-
-        Args:
-            doc_ids: Document ID 목록
-
-        Returns:
-            Document 노드 목록
-        """
+        """Document 노드 조회"""
         doc_results = self.graph_repo.execute_query(GET_DOCUMENT_NODES, {"doc_ids": doc_ids})
 
         return [
@@ -509,31 +375,15 @@ class GraphRAGService:
             metadata_list: List[Dict[str, Any]],
             min_coverage: float = 0.5
     ) -> List[Dict[str, Any]]:
-        """coverage 기준으로 메타데이터 필터링
-
-        Args:
-            metadata_list: 메타데이터 목록
-            min_coverage: 최소 coverage 값
-
-        Returns:
-            필터링된 메타데이터 목록
-        """
+        """coverage 기준으로 메타데이터 필터링"""
         return [item for item in metadata_list if item.get("coverage", 0) >= min_coverage]
 
+    @staticmethod
     def _create_metadata_nodes(
-            self,
             categories: List[Dict[str, Any]],
             tags: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Category/Tag 노드 생성
-
-        Args:
-            categories: 카테고리 목록
-            tags: 태그 목록
-
-        Returns:
-            생성된 노드 목록
-        """
+        """Category/Tag 노드 생성"""
         nodes = []
 
         for cat in categories:
@@ -633,48 +483,32 @@ class GraphRAGService:
 
         Args:
             doc_ids: Document ID 목록
-            common_metadata: 공통 메타데이터 (categories, common_tags)
+            common_metadata: 공통 메타데이터
 
         Returns:
-            {
-                "nodes": [...],
-                "relationships": [...]
-            }
+            그래프 구조 dict
         """
-        try:
-            nodes = self._get_document_nodes(doc_ids)
+        nodes = self._get_document_nodes(doc_ids)
 
-            common_categories = self._filter_common_metadata(common_metadata.get("categories", []))
-            common_tags = self._filter_common_metadata(common_metadata.get("common_tags", []))
+        common_categories = self._filter_common_metadata(common_metadata.get("categories", []))
+        common_tags = self._filter_common_metadata(common_metadata.get("common_tags", []))
 
-            nodes.extend(self._create_metadata_nodes(common_categories, common_tags))
+        nodes.extend(self._create_metadata_nodes(common_categories, common_tags))
 
-            category_names = [cat["name"] for cat in common_categories]
-            tag_names = [tag["name"] for tag in common_tags]
+        category_names = [cat["name"] for cat in common_categories]
+        tag_names = [tag["name"] for tag in common_tags]
 
-            relationships = []
-            relationships.extend(self._get_category_relationships(doc_ids, category_names))
-            relationships.extend(self._get_tag_relationships(doc_ids, tag_names))
+        relationships = []
+        relationships.extend(self._get_category_relationships(doc_ids, category_names))
+        relationships.extend(self._get_tag_relationships(doc_ids, tag_names))
 
-            logging.info(
-                f"간단한 그래프 생성: {len(nodes)}개 노드, {len(relationships)}개 관계"
-            )
+        logging.info(f"간단한 그래프 생성: {len(nodes)}개 노드, {len(relationships)}개 관계")
 
-            return {"nodes": nodes, "relationships": relationships}
+        return {"nodes": nodes, "relationships": relationships}
 
-        except (ServiceUnavailable, ClientError) as e:
-            handle_graph_error(e, "간단한 그래프 생성")
-            return {"nodes": [], "relationships": []}
-
-    def _build_explore_query(self, node_id: str) -> tuple[str, Dict[str, Any]]:
-        """노드 탐색 쿼리 생성
-
-        Args:
-            node_id: 노드 ID
-
-        Returns:
-            (쿼리 문자열, 파라미터) 튜플
-        """
+    @staticmethod
+    def _build_explore_query(node_id: str) -> tuple[str, Dict[str, Any]]:
+        """노드 탐색 쿼리 생성"""
         if node_id.startswith("tag_"):
             match_clause = "MATCH (center:Tag {name: $name})"
             params = {"name": node_id[4:]}
@@ -688,14 +522,7 @@ class GraphRAGService:
         return EXPLORE_NODE_TEMPLATE.format(match_clause=match_clause), params
 
     def _build_id_mapping(self, nodes: List[Dict[str, Any]]) -> Dict[str, str]:
-        """노드 ID 매핑 생성 (원본 ID -> synthetic ID)
-
-        Args:
-            nodes: 노드 목록
-
-        Returns:
-            ID 매핑 딕셔너리
-        """
+        """노드 ID 매핑 생성 (원본 ID -> synthetic ID)"""
         id_mapping = {}
         for node in nodes:
             if not node:
@@ -794,7 +621,7 @@ class GraphRAGService:
             return response.model_dump()
 
         except (ServiceUnavailable, ClientError) as e:
-            handle_graph_error(e, f"노드 탐색 (node_id: {node_id})")
+            logging.exception(f"노드 탐색 실패 (node_id: {node_id}): {e}")
             return NodeExploreResponse.empty(error=str(e)).model_dump()
 
     def _get_node_info(self, node_id: str) -> Dict[str, Any] | None:
@@ -806,45 +633,23 @@ class GraphRAGService:
         Returns:
             노드 정보 또는 None
         """
-        try:
-            if node_id.startswith("tag_"):
-                tag_name = node_id[4:]
-                result = self.graph_repo.execute_query(GET_NODE_BY_TAG, {"name": tag_name})
+        if node_id.startswith("tag_"):
+            query, params = GET_NODE_BY_TAG, {"name": node_id[4:]}
+        elif node_id.startswith("category_"):
+            query, params = GET_NODE_BY_CATEGORY, {"name": node_id[9:]}
+        else:
+            query, params = GET_NODE_BY_ID, {"node_id": node_id}
 
-                if result:
-                    node = result[0]
-                    return {
-                        "id": node_id,
-                        "labels": node.get("labels", []),
-                        "properties": self._sanitize_properties(node.get("properties", {}))
-                    }
-                return None
-
-            elif node_id.startswith("category_"):
-                category_name = node_id[9:]
-                result = self.graph_repo.execute_query(GET_NODE_BY_CATEGORY, {"name": category_name})
-
-                if result:
-                    node = result[0]
-                    return {
-                        "id": node_id,
-                        "labels": node.get("labels", []),
-                        "properties": self._sanitize_properties(node.get("properties", {}))
-                    }
-                return None
-
-            else:
-                result = self.graph_repo.execute_query(GET_NODE_BY_ID, {"node_id": node_id})
-
-                if result:
-                    node = result[0]
-                    return {
-                        "id": node.get("properties", {}).get("id") or node.get("id"),
-                        "labels": node.get("labels", []),
-                        "properties": self._sanitize_properties(node.get("properties", {}))
-                    }
-                return None
-
-        except (ServiceUnavailable, ClientError) as e:
-            handle_graph_error(e, f"노드 정보 조회 (node_id: {node_id})")
+        result = self.graph_repo.execute_query(query, params)
+        if not result:
             return None
+
+        node = result[0]
+        final_id = node_id if node_id.startswith(("tag_", "category_")) else (
+                node.get("properties", {}).get("id") or node.get("id"))
+
+        return {
+            "id": final_id,
+            "labels": node.get("labels", []),
+            "properties": self._sanitize_properties(node.get("properties", {}))
+        }

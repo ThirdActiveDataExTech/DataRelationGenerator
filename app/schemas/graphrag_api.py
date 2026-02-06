@@ -75,7 +75,7 @@ class GraphRAGSearchResponse(BaseModel):
         default_factory=GraphStructure,
         description="간단한 그래프 구조 (Document + 공통 Category/Tag만)"
     )
-    error: str | None = Field(None, description="에러 메시지 (있을 경우)")
+    error: str | None = None
 
     @classmethod
     def empty(cls, query: str, error: str | None = None) -> "GraphRAGSearchResponse":
@@ -90,7 +90,7 @@ class NodeExploreRequest(BaseModel):
 
 class NodeExploreResponse(BaseModel):
     """노드 탐색 응답"""
-    center_node: GraphNode | None = Field(None, description="중심 노드")
+    center_node: GraphNode | None = None
     connected_documents: List[DocumentResult] = Field(
         default_factory=list,
         description="연결된 Document 목록"
@@ -99,7 +99,7 @@ class NodeExploreResponse(BaseModel):
         default_factory=GraphStructure,
         description="중심 노드 기준 1-hop 그래프"
     )
-    error: str | None = Field(None, description="에러 메시지 (있을 경우)")
+    error: str | None = None
 
     @classmethod
     def empty(cls, center_node: GraphNode | None = None, error: str | None = None) -> "NodeExploreResponse":

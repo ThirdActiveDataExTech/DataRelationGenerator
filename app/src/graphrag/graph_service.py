@@ -37,11 +37,8 @@ class GraphService:
         return GraphRAGService(graph_repo=self.graph_repo)
 
     def check_graph_embedding_exists(self, doc_id: str) -> bool:
-        """Document에 graph_embedding이 있는지 확인"""
-        query = """
-        MATCH (d:Document {id: $doc_id})
-        RETURN d.graph_embedding IS NOT NULL as has_embedding
-        """
+        """Document에 graph_embedding 존재 여부 확인"""
+        query = "MATCH (d:Document {id: $doc_id}) RETURN d.graph_embedding IS NOT NULL as has_embedding"
         result = self.graph_repo.execute_query(query, {"doc_id": doc_id})
         return result[0]["has_embedding"] if result else False
 
@@ -204,21 +201,19 @@ class GraphService:
             )
 
     def _get_target_documents(self, doc_id: str = None) -> List[Dict[str, str]]:
-        """분석 대상 문서 조회 (이미 관계가 있는 문서 제외)"""
+        """분석 대상 문서 조회"""
         if doc_id:
-            # 특정 문서 지정 시: 해당 문서만 (이미 관계가 있어도 재분석)
             query = "MATCH (d:Document {id: $doc_id}) RETURN d.id as doc_id, d.text as text"
             return self.graph_repo.execute_query(query, {"doc_id": doc_id})
-        else:
-            # 전체 문서 분석 시: 아직 outgoing 관계가 없는 문서만
-            query = """
-            MATCH (d:Document)
-            WHERE NOT EXISTS {
-                MATCH (d)-[r:SIMILAR_TO|CONTRADICTS|EXTENDS|PREREQUISITE_OF|IMPLEMENTS|CO_OCCURS]->(:Document)
-            }
-            RETURN d.id as doc_id, d.text as text
-            """
-            return self.graph_repo.execute_query(query)
+
+        query = """
+        MATCH (d:Document)
+        WHERE NOT EXISTS {
+            MATCH (d)-[r:SIMILAR_TO|CONTRADICTS|EXTENDS|PREREQUISITE_OF|IMPLEMENTS|CO_OCCURS]->(:Document)
+        }
+        RETURN d.id as doc_id, d.text as text
+        """
+        return self.graph_repo.execute_query(query)
 
     def _analyze_single_document(
             self,
@@ -288,25 +283,33 @@ class GraphService:
             metadata: Dict[str, Any],
             related_docs: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """LLM으로 Document 간 관계 추론 (각 문서 쌍 1:1로 처리)"""
+        """LLM으로 Document 간 관계 추론"""
         if not related_docs:
             return []
 
         unique_related_docs = self._deduplicate_related_docs(related_docs)
 
-        return [
-            relation for related_doc in unique_related_docs
-            if (relation := self._infer_single_relation(doc_id, doc_text, metadata, related_doc))
-        ]
+        relations = []
+        for related_doc in unique_related_docs:
+            relation = self._infer_single_relation(doc_id, doc_text, metadata, related_doc)
+            if relation:
+                relations.append(relation)
+
+        return relations
 
     @staticmethod
     def _deduplicate_related_docs(related_docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """관련 문서 목록에서 중복 제거"""
         seen = set()
-        return [
-            doc for doc in related_docs
-            if doc.get("doc_id") and doc["doc_id"] not in seen and not seen.add(doc["doc_id"])
-        ]
+        unique_docs = []
+
+        for doc in related_docs:
+            doc_id = doc.get("doc_id")
+            if doc_id and doc_id not in seen:
+                seen.add(doc_id)
+                unique_docs.append(doc)
+
+        return unique_docs
 
     def _infer_single_relation(
             self,
