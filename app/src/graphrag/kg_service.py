@@ -19,13 +19,9 @@ class KnowledgeGraphService:
     """neo4j-graphrag-python 기반 Knowledge Graph 서비스"""
 
     def __init__(self, graph_repo: GraphRepository):
-        """Init 매서드 - GraphRepository 및 임베딩 모델 초기화"""
         self.graph_repo = graph_repo
         self.driver = graph_repo.driver
-
-        self.embedder = SentenceTransformerEmbeddings(
-            model=settings.EMBEDDING_MODEL_NAME
-        )
+        self.embedder = SentenceTransformerEmbeddings(model=settings.EMBEDDING_MODEL_NAME)
 
     def find_related_documents_hybrid(
             self,
@@ -60,25 +56,26 @@ class KnowledgeGraphService:
 
             return related_docs
 
-        except (ServiceUnavailable, ClientError) as e:
+        except (ServiceUnavailable, ClientError):
             logging.exception(f"하이브리드 검색 실패 (doc_id: {doc_id}) - DB 오류")
             return []
-        except (ValueError, KeyError, AttributeError) as e:
+        except (ValueError, KeyError, AttributeError):
             logging.exception(f"하이브리드 검색 실패 (doc_id: {doc_id}) - 데이터 처리 오류")
             return []
 
     @staticmethod
     def _deduplicate_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """결과에서 중복 doc_id 제거
-
-        Args:
-            results: 검색 결과 목록
-
-        Returns:
-            중복 제거된 결과 목록
-        """
+        """결과에서 중복 doc_id 제거"""
         seen = set()
-        return [r for r in results if r["doc_id"] not in seen and not seen.add(r["doc_id"])]
+        unique_results = []
+
+        for result in results:
+            doc_id = result["doc_id"]
+            if doc_id not in seen:
+                seen.add(doc_id)
+                unique_results.append(result)
+
+        return unique_results
 
     def _search_by_text_embedding(self, doc_text: str):
         """텍스트 임베딩 기반 검색"""
@@ -142,18 +139,12 @@ class KnowledgeGraphService:
             combined_results[candidate_id]["graph_score"] = graph_data["graph_score"]
 
     def _enrich_with_document_info(self, sorted_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """문서 상세 정보 추가 (필요한 필드만 선택)"""
+        """문서 상세 정보 추가"""
         if not sorted_results:
             return []
 
         doc_ids = [result["doc_id"] for result in sorted_results]
-
-        # N+1 쿼리 문제 해결: 일괄 조회
-        doc_infos = self.graph_repo.execute_query(
-            GET_DOCUMENTS_BY_IDS,
-            {'doc_ids': doc_ids}
-        )
-
+        doc_infos = self.graph_repo.execute_query(GET_DOCUMENTS_BY_IDS, {'doc_ids': doc_ids})
         doc_info_map = {doc["doc_id"]: doc for doc in doc_infos}
 
         return [
@@ -173,31 +164,19 @@ class KnowledgeGraphService:
 
     @staticmethod
     def _extract_doc_id(content) -> str | None:
-        """content에서 doc_id 추출 (문자열만 반환, 파싱 실패 시 None)"""
+        """content에서 doc_id 추출 (Neo4j에서 가져온 검증된 데이터)"""
+        if isinstance(content, dict):
+            return content.get("id")
+
         if isinstance(content, str):
             try:
-                # ast.literal_eval로 dict 파싱 시도
                 content_dict = ast.literal_eval(content)
-                if isinstance(content_dict, dict):
-                    doc_id = content_dict.get("id")
-                    if isinstance(doc_id, str):
-                        return doc_id
-                    logging.warning(f"추출된 doc_id가 문자열이 아님: {type(doc_id).__name__}")
-                return None
-            except (ValueError, SyntaxError) as e:
-                # Neo4j DateTime 등 특수 타입 때문에 파싱 실패 시 정규식으로 id 추출 시도
+                return content_dict.get("id") if isinstance(content_dict, dict) else None
+            except (ValueError, SyntaxError):
                 import re
                 match = re.search(r"'id':\s*'([^']+)'", content)
-                if match:
-                    return match.group(1)
-                logging.warning(f"content 파싱 실패, id 추출 불가: {str(e)[:100]}")
-                return None
-        elif isinstance(content, dict):
-            doc_id = content.get("id")
-            if isinstance(doc_id, str):
-                return doc_id
-            logging.warning(f"dict에서 추출된 doc_id가 문자열이 아님: {type(doc_id).__name__}")
-            return None
+                return match.group(1) if match else None
+
         return None
 
     def _search_by_graph_embedding(self, doc_id: str, top_k: int = 50) -> Dict[str, float]:
@@ -224,11 +203,11 @@ class KnowledgeGraphService:
             {'source_id': source_doc_id, 'target_id': target_doc_id}
         )
 
-        if result:
-            return {
-                "shared_topics": result[0].get("shared_topics", []),
-                "shared_tags": result[0].get("shared_tags", []),
-                "graph_score": result[0].get("graph_score", 0)
-            }
+        if not result:
+            return {"shared_topics": [], "shared_tags": [], "graph_score": 0}
 
-        return {"shared_topics": [], "shared_tags": [], "graph_score": 0}
+        return {
+            "shared_topics": result[0].get("shared_topics", []),
+            "shared_tags": result[0].get("shared_tags", []),
+            "graph_score": result[0].get("graph_score", 0)
+        }
