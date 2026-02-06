@@ -26,7 +26,7 @@ from app.repositories.graph_queries import (
     GET_NODE_BY_CATEGORY,
     GET_NODE_BY_ID,
     EXPLORE_NODE_TEMPLATE,
-    GET_DOCUMENT_DETAILS
+    GET_DOCUMENTS_BY_IDS
 )
 from app.repositories.graph_repository import GraphRepository
 from app.schemas.graphrag_api import (
@@ -42,6 +42,7 @@ class GraphRAGService:
     """Graph RAG 검색 서비스 - 사용자 질의 기반 그래프 구조 반환"""
 
     def __init__(self, graph_repo: GraphRepository):
+        """GraphRAGService 초기화"""
         self.graph_repo = graph_repo
         self.driver = graph_repo.driver
         self.embedder = SentenceTransformerEmbeddings(model=settings.EMBEDDING_MODEL_NAME)
@@ -375,7 +376,7 @@ class GraphRAGService:
             metadata_list: List[Dict[str, Any]],
             min_coverage: float = 0.5
     ) -> List[Dict[str, Any]]:
-        """coverage 기준으로 메타데이터 필터링"""
+        """Coverage 기준으로 메타데이터 필터링"""
         return [item for item in metadata_list if item.get("coverage", 0) >= min_coverage]
 
     @staticmethod
@@ -563,7 +564,7 @@ class GraphRAGService:
         if not doc_ids:
             return []
 
-        doc_results = self.graph_repo.execute_query(GET_DOCUMENT_DETAILS, {"doc_ids": doc_ids})
+        doc_results = self.graph_repo.execute_query(GET_DOCUMENTS_BY_IDS, {"doc_ids": doc_ids})
 
         return [
             {
