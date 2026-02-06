@@ -95,40 +95,35 @@ class GraphRAGService:
 
     def _search_documents(self, query: str, top_k: int) -> List[Dict[str, Any]]:
         """텍스트 임베딩 기반 Document 검색"""
-        try:
-            retriever = VectorRetriever(
-                driver=self.driver,
-                index_name="text_embedding_index",
-                embedder=self.embedder
-            )
-            result = retriever.search(query_text=query, top_k=top_k)
+        retriever = VectorRetriever(
+            driver=self.driver,
+            index_name="text_embedding_index",
+            embedder=self.embedder
+        )
+        result = retriever.search(query_text=query, top_k=top_k)
 
-            documents = []
-            for item in result.items:
-                doc_id = self._extract_doc_id(item.content)
-                if not doc_id:
-                    continue
+        documents = []
+        for item in result.items:
+            doc_id = self._extract_doc_id(item.content)
+            if not doc_id:
+                continue
 
-                doc_info = self._get_document_info(doc_id)
-                if not doc_info:
-                    continue
+            doc_info = self._get_document_info(doc_id)
+            if not doc_info:
+                continue
 
-                score = item.metadata.get("score", 0) if hasattr(item, 'metadata') and item.metadata else 0
-                related_docs = self._get_related_documents(doc_id, limit=5)
+            score = item.metadata.get("score", 0) if hasattr(item, 'metadata') and item.metadata else 0
+            related_docs = self._get_related_documents(doc_id, limit=5)
 
-                documents.append({
-                    "doc_id": doc_id,
-                    "text": doc_info.get("text", ""),
-                    "description": doc_info.get("description", ""),
-                    "score": score,
-                    "related_documents": related_docs
-                })
+            documents.append({
+                "doc_id": doc_id,
+                "text": doc_info.get("text", ""),
+                "description": doc_info.get("description", ""),
+                "score": score,
+                "related_documents": related_docs
+            })
 
-            return documents
-
-        except (ServiceUnavailable, ClientError, ValueError, AttributeError) as e:
-            logging.exception(f"Document 검색 실패: {e}")
-            return []
+        return documents
 
     @staticmethod
     def _extract_doc_id(content) -> str | None:
@@ -522,7 +517,8 @@ class GraphRAGService:
 
         return EXPLORE_NODE_TEMPLATE.format(match_clause=match_clause), params
 
-    def _build_id_mapping(self, nodes: List[Dict[str, Any]]) -> Dict[str, str]:
+    @staticmethod
+    def _build_id_mapping(nodes: List[Dict[str, Any]]) -> Dict[str, str]:
         """노드 ID 매핑 생성 (원본 ID -> synthetic ID)"""
         id_mapping = {}
         for node in nodes:
