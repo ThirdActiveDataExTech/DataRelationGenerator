@@ -3,6 +3,7 @@ from functools import cached_property
 from typing import Dict, Any, List
 
 import logging
+from neo4j.exceptions import ServiceUnavailable, ClientError
 
 from app.exceptions.base import ApplicationError
 from app.repositories.graph_repository import GraphRepository
@@ -54,24 +55,13 @@ class MetadataService:
     async def extract_and_load_to_graph(self, data_text: str) -> Dict[str, Any]:
         """메타데이터 추출 후 Graph DB 적재"""
         try:
-            # 1. 메타데이터 추출 및 카테고리 생성
             metadata = self._extract_metadata(data_text)
             categories = self._generate_categories(metadata.get("topics", []))
-            # 2. 텍스트 임베딩 생성
-            logging.info("텍스트 임베딩 생성 시작")
             text_embedding = embedding_service.generate_embedding(data_text)
-            logging.info("텍스트 임베딩 생성 완료")
 
-            # 3. Vector index 생성 (최초 1회만 실행됨)
-            logging.info("Vector index 생성 시작")
             self.graph_repo.create_vector_index()
-            logging.info("Text embedding index 생성 완료")
-
             self.graph_repo.create_graph_embedding_index()
-            logging.info("Graph embedding index 생성 완료")
 
-            # 4. 고정 구조 그래프 생성 (Document, Topic, Tag, Category + 고정 관계)
-            logging.info("그래프 생성 시작")
             build_result = self.graph_builder.build_graph(
                 metadata=metadata,
                 text=data_text,
@@ -100,25 +90,25 @@ class MetadataService:
         success_count = 0
         errors = []
 
-        logging.info(f"배치 처리 시작: 총 {len(lines)}개 라인")
-
         for idx, line in enumerate(lines, start=1):
             try:
-                logging.info(f"[{idx}/{len(lines)}] 처리 중...")
                 json.loads(line)
                 await self.extract_and_load_to_graph(line)
                 success_count += 1
-                logging.info(f"[{idx}/{len(lines)}] 처리 완료")
             except json.JSONDecodeError as e:
                 logging.error(f"[{idx}/{len(lines)}] JSON 파싱 실패: {e}")
                 errors.append({"line": idx, "error": f"JSON 파싱 실패: {str(e)}"})
-            except Exception as e:
-                logging.error(f"[{idx}/{len(lines)}] 처리 실패: {e}")
-                import traceback
-                logging.error(traceback.format_exc())
+            except ApplicationError as e:
+                logging.exception(f"[{idx}/{len(lines)}] 처리 실패 (비즈니스 로직 오류)")
+                errors.append({"line": idx, "error": str(e.message)})
+            except (ServiceUnavailable, ClientError) as e:
+                logging.exception(f"[{idx}/{len(lines)}] 처리 실패 (DB 오류)")
+                errors.append({"line": idx, "error": f"DB 오류: {str(e)}"})
+            except (ValueError, KeyError, AttributeError, RuntimeError) as e:
+                logging.exception(f"[{idx}/{len(lines)}] 처리 실패 (데이터 처리 오류)")
                 errors.append({"line": idx, "error": str(e)})
 
-        logging.info(f"배치 처리 완료: 성공 {success_count}개, 실패 {len(errors)}개")
+        logging.info(f"배치 처리 완료: 성공 {success_count}/{len(lines)}, 실패 {len(errors)}개")
         return {"success": success_count, "failed": len(errors), "errors": errors}
 
 

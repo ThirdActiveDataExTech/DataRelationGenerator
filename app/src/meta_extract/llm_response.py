@@ -28,24 +28,20 @@ from app.src.meta_extract.fallback_prompts import FallbackPrompts
 class LLMResponse:
     """LLM 응답 처리 클래스 - 메타데이터 추출 및 Neo4j 쿼리 생성용"""
 
+    PROMPT_CONFIG = {
+        "meta_extract": (GENERATE_METADATA_PROMPT_NAME, GENERATE_METADATA_PROMPT_LABEL),
+        "category_generate": ("generate_category", "production"),
+        "document_relation_inference": (DOCUMENT_RELATION_INFERENCE_PROMPT_NAME, DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL),
+        "cypher_generate": (GENERATE_CYPHER_PROMPT_NAME, GENERATE_CYPHER_PROMPT_LABEL),
+    }
+
     def __init__(self, task: str):
         """Init 매서드"""
         self.task = task
-        self.prompt_name = ""
-        self.prompt_label = ""
-
-        if task == "meta_extract":
-            self.prompt_name = GENERATE_METADATA_PROMPT_NAME
-            self.prompt_label = GENERATE_METADATA_PROMPT_LABEL
-        elif task == "category_generate":
-            self.prompt_name = "generate_category"
-            self.prompt_label = "production"
-        elif task == "document_relation_inference":
-            self.prompt_name = DOCUMENT_RELATION_INFERENCE_PROMPT_NAME
-            self.prompt_label = DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL
-        else:
-            self.prompt_name = GENERATE_CYPHER_PROMPT_NAME
-            self.prompt_label = GENERATE_CYPHER_PROMPT_LABEL
+        self.prompt_name, self.prompt_label = self.PROMPT_CONFIG.get(
+            task,
+            (GENERATE_CYPHER_PROMPT_NAME, GENERATE_CYPHER_PROMPT_LABEL)
+        )
 
     def generate_llm_response(self, variables: Any) -> Dict[str, Any] | str:
         """통합 LLM 응답 처리"""
