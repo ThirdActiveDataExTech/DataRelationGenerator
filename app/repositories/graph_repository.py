@@ -59,11 +59,11 @@ class GraphRepository:
             )
 
     def create_vector_index(self) -> None:
-        """Document 노드의 embedding property에 대한 vector index 생성"""
+        """Document 노드의 binary_text_embedding property에 대한 vector index 생성"""
         query = """
         CREATE VECTOR INDEX text_embedding_index IF NOT EXISTS
         FOR (d:Document)
-        ON d.text_embedding
+        ON d.binary_text_embedding
         OPTIONS {
             indexConfig: {
                 `vector.dimensions`: 768,
@@ -89,6 +89,39 @@ class GraphRepository:
                 `vector.similarity_function`: 'cosine'
             }}
         }}
+        """
+        self.execute_query(query)
+
+    def create_entity_embedding_index(self) -> None:
+        """Entity 노드의 binary_embedding property에 대한 vector index 생성"""
+        query = """
+        CREATE VECTOR INDEX entity_embedding_index IF NOT EXISTS
+        FOR (e:Entity)
+        ON e.binary_embedding
+        OPTIONS {
+            indexConfig: {
+                `vector.dimensions`: 384,
+                `vector.similarity_function`: 'cosine'
+            }
+        }
+        """
+        self.execute_query(query)
+
+    def create_fulltext_index_entity(self) -> None:
+        """Entity 노드의 name property에 대한 Full-Text Index 생성 (CJK 분석기)"""
+        query = """
+        CREATE FULLTEXT INDEX entity_fulltext IF NOT EXISTS
+        FOR (n:Entity) ON EACH [n.name]
+        OPTIONS {indexConfig: {`fulltext.analyzer`: 'cjk'}}
+        """
+        self.execute_query(query)
+
+    def create_fulltext_index_topic(self) -> None:
+        """Topic 노드의 name property에 대한 Full-Text Index 생성 (CJK 분석기)"""
+        query = """
+        CREATE FULLTEXT INDEX topic_fulltext IF NOT EXISTS
+        FOR (n:Topic) ON EACH [n.name]
+        OPTIONS {indexConfig: {`fulltext.analyzer`: 'cjk'}}
         """
         self.execute_query(query)
 
