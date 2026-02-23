@@ -5,11 +5,16 @@ from graphdatascience import GraphDataScience
 from neo4j.exceptions import ServiceUnavailable, ClientError
 
 from app.config import settings
+from app.constants import (
+    GRAPH_EMBEDDING_DIM,
+    HASHGNN_ITERATIONS,
+    HASHGNN_EMBEDDING_DENSITY
+)
 from app.repositories.graph_repository import GraphRepository
 
 
 class GraphEmbeddingService:
-    """Neo4j GDS Node2Vec 기반 Graph Embedding 생성 서비스"""
+    """Neo4j GDS HashGNN 기반 Graph Embedding 생성 서비스"""
 
     def __init__(self, graph_repo: GraphRepository):
         """초기화
@@ -27,95 +32,106 @@ class GraphEmbeddingService:
 
     def generate_all_graph_embeddings(
             self,
-            embedding_dim: int = 128,
-            walk_length: int = 80,
-            walks_per_node: int = 10
+            embedding_dim: int = GRAPH_EMBEDDING_DIM
     ) -> Dict[str, List[float]]:
-        """전체 그래프에 대해 Node2Vec 실행하여 모든 Document 노드의 임베딩 생성
+        """전체 그래프에 대해 HashGNN으로 Graph Embedding 생성
 
         Args:
             embedding_dim: 임베딩 차원 (기본: 128)
-            walk_length: Random walk 길이 (기본: 80)
-            walks_per_node: 노드당 walk 횟수 (기본: 10)
 
         Returns:
             {doc_id: embedding} dict
         """
-        graph_name = "full_graph_for_embedding"
+        graph_name = "hashgnn_graph"
 
         try:
             if self._graph_exists(graph_name):
                 self.gds.graph.drop(graph_name)
 
             existing_rel_types = self._get_existing_relationship_types()
-            logging.info(f"존재하는 관계 타입: {existing_rel_types}")
+            logging.info(f"[HashGNN] 존재하는 관계 타입: {existing_rel_types}")
 
-            # 3. 관계 projection 설정 (존재하는 것만)
-            relationship_projection = {}
-
-            # 메타데이터 관계
-            if "HAS_TOPIC" in existing_rel_types:
-                relationship_projection["HAS_TOPIC"] = {"orientation": "UNDIRECTED"}
-            if "HAS_TAG" in existing_rel_types:
-                relationship_projection["HAS_TAG"] = {"orientation": "UNDIRECTED"}
-            if "BELONGS_TO" in existing_rel_types:
-                relationship_projection["BELONGS_TO"] = {"orientation": "UNDIRECTED"}
-
-            # Document 간 관계
-            if "SIMILAR_TO" in existing_rel_types:
-                relationship_projection["SIMILAR_TO"] = {"orientation": "UNDIRECTED"}
-            if "CONTRADICTS" in existing_rel_types:
-                relationship_projection["CONTRADICTS"] = {"orientation": "UNDIRECTED"}
-            if "EXTENDS" in existing_rel_types:
-                relationship_projection["EXTENDS"] = {"orientation": "NATURAL"}
-            if "PREREQUISITE_OF" in existing_rel_types:
-                relationship_projection["PREREQUISITE_OF"] = {"orientation": "NATURAL"}
-            if "IMPLEMENTS" in existing_rel_types:
-                relationship_projection["IMPLEMENTS"] = {"orientation": "NATURAL"}
-            if "CO_OCCURS" in existing_rel_types:
-                relationship_projection["CO_OCCURS"] = {"orientation": "UNDIRECTED"}
+            relationship_projection = self._build_relationship_projection(existing_rel_types)
 
             if not relationship_projection:
                 raise ValueError("그래프에 관계가 하나도 없습니다")
 
             G, result = self.gds.graph.project(
                 graph_name,
-                ["Document", "Topic", "Tag", "Category"],
+                ["Document", "Entity", "Topic", "Category"],
                 relationship_projection
             )
 
             logging.info(
-                f"Graph projection 완료: {result['nodeCount']} nodes, "
+                f"[HashGNN] Graph projection 완료: {result['nodeCount']} nodes, "
                 f"{result['relationshipCount']} relationships"
             )
 
-            node2vec_result = self.gds.node2vec.mutate(
+            # HashGNN 실행 (관계 타입별 다른 해시 함수 사용)
+            # Note: generateFeatures로 자동 feature 생성 (Topic/Category에는 임베딩이 없음)
+            hashgnn_result = self.gds.beta.hashgnn.mutate(
                 G,
-                embeddingDimension=embedding_dim,
-                walkLength=walk_length,
-                walksPerNode=walks_per_node,
-                mutateProperty="graph_embedding"
+                embeddingDensity=HASHGNN_EMBEDDING_DENSITY,
+                iterations=HASHGNN_ITERATIONS,
+                generateFeatures={
+                    "dimension": GRAPH_EMBEDDING_DIM,
+                    "densityLevel": 3
+                },
+                heterogeneous=True,  # 관계 타입별 다른 해시 함수 ⭐
+                mutateProperty="graph_embedding",
+                randomSeed=42
             )
 
-            logging.info(f"Node2Vec 완료: {node2vec_result}")
+            logging.info(f"[HashGNN] 완료: {hashgnn_result}")
 
             embeddings = self._extract_all_document_embeddings(G)
-            logging.info(f"총 {len(embeddings)}개 Document 임베딩 추출 완료")
+            logging.info(f"[HashGNN] 총 {len(embeddings)}개 Document 임베딩 추출 완료")
 
             self.gds.graph.drop(G)
 
             return embeddings
 
         except (ServiceUnavailable, ClientError):
-            logging.exception("전체 그래프 임베딩 생성 중 DB 오류")
+            logging.exception("[HashGNN] 전체 그래프 임베딩 생성 중 DB 오류")
             if self._graph_exists(graph_name):
                 self.gds.graph.drop(graph_name)
             return {}
         except (ValueError, RuntimeError, KeyError):
-            logging.exception("전체 그래프 임베딩 생성 중 처리 오류")
+            logging.exception("[HashGNN] 전체 그래프 임베딩 생성 중 처리 오류")
             if self._graph_exists(graph_name):
                 self.gds.graph.drop(graph_name)
             return {}
+
+    @staticmethod
+    def _build_relationship_projection(existing_rel_types: list) -> dict:
+        """관계 projection 설정 빌드"""
+        relationship_projection = {}
+
+        # 메타데이터 관계
+        if "HAS_TOPIC" in existing_rel_types:
+            relationship_projection["HAS_TOPIC"] = {"orientation": "UNDIRECTED"}
+        if "BELONGS_TO" in existing_rel_types:
+            relationship_projection["BELONGS_TO"] = {"orientation": "UNDIRECTED"}
+        if "MENTIONS" in existing_rel_types:
+            relationship_projection["MENTIONS"] = {"orientation": "UNDIRECTED"}
+        if "RELATED_TO" in existing_rel_types:
+            relationship_projection["RELATED_TO"] = {"orientation": "UNDIRECTED"}
+
+        # Document 간 관계
+        if "SIMILAR_TO" in existing_rel_types:
+            relationship_projection["SIMILAR_TO"] = {"orientation": "UNDIRECTED"}
+        if "CONTRADICTS" in existing_rel_types:
+            relationship_projection["CONTRADICTS"] = {"orientation": "UNDIRECTED"}
+        if "EXTENDS" in existing_rel_types:
+            relationship_projection["EXTENDS"] = {"orientation": "NATURAL"}
+        if "PREREQUISITE_OF" in existing_rel_types:
+            relationship_projection["PREREQUISITE_OF"] = {"orientation": "NATURAL"}
+        if "IMPLEMENTS" in existing_rel_types:
+            relationship_projection["IMPLEMENTS"] = {"orientation": "NATURAL"}
+        if "CO_OCCURS" in existing_rel_types:
+            relationship_projection["CO_OCCURS"] = {"orientation": "UNDIRECTED"}
+
+        return relationship_projection
 
     def _graph_exists(self, graph_name: str) -> bool:
         """In-memory graph 존재 여부 확인"""

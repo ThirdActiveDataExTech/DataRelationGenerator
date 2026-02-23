@@ -51,30 +51,30 @@ GET_GRAPH_CONNECTIONS = """
 MATCH (source:Document {id: $source_id})
 MATCH (target:Document {id: $target_id})
 
+// 공유 Entity
+OPTIONAL MATCH (source)-[:MENTIONS]->(e:Entity)<-[:MENTIONS]-(target)
+WITH source, target, collect(DISTINCT e.name) as shared_entities
+
 // 공유 Topic
 OPTIONAL MATCH (source)-[:HAS_TOPIC]->(t:Topic)<-[:HAS_TOPIC]-(target)
-WITH source, target, collect(DISTINCT t.name) as shared_topics
-
-// 공유 Tag
-OPTIONAL MATCH (source)-[:HAS_TAG]->(tag:Tag)<-[:HAS_TAG]-(target)
-WITH source, target, shared_topics, collect(DISTINCT tag.name) as shared_tags
+WITH source, target, shared_entities, collect(DISTINCT t.name) as shared_topics
 
 // 공유 Category (2-hop)
 OPTIONAL MATCH (source)-[:HAS_TOPIC]->(:Topic)-[:BELONGS_TO]->(c:Category)
               <-[:BELONGS_TO]-(:Topic)<-[:HAS_TOPIC]-(target)
-WITH shared_topics, shared_tags, count(DISTINCT c) as shared_categories
+WITH shared_entities, shared_topics, count(DISTINCT c) as shared_categories
 
-// Graph Score 계산 (Topic: 3점, Tag: 1점, Category: 2점)
-RETURN shared_topics,
-       shared_tags,
-       size(shared_topics) * 3 + size(shared_tags) * 1 + shared_categories * 2 as graph_score
+// Graph Score 계산 (Entity: 2점, Topic: 3점, Category: 2점)
+RETURN shared_entities,
+       shared_topics,
+       size(shared_entities) * 2 + size(shared_topics) * 3 + shared_categories * 2 as graph_score
 """
 
 # 1-hop: Document와 직접 연결된 노드/관계
 EXTRACT_GRAPH_1HOP = """
 MATCH (d:Document)
 WHERE d.id IN $doc_ids
-OPTIONAL MATCH path = (d)-[r]-(n:Topic|Tag|Category|Document)
+OPTIONAL MATCH path = (d)-[r]-(n:Entity|Topic|Category|Document)
 WITH collect(DISTINCT d) + collect(DISTINCT n) as nodes,
      collect(DISTINCT r) as rels
 RETURN [node IN nodes | {
@@ -94,7 +94,7 @@ RETURN [node IN nodes | {
 EXTRACT_GRAPH_2HOP = """
 MATCH (d:Document)
 WHERE d.id IN $doc_ids
-OPTIONAL MATCH path = (d)-[r1]-(n1:Topic|Tag|Category|Document)-[r2]-(n2:Topic|Tag|Category|Document)
+OPTIONAL MATCH path = (d)-[r1]-(n1:Entity|Topic|Category|Document)-[r2]-(n2:Entity|Topic|Category|Document)
 WITH collect(DISTINCT d) + collect(DISTINCT n1) + collect(DISTINCT n2) as nodes,
      collect(DISTINCT r1) + collect(DISTINCT r2) as rels
 RETURN [node IN nodes | {
@@ -117,9 +117,9 @@ MATCH (d:Document)
 WHERE d.id IN $doc_ids
 OPTIONAL MATCH (d)-[:HAS_TOPIC]->(t:Topic)-[:BELONGS_TO]->(c:Category)
 WITH d, collect(DISTINCT c.name) as categories
-OPTIONAL MATCH (d)-[:HAS_TAG]->(tag:Tag)
-WITH d, categories, collect(DISTINCT tag.name) as tags
-RETURN d.id as doc_id, categories, tags
+OPTIONAL MATCH (d)-[:MENTIONS]->(e:Entity)
+WITH d, categories, collect(DISTINCT e.name) as entities
+RETURN d.id as doc_id, categories, entities
 """
 
 GET_CATEGORY_RELATIONSHIPS = """
@@ -128,16 +128,16 @@ WHERE d.id IN $doc_ids AND c.name IN $category_names
 RETURN DISTINCT d.id as doc_id, c.name as category_name
 """
 
-GET_TAG_RELATIONSHIPS = """
-MATCH (d:Document)-[:HAS_TAG]->(tag:Tag)
-WHERE d.id IN $doc_ids AND tag.name IN $tag_names
-RETURN DISTINCT d.id as doc_id, tag.name as tag_name
+GET_ENTITY_RELATIONSHIPS = """
+MATCH (d:Document)-[:MENTIONS]->(e:Entity)
+WHERE d.id IN $doc_ids AND e.name IN $entity_names
+RETURN DISTINCT d.id as doc_id, e.name as entity_name
 """
 
 # ========== 노드 탐색 관련 ==========
 
-GET_NODE_BY_TAG = """
-MATCH (n:Tag {name: $name})
+GET_NODE_BY_ENTITY = """
+MATCH (n:Entity {name: $name})
 RETURN elementId(n) as id, labels(n) as labels, properties(n) as properties
 LIMIT 1
 """
@@ -157,7 +157,7 @@ LIMIT 1
 
 EXPLORE_NODE_TEMPLATE = """
 {match_clause}
-OPTIONAL MATCH (center)-[r]-(connected:Document|Topic|Tag|Category)
+OPTIONAL MATCH (center)-[r]-(connected:Document|Entity|Topic|Category)
 WITH center, collect(DISTINCT connected) as connected_nodes, collect(DISTINCT r) as relationships
 WITH [center] + connected_nodes as all_nodes, relationships
 RETURN [node IN all_nodes WHERE node IS NOT NULL | {{

@@ -18,9 +18,7 @@ router = APIRouter(prefix="/graph", tags=["graph"])
 @router.post("/embeddings", tags=["graph"], response_model=APIResponseModel,
              response_class=JSONResponse)
 async def update_graph_embeddings(
-        embedding_dim: Annotated[int, Body(embed=True)] = 128,
-        walk_length: Annotated[int, Body(embed=True)] = 80,
-        walks_per_node: Annotated[int, Body(embed=True)] = 10
+        embedding_dim: Annotated[int, Body(embed=True)] = 128
 ):
     """전체 Document 노드에 대해 그래프 임베딩 일괄 생성 (Step 2)
 
