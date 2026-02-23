@@ -20,7 +20,9 @@ from app.schemas.meta import (
     metadata_tool,
     cypher_tool,
     category_generation_tool,
-    document_relation_tool
+    document_relation_tool,
+    query_graph_tool,
+    document_relevance_tool
 )
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 
@@ -33,6 +35,8 @@ class LLMResponse:
         "category_generate": ("generate_category", "production"),
         "document_relation_inference": (DOCUMENT_RELATION_INFERENCE_PROMPT_NAME, DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL),
         "cypher_generate": (GENERATE_CYPHER_PROMPT_NAME, GENERATE_CYPHER_PROMPT_LABEL),
+        "query_graph_parsing": ("query_graph_parsing", "production"),
+        "document_relevance_verification": ("document_relevance_verification", "production"),
     }
 
     def __init__(self, task: str):
@@ -96,6 +100,10 @@ class LLMResponse:
             tools = [category_generation_tool]
         elif self.task == "document_relation_inference":
             tools = [document_relation_tool]
+        elif self.task == "query_graph_parsing":
+            tools = [query_graph_tool]
+        elif self.task == "document_relevance_verification":
+            tools = [document_relevance_tool]
         else:
             tools = []
 

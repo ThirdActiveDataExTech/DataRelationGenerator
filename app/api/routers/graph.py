@@ -26,27 +26,25 @@ async def update_graph_embeddings(
 
     Args:
         embedding_dim: 임베딩 차원 (기본: 128)
-        walk_length: Random walk 길이 (기본: 80)
-        walks_per_node: 노드당 walk 횟수 (기본: 10)
 
     Flow:
-        Step 1: /metadata/extract - 문서 추가 (text_embedding)
+        Step 1: /metadata/extract - 문서 추가 (text_embedding + binary_text_embedding)
         Step 2: /graph/embeddings - 그래프 임베딩 생성 ← 현재
         Step 3: /graph/relations/analyze - 관계 분석
 
     Note:
-        - Node2Vec 알고리즘으로 그래프 구조 학습
+        - HashGNN 알고리즘으로 그래프 구조 학습
+        - 관계 타입별로 다른 해시 함수 사용 (heterogeneous=True)
+        - EXTENDS ≠ HAS_TOPIC ≠ SIMILAR_TO 구분 가능
         - 전체 그래프에 대해 1회 실행
         - 처리 시간이 오래 걸릴 수 있음 (문서 수에 비례)
     """
     result = await graph_service.update_all_graph_embeddings(
-        embedding_dim=embedding_dim,
-        walk_length=walk_length,
-        walks_per_node=walks_per_node
+        embedding_dim=embedding_dim
     )
     return APIResponseModel(
         result=result,
-        description=f"그래프 임베딩 생성 완료: {result.get('success', 0)}개 성공"
+        description=f"[HashGNN] 그래프 임베딩 생성 완료: {result.get('success', 0)}개 성공"
     )
 
 
@@ -54,9 +52,9 @@ async def update_graph_embeddings(
              response_class=JSONResponse)
 async def analyze_document_relations(
         doc_id: Annotated[str | None, Body(embed=True)] = None,
-        top_k: Annotated[int, Body(embed=True)] = 10,
-        text_weight: Annotated[float, Body(embed=True)] = 0.6,
-        graph_weight: Annotated[float, Body(embed=True)] = 0.4
+        top_k: Annotated[int, Body(embed=True)] = 4,
+        text_weight: Annotated[float, Body(embed=True)] = 0.4,
+        graph_weight: Annotated[float, Body(embed=True)] = 0.6
 ):
     """Document 간 관계 분석 및 생성 (Step 3)
 
