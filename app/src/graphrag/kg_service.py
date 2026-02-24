@@ -282,7 +282,7 @@ class KnowledgeGraphService:
             result = LLMResponse("entity_extract_from_query").generate_llm_response(
                 variables={"query_text": query_text}
             )
-            return result.get("entities", [])
+            return result.get("entities", []) if isinstance(result, dict) else []
         except Exception as e:
             logging.error(f"Entity 추출 실패: {e}")
             return []
