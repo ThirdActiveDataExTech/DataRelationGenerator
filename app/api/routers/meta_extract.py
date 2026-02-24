@@ -34,18 +34,18 @@ async def extract_and_load_to_graph(text: Annotated[str, Body(embed=True)]):
 
 @router.post("/batch_extract", tags=["metadata"], response_model=APIResponseModel,
              response_class=JSONResponse)
-async def batch_extract_and_load_from_jsonl(file: Annotated[UploadFile, File()]):
-    """JSONL 파일 배치 처리 - 메타데이터 추출 및 Graph DB 적재
+async def batch_extract_and_load_from_json(file: Annotated[UploadFile, File()]):
+    """JSON 배열 파일 배치 처리 - 메타데이터 추출 및 Graph DB 적재
 
     Args:
-        file: JSONL 파일 (각 줄이 하나의 문서)
+        file: JSON 배열 파일 [{...}, {...}]
 
     Note:
         - 모든 문서 추가 후 /graph/embeddings 호출 필요
         - 대량 문서 처리에 적합
     """
     content = await file.read()
-    result = await meta_service.batch_extract_and_load_from_jsonl(content.decode("utf-8"))
+    result = await meta_service.batch_extract_and_load_from_json(content.decode("utf-8"))
     return APIResponseModel(
         result=result,
         description=f"처리 완료: {result['success']}건 성공, {result['failed']}건 실패"
