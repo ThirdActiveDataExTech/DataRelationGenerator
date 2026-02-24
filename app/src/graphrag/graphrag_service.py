@@ -170,15 +170,14 @@ class GraphRAGService:
 
                 if isinstance(verification, dict):
                     result["llm_relevant"] = verification.get("is_relevant", False)
-                    result["llm_score"] = verification.get("relevance_score", 0.0)
                     result["llm_reason"] = verification.get("reason", "")
 
                     # 적합하다고 판단된 것만 통과
                     if result["llm_relevant"]:
-                        logging.info(f"  ✓ 통과 (score: {result['llm_score']:.2f}) - {result['llm_reason'][:50]}...")
+                        logging.info(f"  ✓ 통과 - {result['llm_reason'][:50]}...")
                         verified.append(result)
                     else:
-                        logging.info(f"  ✗ 제외 (score: {result['llm_score']:.2f}) - {result['llm_reason'][:100]}...")
+                        logging.info(f"  ✗ 제외 - {result['llm_reason'][:100]}...")
                         filtered_out.append({
                             "doc_id": result.get('doc_id'),
                             "reason": result['llm_reason']
@@ -187,14 +186,12 @@ class GraphRAGService:
                     logging.warning(f"LLM 검증 결과가 dict가 아님: {type(verification)}")
                     # 검증 실패시 일단 포함 (보수적 접근)
                     result["llm_relevant"] = True
-                    result["llm_score"] = 0.5
                     verified.append(result)
 
             except Exception as e:
                 logging.exception(f"LLM 검증 중 에러: {e}")
                 # 검증 실패시 일단 포함
                 result["llm_relevant"] = True
-                result["llm_score"] = 0.5
                 verified.append(result)
 
         logging.info(f"LLM 검증 완료: {len(results)}개 → {len(verified)}개 통과, {len(filtered_out)}개 제외")
@@ -206,19 +203,17 @@ class GraphRAGService:
         return verified
 
     def _final_rerank(self, results: List[Dict[str, Any]], top_k: int) -> List[Dict[str, Any]]:
-        """최종 재순위화 (Pattern + Vector + Reranker + LLM)"""
+        """최종 재순위화 (Pattern + Vector + Reranker)"""
         for result in results:
             pattern_score = result.get("pattern_score", 0)
             vector_score = result.get("vector_score", 0)
             rerank_score = result.get("rerank_score", 0)
-            llm_score = result.get("llm_score", 0.5)
 
-            # 최종 점수: 패턴 20% + 벡터 20% + Reranker 20% + LLM 40%
+            # 최종 점수: 패턴 33.3% + 벡터 33.3% + Reranker 33.3%
             result["final_score"] = (
-                pattern_score * 0.2 +
-                vector_score * 0.2 +
-                rerank_score * 0.2 +
-                llm_score * 0.4
+                pattern_score * 0.333 +
+                vector_score * 0.333 +
+                rerank_score * 0.334
             )
 
         # 정렬
