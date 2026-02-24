@@ -34,7 +34,7 @@ class MetadataService:
         if not isinstance(metadata, dict):
             raise ValueError(f"메타데이터 추출 결과가 dict가 아님: {type(metadata).__name__}")
 
-        logging.info(f"메타데이터 추출 완료: topics={len(metadata.get('topics', []))}, tags={len(metadata.get('tags', []))}")
+        logging.info(f"메타데이터 추출 완료: topics={len(metadata.get('topics', []))}, entities={len(metadata.get('entities', []))}")
         return metadata
 
     def _generate_categories(self, topics: List[str]) -> List[Dict[str, Any]]:
@@ -84,31 +84,41 @@ class MetadataService:
                 result={"error": str(e)}
             )
 
-    async def batch_extract_and_load_from_jsonl(self, content: str) -> Dict[str, Any]:
-        """JSONL 콘텐츠를 배치 처리하여 메타데이터 추출 및 Graph DB 적재"""
-        lines = [line for line in content.strip().split("\n") if line.strip()]
+    async def batch_extract_and_load_from_json(self, content: str) -> Dict[str, Any]:
+        """JSON 배열 콘텐츠를 배치 처리하여 메타데이터 추출 및 Graph DB 적재
+
+        지원 형식: JSON Array [{...}, {...}]
+        """
         success_count = 0
         errors = []
 
-        for idx, line in enumerate(lines, start=1):
-            try:
-                json.loads(line)
-                await self.extract_and_load_to_graph(line)
-                success_count += 1
-            except json.JSONDecodeError as e:
-                logging.error(f"[{idx}/{len(lines)}] JSON 파싱 실패: {e}")
-                errors.append({"line": idx, "error": f"JSON 파싱 실패: {str(e)}"})
-            except ApplicationError as e:
-                logging.exception(f"[{idx}/{len(lines)}] 처리 실패 (비즈니스 로직 오류)")
-                errors.append({"line": idx, "error": str(e.message)})
-            except (ServiceUnavailable, ClientError) as e:
-                logging.exception(f"[{idx}/{len(lines)}] 처리 실패 (DB 오류)")
-                errors.append({"line": idx, "error": f"DB 오류: {str(e)}"})
-            except (ValueError, KeyError, AttributeError, RuntimeError) as e:
-                logging.exception(f"[{idx}/{len(lines)}] 처리 실패 (데이터 처리 오류)")
-                errors.append({"line": idx, "error": str(e)})
+        try:
+            data = json.loads(content.strip())
+            documents = [data] if not isinstance(data, list) else data
+            logging.info(f"JSON 파일 파싱 완료: {len(documents)}개 문서")
+        except json.JSONDecodeError as e:
+            raise ApplicationError(
+                code=400,
+                message="JSON 파일 파싱 실패",
+                result={"error": str(e)}
+            )
 
-        logging.info(f"배치 처리 완료: 성공 {success_count}/{len(lines)}, 실패 {len(errors)}개")
+        for idx, doc_data in enumerate(documents, start=1):
+            try:
+                doc_json = json.dumps(doc_data, ensure_ascii=False)
+                await self.extract_and_load_to_graph(doc_json)
+                success_count += 1
+            except ApplicationError as e:
+                logging.exception(f"[{idx}/{len(documents)}] 처리 실패 (비즈니스 로직 오류)")
+                errors.append({"index": idx, "error": str(e.message)})
+            except (ServiceUnavailable, ClientError) as e:
+                logging.exception(f"[{idx}/{len(documents)}] 처리 실패 (DB 오류)")
+                errors.append({"index": idx, "error": f"DB 오류: {str(e)}"})
+            except (ValueError, KeyError, AttributeError, RuntimeError) as e:
+                logging.exception(f"[{idx}/{len(documents)}] 처리 실패 (데이터 처리 오류)")
+                errors.append({"index": idx, "error": str(e)})
+
+        logging.info(f"배치 처리 완료: 성공 {success_count}/{len(documents)}, 실패 {len(errors)}개")
         return {"success": success_count, "failed": len(errors), "errors": errors}
 
 
