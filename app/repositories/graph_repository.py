@@ -100,7 +100,7 @@ class GraphRepository:
         ON e.binary_embedding
         OPTIONS {
             indexConfig: {
-                `vector.dimensions`: 384,
+                `vector.dimensions`: 768,
                 `vector.similarity_function`: 'cosine'
             }
         }
@@ -228,4 +228,44 @@ class GraphRepository:
                 )
 
         logging.info(f"Document {source_doc_id}에 대해 {count}개의 관계 생성 완료 (APOC 없이)")
+        return count
+
+    def create_entity_relations(
+            self,
+            new_entity: str,
+            candidates: List[Dict[str, Any]]
+    ) -> int:
+        """Entity 간 RELATED_TO 관계 생성"""
+        if not candidates:
+            return 0
+
+        count = 0
+
+        for candidate in candidates:
+            query = """
+            MATCH (new:Entity {name: $new_entity})
+            MATCH (existing:Entity {name: $existing_entity})
+            MERGE (new)-[r:RELATED_TO]-(existing)
+            SET r.score = $score,
+                r.created_at = datetime()
+            RETURN r
+            """
+
+            parameters = {
+                "new_entity": new_entity,
+                "existing_entity": candidate["name"],
+                "score": candidate["score"]
+            }
+
+            try:
+                self.execute_query(query, parameters)
+                count += 1
+                logging.info(
+                    f"Entity 관계 생성: {new_entity} -[RELATED_TO]- {candidate['name']} (score: {candidate['score']:.2f})"
+                )
+            except Exception as e:
+                logging.error(
+                    f"Entity 관계 생성 실패 ({new_entity} -[RELATED_TO]- {candidate['name']}): {e}"
+                )
+
         return count

@@ -61,6 +61,8 @@ class MetadataService:
 
             self.graph_repo.create_vector_index()
             self.graph_repo.create_graph_embedding_index()
+            self.graph_repo.create_fulltext_index_entity()
+            self.graph_repo.create_entity_embedding_index()
 
             build_result = self.graph_builder.build_graph(
                 metadata=metadata,
