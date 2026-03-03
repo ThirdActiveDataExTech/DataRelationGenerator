@@ -17,7 +17,7 @@ class EntityResolutionService:
             self,
             new_entity: str,
             top_k: int = 5,
-            similarity_threshold: float = 0.6
+            similarity_threshold: float = 0.85
     ) -> List[Dict[str, Any]]:
         """새 Entity와 기존 그래프의 RELATED_TO 관계 생성
 

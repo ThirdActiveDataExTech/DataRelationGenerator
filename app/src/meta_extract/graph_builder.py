@@ -245,11 +245,7 @@ class GraphBuilder:
         total_relations = 0
 
         for entity in entities:
-            candidates = self.entity_resolution_service.resolve_entity(
-                new_entity=entity,
-                top_k=5,
-                similarity_threshold=0.6
-            )
+            candidates = self.entity_resolution_service.resolve_entity(new_entity=entity)
 
             if candidates:
                 count = self.graph_repo.create_entity_relations(entity, candidates)
