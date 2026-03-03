@@ -5,6 +5,7 @@ import logging
 
 from app.repositories.graph_repository import GraphRepository
 from app.src.embedding.embedding_service import EmbeddingService
+from app.src.meta_extract.entity_resolution_service import EntityResolutionService
 
 
 class GraphBuilder:
@@ -14,6 +15,7 @@ class GraphBuilder:
         """Init 매서드 - GraphRepository 인스턴스 생성"""
         self.graph_repo = graph_repo or GraphRepository()
         self.embedding_service = EmbeddingService()
+        self.entity_resolution_service = EntityResolutionService(graph_repo=self.graph_repo)
 
     def build_graph(
             self,
@@ -35,9 +37,14 @@ class GraphBuilder:
         doc_id = self._create_document(metadata, text, text_embedding, graph_embedding)
         self._create_categories(categories)
 
+        # Entity Resolution 수행
+        entities = metadata.get("entities", [])
+        total_relations = self._resolve_entities(entities)
+
         return {
             "document_id": doc_id,
-            "categories_created": len(categories)
+            "categories_created": len(categories),
+            "entity_relations_created": total_relations
         }
 
     def _create_document(
@@ -225,3 +232,28 @@ class GraphBuilder:
 
         logging.info(f"Entity RELATED_TO 관계 생성 완료: {count}개")
         return {"relations_created": count}
+
+    def _resolve_entities(self, entities: List[str]) -> int:
+        """Entity Resolution 수행 - 새 Entity와 기존 그래프 연결
+
+        Args:
+            entities: 새로 추출된 Entity 목록
+
+        Returns:
+            생성된 관계 개수
+        """
+        total_relations = 0
+
+        for entity in entities:
+            candidates = self.entity_resolution_service.resolve_entity(
+                new_entity=entity,
+                top_k=5,
+                similarity_threshold=0.6
+            )
+
+            if candidates:
+                count = self.graph_repo.create_entity_relations(entity, candidates)
+                total_relations += count
+
+        logging.info(f"Entity Resolution 완료: {total_relations}개 관계 생성")
+        return total_relations
