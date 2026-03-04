@@ -10,6 +10,7 @@ class EntityResolutionService:
     """Entity Resolution 서비스 - 새 Entity와 기존 그래프 Entity 간 RELATED_TO 연결"""
 
     def __init__(self, graph_repo: GraphRepository = None):
+        """Init 매서드 - GraphRepository 인스턴스 생성"""
         self.graph_repo = graph_repo or GraphRepository()
         self.embedding_service = EmbeddingService()
 
@@ -17,7 +18,7 @@ class EntityResolutionService:
             self,
             new_entity: str,
             top_k: int = 5,
-            similarity_threshold: float = 0.85
+            similarity_threshold: float = 0.95
     ) -> List[Dict[str, Any]]:
         """새 Entity와 기존 그래프의 RELATED_TO 관계 생성
 
@@ -82,8 +83,22 @@ class EntityResolutionService:
 
     def _search_by_fulltext(self, entity_name: str, top_k: int) -> List[Dict[str, Any]]:
         """Full-Text Index로 Entity 검색 (Fuzzy 포함)"""
-        # Lucene fuzzy syntax: "판결문~2" (edit distance 2)
-        fuzzy_term = f"{entity_name}~2"
+        import re
+
+        # 특수문자 체크 (영문, 한글, 숫자 외)
+        has_special = bool(re.search(r'[^\w\sㄱ-힣]', entity_name))
+
+        # 특수문자 있으면 따옴표로 감싸기, 3글자 이상만 fuzzy
+        if len(entity_name) >= 3:
+            if has_special or ' ' in entity_name:
+                # 내부 따옴표 이스케이프 후 감싸기
+                escaped = entity_name.replace('"', '\\"')
+                fuzzy_term = f'"{escaped}"~2'
+            else:
+                fuzzy_term = f"{entity_name}~2"
+        else:
+            # 짧은 단어는 정확 매칭만
+            fuzzy_term = entity_name
 
         query = """
         CALL db.index.fulltext.queryNodes('entity_fulltext', $search_term)
