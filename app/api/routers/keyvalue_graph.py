@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 from app.schemas.response import APIResponseModel
 from app.src.keyvalue_graph.clustering_normalizer import ClusteringNormalizer
 from app.src.keyvalue_graph.llm_based_loader import LLMBasedKeyValueLoader
+from app.src.keyvalue_graph.schema_analyzer import SchemaAnalyzer
 
 router = APIRouter(prefix="/keyvalue", tags=["keyvalue-graph"])
 
@@ -61,13 +62,17 @@ async def extract_key_value_and_build_graph(
 @router.post("/batch_extract", tags=["keyvalue-graph"], response_model=APIResponseModel, response_class=JSONResponse)
 async def batch_extract_key_value_from_json(
         file: Annotated[UploadFile, File()],
-        centrality_name: str = "병원현황"
+        centrality_name: str = "병원현황",
+        auto_detect_schema: bool = False,
+        sample_size: int = 5
 ):
     """JSON 배열 파일에서 Key-Value를 배치 추출하고 그래프 생성.
 
     Args:
         file: JSON 배열 파일 [{...}, {...}, ...]
-        centrality_name: 중심 노드 이름 (예: "병원현황", "판례정보")
+        centrality_name: 중심 노드 이름 (예: "병원현황", "판례정보"). auto_detect_schema=True면 무시됨
+        auto_detect_schema: 스키마 자동 감지 여부 (True: 데이터 분석 후 자동 감지, False: 기본 매핑 사용)
+        sample_size: 스키마 분석 시 샘플링할 레코드 개수 (auto_detect_schema=True일 때만 사용)
 
     Returns:
         배치 처리 결과 (성공/실패 통계)
@@ -80,7 +85,25 @@ async def batch_extract_key_value_from_json(
     if not isinstance(data_list, list):
         data_list = [data_list]
 
-    loader = LLMBasedKeyValueLoader()
+    # 스키마 자동 감지 모드
+    field_mapping = None
+    detected_schema = None
+
+    if auto_detect_schema:
+        analyzer = SchemaAnalyzer(sample_size=sample_size)
+        detected_schema = analyzer.analyze(data_list)
+
+        # SchemaAnalysisResult의 fields를 field_mapping으로 변환
+        # fields: Dict[str, FieldAnalysis] → field_mapping: Dict[str, str]
+        field_mapping = {
+            original_key: field_info.korean_name
+            for original_key, field_info in detected_schema.fields.items()
+        }
+
+        # 감지된 centrality_name 사용
+        centrality_name = detected_schema.centrality_name
+
+    loader = LLMBasedKeyValueLoader(field_mapping=field_mapping)
 
     success_count = 0
     failed_count = 0
@@ -107,15 +130,50 @@ async def batch_extract_key_value_from_json(
             "error": result.get("error")
         })
 
-    return APIResponseModel(
-        result={
+    # 결과 메시지 구성
+    if auto_detect_schema and detected_schema:
+        description = (
+            f"배치 처리 완료 [자동 스키마 감지]\n"
+            f"- 도메인: {detected_schema.domain}\n"
+            f"- Centrality: {centrality_name}\n"
+            f"- 감지된 필드: {len(field_mapping)}개\n"
+            f"- 처리 결과: {success_count}건 성공, {failed_count}건 실패"
+        )
+        result_data = {
             "total": len(data_list),
             "success": success_count,
             "failed": failed_count,
             "centrality_name": centrality_name,
+            "auto_detected": True,
+            "detected_schema": {
+                "domain": detected_schema.domain,
+                "centrality_name": detected_schema.centrality_name,
+                "fields": {
+                    field_name: {
+                        "korean_name": field_info.korean_name,
+                        "description": field_info.description,
+                        "data_type": field_info.data_type
+                    }
+                    for field_name, field_info in detected_schema.fields.items()
+                },
+                "confidence": detected_schema.confidence
+            },
             "details": results
-        },
-        description=f"배치 처리 완료 (Centrality: {centrality_name}): {success_count}건 성공, {failed_count}건 실패"
+        }
+    else:
+        description = f"배치 처리 완료 (Centrality: {centrality_name}): {success_count}건 성공, {failed_count}건 실패"
+        result_data = {
+            "total": len(data_list),
+            "success": success_count,
+            "failed": failed_count,
+            "centrality_name": centrality_name,
+            "auto_detected": False,
+            "details": results
+        }
+
+    return APIResponseModel(
+        result=result_data,
+        description=description
     )
 
 
@@ -168,3 +226,76 @@ async def normalize_key_values(
                     + (f", {result['failed_keys']}개 Key 실패" if result.get('failed_keys', 0) > 0 else "")
             )
         )
+
+
+@router.post("/analyze_schema", tags=["keyvalue-graph"], response_model=APIResponseModel, response_class=JSONResponse)
+async def analyze_data_schema(
+        file: Annotated[UploadFile, File()],
+        sample_size: Annotated[int, Body(embed=True)] = 5
+):
+    """데이터 스키마 자동 분석
+
+    파일을 업로드하면 샘플링 + 통계 분석을 통해 스키마를 자동으로 추론합니다.
+
+    Args:
+        file: JSON 배열 파일 [{...}, {...}, ...]
+        sample_size: 샘플링할 레코드 개수 (기본: 5)
+
+    Flow:
+        1. 파일에서 레코드 추출
+        2. 샘플링 (균등 분포)
+        3. 필드별 통계 수집 (unique 개수, null 비율, 샘플 값)
+        4. LLM으로 스키마 추론 (도메인, 필드 한글명, 데이터 타입)
+
+    Returns:
+        {
+            "domain": "법률",
+            "centrality_name": "판례정보",
+            "fields": {
+                "CASE_NO": {
+                    "korean_name": "사건번호",
+                    "description": "법원 사건 고유 번호",
+                    "data_type": "text"
+                },
+                ...
+            },
+            "confidence": 0.95
+        }
+    """
+    import json
+
+    # 파일 읽기
+    content = await file.read()
+    data_list = json.loads(content.decode("utf-8"))
+
+    if not isinstance(data_list, list):
+        data_list = [data_list]
+
+    if not data_list:
+        return APIResponseModel(
+            result={"error": "데이터가 비어있습니다"},
+            description="스키마 분석 실패: 빈 데이터"
+        )
+
+    # 스키마 분석
+    analyzer = SchemaAnalyzer(sample_size=sample_size)
+    schema = analyzer.analyze(data_list)
+
+    return APIResponseModel(
+        result={
+            "domain": schema.domain,
+            "centrality_name": schema.centrality_name,
+            "fields": {
+                field_name: {
+                    "korean_name": field_info.korean_name,
+                    "description": field_info.description,
+                    "data_type": field_info.data_type
+                }
+                for field_name, field_info in schema.fields.items()
+            },
+            "confidence": schema.confidence,
+            "notes": schema.notes,
+            "analyzed_records": len(data_list)
+        },
+        description=f"스키마 분석 완료: 도메인={schema.domain}, 필드 {len(schema.fields)}개, 신뢰도={schema.confidence:.2f}"
+    )
