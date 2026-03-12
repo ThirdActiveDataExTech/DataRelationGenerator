@@ -177,16 +177,17 @@ class ClusteringNormalizer:
         return [r["key_name"] for r in results]
 
     def _get_values_for_key(self, key_name: str) -> List[str]:
-        """특정 Key의 모든 Value 조회
+        """특정 Key의 모든 Value 조회 (이미 정규화된 Value 제외)
 
         Args:
             key_name: Key명
 
         Returns:
-            Value 리스트 (중복 제거)
+            Value 리스트 (중복 제거, 정규화되지 않은 것만)
         """
         query = """
         MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
+        WHERE NOT (v)-[:SAME_AS]->(:NormalizedValue)
         RETURN DISTINCT v.name as value
         ORDER BY v.name
         """
