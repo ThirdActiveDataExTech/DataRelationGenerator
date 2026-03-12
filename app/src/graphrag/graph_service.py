@@ -2,7 +2,6 @@ from functools import cached_property
 from typing import Dict, Any, List
 
 import logging
-
 from neo4j.exceptions import ServiceUnavailable, ClientError
 
 from app.exceptions.base import ApplicationError
@@ -28,7 +27,7 @@ class GraphService:
 
     @cached_property
     def graph_embedding_service(self) -> GraphEmbeddingService:
-        """Lazy initialization: Graph Embedding 서비스"""
+        """Lazy initialization: Graph Embedding 서비스 (HashGNN)"""
         return GraphEmbeddingService(graph_repo=self.graph_repo)
 
     @cached_property
@@ -44,19 +43,15 @@ class GraphService:
 
     async def update_all_graph_embeddings(
             self,
-            embedding_dim: int = 128,
-            walk_length: int = 80,
-            walks_per_node: int = 10
+            embedding_dim: int = 128
     ) -> Dict[str, Any]:
-        """전체 Document 노드에 대해 그래프 임베딩 일괄 생성"""
+        """전체 Document 노드에 대해 HashGNN으로 그래프 임베딩 일괄 생성"""
         try:
             doc_ids = self._get_all_document_ids()
             if not doc_ids:
                 return {"status": "no_documents", "message": "업데이트할 Document가 없습니다"}
 
-            all_embeddings = self._generate_embeddings(
-                embedding_dim, walk_length, walks_per_node
-            )
+            all_embeddings = self._generate_embeddings(embedding_dim)
             if not all_embeddings:
                 return {
                     "status": "failed",
@@ -67,7 +62,7 @@ class GraphService:
                 }
 
             result = self._update_document_embeddings(doc_ids, all_embeddings)
-            logging.info(f"그래프 임베딩 완료: 성공 {result['success']}/{len(doc_ids)}")
+            logging.info(f"[HashGNN] 그래프 임베딩 완료: 성공 {result['success']}/{len(doc_ids)}")
 
             return {
                 "status": "completed",
@@ -78,14 +73,14 @@ class GraphService:
             }
 
         except (ServiceUnavailable, ClientError) as e:
-            logging.exception(f"그래프 임베딩 일괄 생성 실패 (DB 오류)")
+            logging.exception(f"[HashGNN] 그래프 임베딩 일괄 생성 실패 (DB 오류)")
             raise ApplicationError(
                 code=500,
                 message="그래프 임베딩 생성에 실패했습니다 (DB 연결 문제)",
                 result={"error": str(e)}
             )
         except (ValueError, KeyError, AttributeError, RuntimeError) as e:
-            logging.exception(f"그래프 임베딩 일괄 생성 실패 (데이터 처리 오류)")
+            logging.exception(f"[HashGNN] 그래프 임베딩 일괄 생성 실패 (데이터 처리 오류)")
             raise ApplicationError(
                 code=500,
                 message="그래프 임베딩 생성에 실패했습니다.",
@@ -98,17 +93,10 @@ class GraphService:
         docs = self.graph_repo.execute_query(query)
         return [doc["doc_id"] for doc in docs]
 
-    def _generate_embeddings(
-            self,
-            embedding_dim: int,
-            walk_length: int,
-            walks_per_node: int
-    ) -> Dict[str, List[float]]:
-        """Node2Vec으로 그래프 임베딩 생성"""
+    def _generate_embeddings(self, embedding_dim: int) -> Dict[str, List[float]]:
+        """HashGNN으로 그래프 임베딩 생성"""
         return self.graph_embedding_service.generate_all_graph_embeddings(
-            embedding_dim=embedding_dim,
-            walk_length=walk_length,
-            walks_per_node=walks_per_node
+            embedding_dim=embedding_dim
         )
 
     def _update_document_embeddings(
@@ -152,9 +140,9 @@ class GraphService:
     async def analyze_document_relations(
             self,
             doc_id: str = None,
-            top_k: int = 10,
-            text_weight: float = 0.6,
-            graph_weight: float = 0.4
+            top_k: int = 4,
+            text_weight: float = 0.4,
+            graph_weight: float = 0.6
     ) -> Dict[str, Any]:
         """Document 간 관계 분석 및 생성"""
         try:
@@ -261,10 +249,10 @@ class GraphService:
         query = """
         MATCH (d:Document {id: $doc_id})
         OPTIONAL MATCH (d)-[:HAS_TOPIC]->(t:Topic)
-        OPTIONAL MATCH (d)-[:HAS_TAG]->(tag:Tag)
+        OPTIONAL MATCH (d)-[:MENTIONS]->(e:Entity)
         RETURN d.description as description,
                collect(DISTINCT t.name) as topics,
-               collect(DISTINCT tag.name) as tags
+               collect(DISTINCT e.name) as entities
         """
         result = self.graph_repo.execute_query(query, {"doc_id": doc_id})
 
@@ -272,9 +260,9 @@ class GraphService:
             return {
                 "description": result[0]["description"],
                 "topics": result[0]["topics"],
-                "tags": result[0]["tags"]
+                "entities": result[0]["entities"]
             }
-        return {"description": "", "topics": [], "tags": []}
+        return {"description": "", "topics": [], "entities": []}
 
     def _infer_document_relations(
             self,
@@ -350,12 +338,13 @@ class GraphService:
         return {
             "new_doc_id": doc_id,
             "new_doc_description": metadata.get("description", ""),
+            "new_doc_entities": ", ".join(metadata.get("entities", [])),
             "new_doc_topics": ", ".join(metadata.get("topics", [])),
             "new_doc_text": doc_text[:1000],
             "related_doc_id": related_doc_id,
             "related_doc_description": related_doc.get("description", "N/A"),
+            "shared_entities": ", ".join(related_doc.get("shared_entities", [])),
             "related_doc_topics": ", ".join(related_doc.get("shared_topics", [])),
-            "related_doc_tags": ", ".join(related_doc.get("shared_tags", [])),
             "graph_score": related_doc.get("graph_score", 0),
             "related_doc_text": related_doc.get("text", "")[:500]
         }

@@ -8,10 +8,10 @@ from sqlalchemy.orm import declarative_base
 
 class MetadataInfo(BaseModel):
     """메타데이터 정보 데이터 모델"""
-    tags: List[str] = Field(
+    entities: List[str] = Field(
         default_factory=list,
-        title="태그",
-        description="데이터와 관련된 태그 목록. 반드시 배열 형식으로 반환: [\"태그1\", \"태그2\", \"태그3\"]"
+        title="엔티티",
+        description="문서에서 추출된 핵심 엔티티 목록 (인명, 지명, 기관명, 개념 등). 반드시 배열 형식으로 반환: [\"엔티티1\", \"엔티티2\"]"
     )
     topics: List[str] = Field(
         default_factory=list,
@@ -21,7 +21,7 @@ class MetadataInfo(BaseModel):
     description: str = Field(default="", title="설명", description="데이터에 대한 간략한 설명")
     embedding: Optional[List[float]] = Field(default=None, title="임베딩", description="Description의 embedding 벡터 (384차원)")
 
-    @field_validator('tags', 'topics')
+    @field_validator('entities', 'topics')
     @classmethod
     def validate_non_empty_list(cls, v: List[str]) -> List[str]:
         return [item.strip() for item in v if item.strip()]
@@ -77,6 +77,22 @@ class DocumentRelationResult(BaseModel):
     )
 
 
+class QueryCondition(BaseModel):
+    """쿼리 조건"""
+    type: Literal["entity", "property"] = Field(..., description="조건 타입: entity (Entity 노드와 연결) 또는 property (Document 속성)")
+    value: str = Field(..., description="조건 값 (예: '가평', '재활의학과', '종합병원')")
+    semantic: str = Field(..., description="의미적 역할 (예: '위치', '진료과목', '병원유형')")
+
+
+class QueryGraphPattern(BaseModel):
+    """쿼리 그래프 패턴"""
+    target: str = Field(default="Document", description="검색 대상 노드 타입 (보통 'Document')")
+    conditions: List[QueryCondition] = Field(
+        default_factory=list,
+        description="검색 조건 목록. 조건이 없으면 빈 배열 반환"
+    )
+
+
 Base = declarative_base()
 
 
@@ -94,7 +110,7 @@ class DataInfo(Base):
 metadata_tool = pydantic_function_tool(
     MetadataInfo,
     name="extract_metadata_info",
-    description="주어진 데이터에서 메타데이터 정보를 추출합니다."
+    description="주어진 데이터에서 메타데이터 정보(엔티티, 주제, 설명)를 추출합니다."
 )
 
 cypher_tool = pydantic_function_tool(
@@ -113,4 +129,54 @@ document_relation_tool = pydantic_function_tool(
     DocumentRelationResult,
     name="infer_document_relations",
     description="새 문서와 기존 유사 문서들 간의 의미적 관계를 추론합니다."
+)
+
+query_graph_tool = pydantic_function_tool(
+    QueryGraphPattern,
+    name="parse_query_to_graph",
+    description="검색 쿼리를 그래프 패턴으로 변환합니다. 쿼리에서 검색 조건들을 추출하여 그래프 구조로 표현합니다."
+)
+
+
+class DocumentRelevance(BaseModel):
+    """문서 적합성 평가 결과"""
+    is_relevant: bool = Field(..., description="문서가 쿼리 의도에 적합한지 여부 (true/false)")
+    relevance_score: float = Field(..., ge=0.0, le=1.0, description="적합도 점수 (0.0~1.0)")
+    reason: str = Field(..., description="판단 근거 (구체적으로 작성)")
+
+
+document_relevance_tool = pydantic_function_tool(
+    DocumentRelevance,
+    name="verify_document_relevance",
+    description="검색된 문서가 사용자 쿼리의 의도를 만족하는지 평가합니다."
+)
+
+
+class KeyValueExtractionResult(BaseModel):
+    """Key-Value 추출 결과"""
+    key_values: dict[str, List[str]] = Field(
+        ...,
+        description="추출된 Key-Value 쌍. Key는 원본 필드명(예: 'BIZPLC_NM'), Value는 문자열 배열"
+    )
+
+
+key_value_extraction_tool = pydantic_function_tool(
+    KeyValueExtractionResult,
+    name="extract_key_value_pairs",
+    description="데이터에서 모든 필드명(Key)과 그 값(Value)을 추출합니다."
+)
+
+
+class ClusterNormalizationResult(BaseModel):
+    """클러스터 정규화 결과"""
+    normalized_value: str = Field(
+        ...,
+        description="클러스터를 대표하는 정규화된 값. 원본 값 중 하나를 선택하거나 적절한 메타 개념을 생성."
+    )
+
+
+cluster_normalization_tool = pydantic_function_tool(
+    ClusterNormalizationResult,
+    name="normalize_cluster",
+    description="유사한 값들의 클러스터를 분석하여 적절한 정규화 값을 생성합니다."
 )

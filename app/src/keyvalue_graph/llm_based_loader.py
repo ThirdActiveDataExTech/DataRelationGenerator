@@ -1,0 +1,136 @@
+from typing import Any, Dict
+
+import logging
+
+from app.repositories.graph_repository import GraphRepository
+from app.src.keyvalue_graph.data_loader import DataRecord
+from app.src.keyvalue_graph.field_mappings import FIELD_NAME_MAPPING
+from app.src.keyvalue_graph.graph_builder import KeyValueGraphBuilder
+from app.src.meta_extract.llm_response import LLMResponse
+
+logger = logging.getLogger(__name__)
+
+
+class LLMBasedKeyValueLoader:
+    """LLM을 사용하여 데이터로부터 Key-Value를 추출하고 그래프를 생성하는 서비스."""
+
+    def __init__(self, graph_repo: GraphRepository = None):
+        """초기화.
+
+        Args:
+            graph_repo: Neo4j 리포지토리
+        """
+        self.graph_repo = graph_repo or GraphRepository()
+        self.graph_builder = KeyValueGraphBuilder(graph_repo=self.graph_repo)
+
+    def extract_and_build_graph(
+            self,
+            data_text: str,
+            centrality_name: str = "병원현황",
+            source_file: str = "llm_extract",
+            record_index: int = 0
+    ) -> Dict[str, Any]:
+        """데이터로부터 LLM으로 Key-Value를 추출하고 그래프를 생성.
+
+        Args:
+            data_text: 원본 데이터 (JSON 문자열)
+            centrality_name: 중심 노드 이름 (예: "병원현황", "판례정보")
+            source_file: 소스 파일명
+            record_index: 레코드 인덱스
+
+        Returns:
+            그래프 생성 결과
+        """
+        try:
+            # 1. LLM으로 Key-Value 추출
+            logger.info("LLM으로 Key-Value 추출 시작")
+            llm_response = LLMResponse("key_value_extract")
+            extraction_result = llm_response.generate_llm_response(
+                variables={"data_text": data_text}
+            )
+
+            if not isinstance(extraction_result, dict):
+                raise ValueError(
+                    f"LLM 응답이 dict가 아닙니다: {type(extraction_result)}"
+                )
+
+            raw_key_values = extraction_result.get("key_values", {})
+            logger.info(f"추출된 Key 개수: {len(raw_key_values)}")
+
+            # 2. Key를 한글로 매핑
+            korean_key_values = self._map_keys_to_korean(raw_key_values)
+
+            # 3. DataRecord 생성
+            # 원본 데이터를 dict로 변환 (JSON 문자열 → dict)
+            import json
+
+            try:
+                raw_data = json.loads(data_text)
+            except json.JSONDecodeError:
+                # 이미 dict면 그대로 사용
+                raw_data = {}
+
+            record = DataRecord(
+                source_file=source_file,
+                record_index=record_index,
+                raw_data=raw_data,
+            )
+            # LLM이 추출한 Key-Value를 직접 설정
+            record.key_values = korean_key_values
+
+            # 4. 그래프 생성
+            result = self.graph_builder.build_from_record(record, centrality_name=centrality_name)
+
+            logger.info(
+                f"그래프 생성 완료: Centrality={centrality_name}, Document={result.document_id}, "
+                f"Keys={result.keys_count}, Values={result.values_count}, "
+                f"Normalized={result.normalized_count}"
+            )
+
+            return {
+                "success": result.success,
+                "centrality_name": centrality_name,
+                "document_id": result.document_id,
+                "keys_count": result.keys_count,
+                "values_count": result.values_count,
+                "normalized_count": result.normalized_count,
+                "extraction": {
+                    "raw_keys": list(raw_key_values.keys()),
+                    "korean_keys": list(korean_key_values.keys()),
+                },
+            }
+
+        except Exception as e:
+            logger.exception(f"LLM 기반 그래프 생성 실패: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+            }
+
+    def _map_keys_to_korean(
+            self, raw_key_values: Dict[str, list[str]]
+    ) -> Dict[str, list[str]]:
+        """원본 필드명을 한글로 매핑.
+
+        Args:
+            raw_key_values: 원본 Key-Value (예: {"BIZPLC_NM": ["병원명"], ...})
+
+        Returns:
+            한글 매핑된 Key-Value (예: {"병원명": ["노체리안드리자애병원"], ...})
+        """
+        korean_key_values = {}
+
+        for raw_key, values in raw_key_values.items():
+            # 한글 매핑 조회
+            korean_key = FIELD_NAME_MAPPING.get(raw_key, raw_key)
+
+            # 빈 배열이면 건너뛰기
+            if not values:
+                continue
+
+            korean_key_values[korean_key] = values
+
+        logger.info(
+            f"Key 매핑 완료: {len(raw_key_values)} → {len(korean_key_values)}"
+        )
+        return korean_key_values

@@ -59,11 +59,11 @@ class GraphRepository:
             )
 
     def create_vector_index(self) -> None:
-        """Document 노드의 embedding property에 대한 vector index 생성"""
+        """Document 노드의 binary_text_embedding property에 대한 vector index 생성"""
         query = """
         CREATE VECTOR INDEX text_embedding_index IF NOT EXISTS
         FOR (d:Document)
-        ON d.text_embedding
+        ON d.binary_text_embedding
         OPTIONS {
             indexConfig: {
                 `vector.dimensions`: 768,
@@ -89,6 +89,39 @@ class GraphRepository:
                 `vector.similarity_function`: 'cosine'
             }}
         }}
+        """
+        self.execute_query(query)
+
+    def create_entity_embedding_index(self) -> None:
+        """Entity 노드의 binary_embedding property에 대한 vector index 생성"""
+        query = """
+        CREATE VECTOR INDEX entity_embedding_index IF NOT EXISTS
+        FOR (e:Entity)
+        ON e.binary_embedding
+        OPTIONS {
+            indexConfig: {
+                `vector.dimensions`: 768,
+                `vector.similarity_function`: 'cosine'
+            }
+        }
+        """
+        self.execute_query(query)
+
+    def create_fulltext_index_entity(self) -> None:
+        """Entity 노드의 name property에 대한 Full-Text Index 생성 (CJK 분석기)"""
+        query = """
+        CREATE FULLTEXT INDEX entity_fulltext IF NOT EXISTS
+        FOR (n:Entity) ON EACH [n.name]
+        OPTIONS {indexConfig: {`fulltext.analyzer`: 'cjk'}}
+        """
+        self.execute_query(query)
+
+    def create_fulltext_index_topic(self) -> None:
+        """Topic 노드의 name property에 대한 Full-Text Index 생성 (CJK 분석기)"""
+        query = """
+        CREATE FULLTEXT INDEX topic_fulltext IF NOT EXISTS
+        FOR (n:Topic) ON EACH [n.name]
+        OPTIONS {indexConfig: {`fulltext.analyzer`: 'cjk'}}
         """
         self.execute_query(query)
 
@@ -195,4 +228,48 @@ class GraphRepository:
                 )
 
         logging.info(f"Document {source_doc_id}에 대해 {count}개의 관계 생성 완료 (APOC 없이)")
+        return count
+
+    def create_entity_relations(
+            self,
+            new_entity: str,
+            candidates: List[Dict[str, Any]]
+    ) -> int:
+        """Entity 간 RELATED_TO 관계 생성"""
+        if not candidates:
+            return 0
+
+        count = 0
+
+        for candidate in candidates:
+            query = """
+            MATCH (new:Entity {name: $new_entity})
+            MATCH (existing:Entity {name: $existing_entity})
+            MERGE (new)-[r:RELATED_TO]-(existing)
+            SET r.score = $score,
+                r.created_at = datetime(),
+                r.source = $source,
+                r.wikidata_type = $wikidata_type
+            RETURN r
+            """
+
+            parameters = {
+                "new_entity": new_entity,
+                "existing_entity": candidate["name"],
+                "score": candidate["score"],
+                "source": candidate.get("source", "vector"),
+                "wikidata_type": candidate.get("wikidata_type")
+            }
+
+            try:
+                self.execute_query(query, parameters)
+                count += 1
+                logging.info(
+                    f"Entity 관계 생성: {new_entity} -[RELATED_TO]- {candidate['name']} (score: {candidate['score']:.2f})"
+                )
+            except Exception as e:
+                logging.error(
+                    f"Entity 관계 생성 실패 ({new_entity} -[RELATED_TO]- {candidate['name']}): {e}"
+                )
+
         return count

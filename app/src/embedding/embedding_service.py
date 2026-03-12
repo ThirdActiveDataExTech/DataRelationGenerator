@@ -35,5 +35,25 @@ class EmbeddingService:
         embedding = self._model.encode(text, convert_to_numpy=True)
         return embedding.tolist()
 
+    @staticmethod
+    def binarize_embedding(embedding: List[float], method: str = "threshold") -> List[float]:
+        """Float embedding을 binary embedding으로 변환
+
+        Args:
+            embedding: 원본 float embedding
+            method: 변환 방법 ("threshold" 또는 "sign")
+                - "threshold": 0보다 크면 1.0, 아니면 0.0
+                - "sign": 0 이상이면 1.0, 음수면 0.0
+
+        Returns:
+            Binary embedding (0.0 또는 1.0로만 구성된 리스트)
+        """
+        if method == "threshold":
+            return [1.0 if x > 0 else 0.0 for x in embedding]
+        elif method == "sign":
+            return [1.0 if x >= 0 else 0.0 for x in embedding]
+        else:
+            raise ValueError(f"지원하지 않는 변환 방법: {method}")
+
 
 embedding_service = EmbeddingService()
