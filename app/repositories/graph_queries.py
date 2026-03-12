@@ -148,6 +148,12 @@ RETURN elementId(n) as id, labels(n) as labels, properties(n) as properties
 LIMIT 1
 """
 
+GET_NODE_BY_TOPIC = """
+MATCH (n:Topic {name: $name})
+RETURN elementId(n) as id, labels(n) as labels, properties(n) as properties
+LIMIT 1
+"""
+
 GET_NODE_BY_ID = """
 MATCH (n)
 WHERE n.id = $node_id OR elementId(n) = $node_id

@@ -247,14 +247,18 @@ class GraphRepository:
             MATCH (existing:Entity {name: $existing_entity})
             MERGE (new)-[r:RELATED_TO]-(existing)
             SET r.score = $score,
-                r.created_at = datetime()
+                r.created_at = datetime(),
+                r.source = $source,
+                r.wikidata_type = $wikidata_type
             RETURN r
             """
 
             parameters = {
                 "new_entity": new_entity,
                 "existing_entity": candidate["name"],
-                "score": candidate["score"]
+                "score": candidate["score"],
+                "source": candidate.get("source", "vector"),
+                "wikidata_type": candidate.get("wikidata_type")
             }
 
             try:
