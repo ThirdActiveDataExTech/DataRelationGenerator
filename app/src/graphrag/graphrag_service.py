@@ -24,6 +24,7 @@ from app.repositories.graph_queries import (
     GET_ENTITY_RELATIONSHIPS,
     GET_NODE_BY_ENTITY,
     GET_NODE_BY_CATEGORY,
+    GET_NODE_BY_TOPIC,
     GET_NODE_BY_ID,
     EXPLORE_NODE_TEMPLATE,
     GET_DOCUMENTS_BY_IDS
@@ -36,8 +37,8 @@ from app.schemas.graphrag_api import (
     CommonMetadata,
     GraphNode
 )
-from app.src.meta_extract.llm_response import LLMResponse
 from app.src.graphrag.reranker import BGEReranker
+from app.src.meta_extract.llm_response import LLMResponse
 
 
 class GraphRAGService:
@@ -134,10 +135,10 @@ class GraphRAGService:
         return final_results
 
     def _verify_results_with_llm(
-        self,
-        query: str,
-        results: List[Dict[str, Any]],
-        top_k: int = 5
+            self,
+            query: str,
+            results: List[Dict[str, Any]],
+            top_k: int = 5
     ) -> List[Dict[str, Any]]:
         """LLM으로 검색 결과 적합성 검증 (Early Stopping 적용)
 
@@ -161,7 +162,8 @@ class GraphRAGService:
                 if len(document) > 10000:
                     document = document[:10000]
 
-                logging.info(f"[LLM 검증 {idx+1}/{len(results)}] doc_id: {result.get('doc_id')}, text_len: {len(document)}")
+                logging.info(
+                    f"[LLM 검증 {idx + 1}/{len(results)}] doc_id: {result.get('doc_id')}, text_len: {len(document)}")
 
                 # LLM 검증
                 verification = LLMResponse("document_relevance_verification").generate_llm_response(
@@ -211,9 +213,9 @@ class GraphRAGService:
 
             # 최종 점수: 패턴 33.3% + 벡터 33.3% + Reranker 33.3%
             result["final_score"] = (
-                pattern_score * 0.333 +
-                vector_score * 0.333 +
-                rerank_score * 0.334
+                    pattern_score * 0.333 +
+                    vector_score * 0.333 +
+                    rerank_score * 0.334
             )
 
         # 정렬
@@ -264,10 +266,10 @@ class GraphRAGService:
         return documents
 
     def _merge_and_rerank(
-        self,
-        pattern_results: List[Dict[str, Any]],
-        vector_results: List[Dict[str, Any]],
-        top_k: int
+            self,
+            pattern_results: List[Dict[str, Any]],
+            vector_results: List[Dict[str, Any]],
+            top_k: int
     ) -> List[Dict[str, Any]]:
         """패턴 매칭과 벡터 검색 결과 병합 및 재순위화"""
         # doc_id를 키로 결과 병합
@@ -352,9 +354,9 @@ class GraphRAGService:
             return {"target": "Document", "conditions": []}
 
     def _build_pattern_matching_query(
-        self,
-        graph_pattern: Dict[str, Any],
-        top_k: int
+            self,
+            graph_pattern: Dict[str, Any],
+            top_k: int
     ) -> List[Dict[str, Any]]:
         """그래프 패턴 기반 검색 실행 (Full-Text Index 사용)
 
@@ -604,6 +606,8 @@ class GraphRAGService:
                     node_id = f"entity_{props.get('name')}"
                 elif "Category" in labels:
                     node_id = f"category_{props.get('name')}"
+                elif "Topic" in labels:
+                    node_id = f"topic_{props.get('name')}"
                 else:
                     node_id = node.get("id")
             else:
@@ -669,12 +673,27 @@ class GraphRAGService:
             # properties 정리
             clean_props = self._sanitize_properties(rel.get("properties", {}))
 
-            formatted.append({
+            # 프론트엔드 호환성을 위해 주요 속성을 루트 레벨로 끌어올림
+            rel_data = {
                 "type": rel_type,
                 "start": start,
                 "end": end,
                 "properties": clean_props
-            })
+            }
+
+            # reason, confidence, source, via 등 중요 속성은 루트 레벨에도 추가
+            if "reason" in clean_props:
+                rel_data["reason"] = clean_props["reason"]
+            if "confidence" in clean_props:
+                rel_data["confidence"] = clean_props["confidence"]
+            if "source" in clean_props:
+                rel_data["source"] = clean_props["source"]
+            if "via" in clean_props:
+                rel_data["via"] = clean_props["via"]
+            if "wikidata_type" in clean_props:
+                rel_data["wikidata_type"] = clean_props["wikidata_type"]
+
+            formatted.append(rel_data)
 
         return formatted
 
@@ -884,6 +903,9 @@ class GraphRAGService:
         elif node_id.startswith("category_"):
             match_clause = "MATCH (center:Category {name: $name})"
             params = {"name": node_id[9:]}
+        elif node_id.startswith("topic_"):
+            match_clause = "MATCH (center:Topic {name: $name})"
+            params = {"name": node_id[6:]}
         else:
             match_clause = "MATCH (center) WHERE center.id = $node_id OR elementId(center) = $node_id"
             params = {"node_id": node_id}
@@ -908,6 +930,10 @@ class GraphRAGService:
                 id_mapping[props.get('name')] = synthetic_id
             elif "Category" in labels:
                 synthetic_id = f"category_{props.get('name')}"
+                id_mapping[original_id] = synthetic_id
+                id_mapping[props.get('name')] = synthetic_id
+            elif "Topic" in labels:
+                synthetic_id = f"topic_{props.get('name')}"
                 id_mapping[original_id] = synthetic_id
                 id_mapping[props.get('name')] = synthetic_id
             else:
@@ -998,7 +1024,7 @@ class GraphRAGService:
         """노드 정보 조회
 
         Args:
-            node_id: 노드 ID (Document ID 또는 entity_xxx, category_xxx 형식)
+            node_id: 노드 ID (Document ID 또는 entity_xxx, category_xxx, topic_xxx 형식)
 
         Returns:
             노드 정보 또는 None
@@ -1007,6 +1033,8 @@ class GraphRAGService:
             query, params = GET_NODE_BY_ENTITY, {"name": node_id[7:]}
         elif node_id.startswith("category_"):
             query, params = GET_NODE_BY_CATEGORY, {"name": node_id[9:]}
+        elif node_id.startswith("topic_"):
+            query, params = GET_NODE_BY_TOPIC, {"name": node_id[6:]}
         else:
             query, params = GET_NODE_BY_ID, {"node_id": node_id}
 
@@ -1015,7 +1043,7 @@ class GraphRAGService:
             return None
 
         node = result[0]
-        final_id = node_id if node_id.startswith(("entity_", "category_")) else (
+        final_id = node_id if node_id.startswith(("entity_", "category_", "topic_")) else (
                 node.get("properties", {}).get("id") or node.get("id"))
 
         return {

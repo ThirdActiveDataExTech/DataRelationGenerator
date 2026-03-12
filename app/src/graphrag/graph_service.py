@@ -2,7 +2,6 @@ from functools import cached_property
 from typing import Dict, Any, List
 
 import logging
-
 from neo4j.exceptions import ServiceUnavailable, ClientError
 
 from app.exceptions.base import ApplicationError
