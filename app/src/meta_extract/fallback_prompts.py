@@ -307,6 +307,137 @@ Query: {query_text}
 반드시 verify_document_relevance function tool을 호출하세요.
 """
 
+    CLUSTER_NORMALIZE: str = """**반드시 normalize_cluster tool을 사용하여 응답할 것.**
+
+당신은 유사한 값들을 분석하여 적절한 정규화 값을 생성하는 전문가입니다.
+
+# 임무
+다음은 클러스터링으로 묶인 유사한 값들의 리스트입니다.
+이 값들을 대표할 수 있는 **하나의 정규화 값**을 선택하거나 생성하세요.
+
+Values (클러스터): {cluster_values}
+
+# 중요 원칙
+
+**출력은 반드시 Value들 자체에서 나와야 합니다**
+- "병상수", "날짜", "범위" 같은 추상적 메타 개념을 만들지 마세요
+- 주어진 Value 중 하나를 선택하거나, Value들의 조합/정제 형태만 허용
+
+# 정규화 전략
+
+## 1. 가장 완전하고 표준적인 형태 선택
+
+예시:
+- ["꿈이있는 치과", "꿈이있는치과병원", "꿈이있는치과"]
+  → "꿈이있는치과병원" (가장 완전한 형태)
+
+- ["서울대병원", "서울대학교병원", "서울대 병원"]
+  → "서울대학교병원" (가장 정식 명칭)
+
+- ["성모병원", "가톨릭대 성모병원", "가톨릭대학교 성모병원"]
+  → "가톨릭대학교 성모병원" (가장 완전한 형태)
+
+## 2. 공백/특수문자가 적절히 포함된 형태 선택
+
+예시:
+- ["서울특별시 강남구", "서울 강남구", "강남구"]
+  → "서울특별시 강남구" (가장 완전한 행정구역명)
+
+- ["010-1234-5678", "01012345678", "010 1234 5678"]
+  → "010-1234-5678" (가독성 좋은 형태)
+
+## 3. 날짜는 가장 표준적인 형식 선택
+
+예시:
+- ["2026-03-03", "2026.03.03", "20260303"]
+  → "2026-03-03" (표준 형식)
+
+- ["2026/12/25", "2026-12-25"]
+  → "2026-12-25" (ISO 표준)
+
+## 4. 숫자는 가장 깔끔한 형태 선택
+
+예시:
+- ["100", "100명", "100 명"]
+  → "100" (단위 제거, 숫자만)
+
+- ["1,000", "1000", "1000원"]
+  → "1000" (쉼표 제거, 숫자만)
+
+# 출력 규칙
+
+1. **반드시 하나의 문자열만 반환**
+2. **원본 Value 중 하나를 선택하거나, Value들의 조합/정제 형태만 허용**
+3. **Key 이름이나 추상적 메타 개념을 절대 출력하지 말 것**
+4. 선택 기준: 완전성 > 표준성 > 가독성
+
+# 출력
+반드시 normalize_cluster function tool을 호출하세요.
+"""
+
+    KEY_VALUE_EXTRACT: str = """**반드시 extract_key_value_pairs tool을 사용하여 응답할 것.**
+
+당신은 데이터에서 Key-Value 쌍을 추출하는 전문가입니다.
+
+# 임무
+다음 데이터에서 모든 필드명(Key)과 그 값(Value)을 추출하세요.
+
+데이터:
+{data_text}
+
+# 추출 규칙
+
+1. **Key (필드명)**
+   - 원본 필드명을 그대로 추출 (예: "BIZPLC_NM", "SIGUN_NM", "SICKBD_CNT")
+   - 영문 대문자 + 밑줄 형식 유지
+   - 데이터에 있는 모든 필드를 누락 없이 추출
+
+2. **Value (값)**
+   - 각 필드의 실제 값을 정확하게 추출
+   - 빈 값("")이나 null인 경우 빈 배열 반환
+   - 복합 값(쉼표로 구분된 값)은 분리하여 배열로 반환
+
+3. **복합 값 처리**
+   - "내과, 외과, 재활의학과" → ["내과", "외과", "재활의학과"]
+   - "서울특별시 강남구" → ["서울특별시 강남구"] (단일 값)
+
+# 예시
+
+입력:
+{{
+    "BIZPLC_NM": "노체리안드리자애병원",
+    "SIGUN_NM": "가평군",
+    "SICKBD_CNT": "83",
+    "TREAT_SBJECT_CONT_INFO": "내과, 외과, 재활의학과",
+    "BSN_STATE_NM": "영업중",
+    "REFINE_ROADNM_ADDR": "",
+    "LICENSG_DE": "2020-01-15"
+}}
+
+출력:
+{{
+    "key_values": {{
+        "BIZPLC_NM": ["노체리안드리자애병원"],
+        "SIGUN_NM": ["가평군"],
+        "SICKBD_CNT": ["83"],
+        "TREAT_SBJECT_CONT_INFO": ["내과", "외과", "재활의학과"],
+        "BSN_STATE_NM": ["영업중"],
+        "REFINE_ROADNM_ADDR": [],
+        "LICENSG_DE": ["2020-01-15"]
+    }}
+}}
+
+# 주의사항
+- 모든 필드를 빠짐없이 추출
+- 값의 자료형에 관계없이 문자열 배열로 반환
+- 숫자는 문자열로 변환 ("83")
+- 날짜도 문자열로 변환 ("2020-01-15")
+- 빈 값은 빈 배열 ([])
+
+# 출력
+반드시 extract_key_value_pairs function tool을 호출하세요.
+"""
+
     @classmethod
     def get_prompt(cls, task: str) -> str:
         """Get fallback prompt by task name."""
@@ -318,6 +449,8 @@ Query: {query_text}
             "entity_extract_from_query": cls.ENTITY_EXTRACT_FROM_QUERY,
             "query_graph_parsing": cls.QUERY_GRAPH_PARSING,
             "document_relevance_verification": cls.DOCUMENT_RELEVANCE_VERIFICATION,
+            "key_value_extract": cls.KEY_VALUE_EXTRACT,
+            "cluster_normalize": cls.CLUSTER_NORMALIZE,
         }
 
         if task not in prompt_map:

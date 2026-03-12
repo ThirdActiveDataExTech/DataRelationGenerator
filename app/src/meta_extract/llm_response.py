@@ -22,7 +22,9 @@ from app.schemas.meta import (
     category_generation_tool,
     document_relation_tool,
     query_graph_tool,
-    document_relevance_tool
+    document_relevance_tool,
+    key_value_extraction_tool,
+    cluster_normalization_tool
 )
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 
@@ -33,10 +35,13 @@ class LLMResponse:
     PROMPT_CONFIG = {
         "meta_extract": (GENERATE_METADATA_PROMPT_NAME, GENERATE_METADATA_PROMPT_LABEL),
         "category_generate": ("generate_category", "production"),
-        "document_relation_inference": (DOCUMENT_RELATION_INFERENCE_PROMPT_NAME, DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL),
+        "document_relation_inference": (
+        DOCUMENT_RELATION_INFERENCE_PROMPT_NAME, DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL),
         "cypher_generate": (GENERATE_CYPHER_PROMPT_NAME, GENERATE_CYPHER_PROMPT_LABEL),
         "query_graph_parsing": ("query_graph_parsing", "production"),
         "document_relevance_verification": ("document_relevance_verification", "production"),
+        "key_value_extract": ("key_value_extract", "production"),
+        "cluster_normalize": ("cluster_normalize", "production"),
     }
 
     def __init__(self, task: str):
@@ -104,6 +109,10 @@ class LLMResponse:
             tools = [query_graph_tool]
         elif self.task == "document_relevance_verification":
             tools = [document_relevance_tool]
+        elif self.task == "key_value_extract":
+            tools = [key_value_extraction_tool]
+        elif self.task == "cluster_normalize":
+            tools = [cluster_normalization_tool]
         else:
             tools = []
 
