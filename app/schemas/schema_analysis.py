@@ -1,8 +1,7 @@
-"""스키마 분석 관련 Pydantic 모델"""
-
 from typing import Dict, List, Literal
-from pydantic import BaseModel, Field
+
 from openai import pydantic_function_tool
+from pydantic import BaseModel, Field
 
 
 class FieldAnalysis(BaseModel):
