@@ -104,40 +104,15 @@ class GraphEmbeddingService:
 
     @staticmethod
     def _build_relationship_projection(existing_rel_types: list) -> dict:
-        """관계 projection 설정 빌드"""
+        """관계 projection 설정 빌드 (Key-Value 구조)"""
         relationship_projection = {}
 
-        # Key-Value 그래프 구조 관계 (신규)
         if "HAS_KEY" in existing_rel_types:
             relationship_projection["HAS_KEY"] = {"orientation": "UNDIRECTED"}
         if "HAS_VALUE" in existing_rel_types:
             relationship_projection["HAS_VALUE"] = {"orientation": "UNDIRECTED"}
         if "EXTRACTED_FROM" in existing_rel_types:
             relationship_projection["EXTRACTED_FROM"] = {"orientation": "UNDIRECTED"}
-
-        # 메타데이터 관계 (Legacy)
-        if "HAS_TOPIC" in existing_rel_types:
-            relationship_projection["HAS_TOPIC"] = {"orientation": "UNDIRECTED"}
-        if "BELONGS_TO" in existing_rel_types:
-            relationship_projection["BELONGS_TO"] = {"orientation": "UNDIRECTED"}
-        if "MENTIONS" in existing_rel_types:
-            relationship_projection["MENTIONS"] = {"orientation": "UNDIRECTED"}
-        if "RELATED_TO" in existing_rel_types:
-            relationship_projection["RELATED_TO"] = {"orientation": "UNDIRECTED"}
-
-        # Document 간 관계 (Legacy)
-        if "SIMILAR_TO" in existing_rel_types:
-            relationship_projection["SIMILAR_TO"] = {"orientation": "UNDIRECTED"}
-        if "CONTRADICTS" in existing_rel_types:
-            relationship_projection["CONTRADICTS"] = {"orientation": "UNDIRECTED"}
-        if "EXTENDS" in existing_rel_types:
-            relationship_projection["EXTENDS"] = {"orientation": "NATURAL"}
-        if "PREREQUISITE_OF" in existing_rel_types:
-            relationship_projection["PREREQUISITE_OF"] = {"orientation": "NATURAL"}
-        if "IMPLEMENTS" in existing_rel_types:
-            relationship_projection["IMPLEMENTS"] = {"orientation": "NATURAL"}
-        if "CO_OCCURS" in existing_rel_types:
-            relationship_projection["CO_OCCURS"] = {"orientation": "UNDIRECTED"}
 
         return relationship_projection
 
