@@ -58,7 +58,7 @@ class GraphEmbeddingService:
 
             G, result = self.gds.graph.project(
                 graph_name,
-                ["Document", "Entity", "Topic", "Category"],
+                ["Document", "Key", "Value", "Centrality"],
                 relationship_projection
             )
 
@@ -107,7 +107,15 @@ class GraphEmbeddingService:
         """관계 projection 설정 빌드"""
         relationship_projection = {}
 
-        # 메타데이터 관계
+        # Key-Value 그래프 구조 관계 (신규)
+        if "HAS_KEY" in existing_rel_types:
+            relationship_projection["HAS_KEY"] = {"orientation": "UNDIRECTED"}
+        if "HAS_VALUE" in existing_rel_types:
+            relationship_projection["HAS_VALUE"] = {"orientation": "UNDIRECTED"}
+        if "EXTRACTED_FROM" in existing_rel_types:
+            relationship_projection["EXTRACTED_FROM"] = {"orientation": "UNDIRECTED"}
+
+        # 메타데이터 관계 (Legacy)
         if "HAS_TOPIC" in existing_rel_types:
             relationship_projection["HAS_TOPIC"] = {"orientation": "UNDIRECTED"}
         if "BELONGS_TO" in existing_rel_types:
@@ -117,7 +125,7 @@ class GraphEmbeddingService:
         if "RELATED_TO" in existing_rel_types:
             relationship_projection["RELATED_TO"] = {"orientation": "UNDIRECTED"}
 
-        # Document 간 관계
+        # Document 간 관계 (Legacy)
         if "SIMILAR_TO" in existing_rel_types:
             relationship_projection["SIMILAR_TO"] = {"orientation": "UNDIRECTED"}
         if "CONTRADICTS" in existing_rel_types:
