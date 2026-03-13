@@ -14,14 +14,16 @@ logger = logging.getLogger(__name__)
 class LLMBasedKeyValueLoader:
     """LLM을 사용하여 데이터로부터 Key-Value를 추출하고 그래프를 생성하는 서비스."""
 
-    def __init__(self, graph_repo: GraphRepository = None):
+    def __init__(self, graph_repo: GraphRepository = None, field_mapping: Dict[str, str] = None):
         """초기화.
 
         Args:
             graph_repo: Neo4j 리포지토리
+            field_mapping: 필드명 매핑 (원본 → 한글). None이면 기본 매핑 사용
         """
         self.graph_repo = graph_repo or GraphRepository()
         self.graph_builder = KeyValueGraphBuilder(graph_repo=self.graph_repo)
+        self.field_mapping = field_mapping or FIELD_NAME_MAPPING
 
     def extract_and_build_graph(
             self,
@@ -121,8 +123,8 @@ class LLMBasedKeyValueLoader:
         korean_key_values = {}
 
         for raw_key, values in raw_key_values.items():
-            # 한글 매핑 조회
-            korean_key = FIELD_NAME_MAPPING.get(raw_key, raw_key)
+            # 한글 매핑 조회 (인스턴스 field_mapping 사용)
+            korean_key = self.field_mapping.get(raw_key, raw_key)
 
             # 빈 배열이면 건너뛰기
             if not values:

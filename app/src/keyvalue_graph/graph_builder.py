@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Any, Dict, List
 
 import logging
@@ -110,12 +109,14 @@ class KeyValueGraphBuilder:
         Args:
             record: 데이터 레코드
         """
+        import json
+
         query = """
         CREATE (d:Document {
             id: $doc_id,
             source_file: $source_file,
             record_index: $record_index,
-            created_at: datetime($created_at)
+            raw_text: $raw_text
         })
         """
         self.graph_repo.execute_query(
@@ -124,7 +125,7 @@ class KeyValueGraphBuilder:
                 "doc_id": record.get_document_id(),
                 "source_file": record.source_file,
                 "record_index": record.record_index,
-                "created_at": datetime.now().isoformat(),
+                "raw_text": json.dumps(record.raw_data, ensure_ascii=False),
             },
         )
 

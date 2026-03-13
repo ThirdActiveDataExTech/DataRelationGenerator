@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Graph RAG Search</title>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
     <style>
         * {
@@ -13,10 +14,46 @@
         }
 
         body {
-            font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #f8f9fa;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
             min-height: 100vh;
-            padding: 30px 20px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: #3d4f5d;
+            color: white;
+            padding: 16px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo {
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .nav {
+            display: flex;
+            gap: 24px;
+        }
+
+        .nav a {
+            text-decoration: none;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 14px;
+            transition: color 0.2s;
+        }
+
+        .nav a:hover {
+            color: white;
+        }
+
+        .main-wrapper {
+            flex: 1;
+            padding: 24px;
         }
 
         .container {
@@ -25,27 +62,17 @@
         }
 
         h1 {
-            color: #2d3748;
-            margin-bottom: 30px;
-            font-size: 32px;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 12px;
+            color: #333;
+            margin-bottom: 24px;
+            font-size: 24px;
+            font-weight: 600;
         }
 
         .search-box {
             background: white;
-            padding: 30px;
-            border-radius: 16px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-            margin-bottom: 25px;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }
-
-        .search-box:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 15px 50px rgba(0,0,0,0.15);
+            padding: 24px;
+            border: 1px solid #ddd;
+            margin-bottom: 24px;
         }
 
         .form-group {
@@ -55,10 +82,9 @@
         label {
             display: block;
             margin-bottom: 8px;
-            color: #4a5568;
-            font-weight: 600;
+            color: #333;
+            font-weight: 500;
             font-size: 14px;
-            letter-spacing: 0.3px;
         }
 
         input[type="text"],
@@ -87,34 +113,25 @@
         }
 
         button {
-            background: linear-gradient(135deg, #a8d5ff 0%, #7ab8f5 100%);
-            color: #1a202c;
-            padding: 14px 28px;
+            background: #5c7cfa;
+            color: white;
+            padding: 10px 20px;
             border: none;
-            border-radius: 10px;
+            border-radius: 4px;
             cursor: pointer;
-            font-size: 15px;
-            font-weight: 600;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(122, 184, 245, 0.3);
+            font-size: 14px;
+            font-weight: 500;
             width: 100%;
             margin-top: 10px;
         }
 
         button:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(122, 184, 245, 0.4);
-            background: linear-gradient(135deg, #8fc7ff 0%, #5a9ee0 100%);
-        }
-
-        button:active:not(:disabled) {
-            transform: translateY(0);
+            background: #4c6ef5;
         }
 
         button:disabled {
-            background: linear-gradient(135deg, #cbd5e0 0%, #a0aec0 100%);
+            background: #ccc;
             cursor: not-allowed;
-            box-shadow: none;
         }
 
         .content {
@@ -131,8 +148,7 @@
 
         .graph-container {
             background: white;
-            border-radius: 16px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            border: 1px solid #ddd;
             overflow: hidden;
             position: relative;
         }
@@ -144,9 +160,8 @@
 
         .info-panel {
             background: white;
-            border-radius: 16px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-            padding: 25px;
+            border: 1px solid #ddd;
+            padding: 24px;
             max-height: 700px;
             overflow-y: auto;
         }
@@ -290,6 +305,52 @@
             opacity: 0.5;
         }
 
+        /* 그래프 범례 */
+        .graph-legend {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 16px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            font-size: 12px;
+            z-index: 10;
+            backdrop-filter: blur(10px);
+        }
+
+        .graph-legend h3 {
+            margin: 0 0 12px 0;
+            font-size: 14px;
+            font-weight: 700;
+            color: #2d3748;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            gap: 8px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid;
+        }
+
+        .legend-line {
+            width: 30px;
+            height: 3px;
+            border-radius: 2px;
+        }
+
+        .legend-text {
+            color: #4a5568;
+            font-weight: 500;
+        }
+
         /* 입력 필드 플레이스홀더 스타일 */
         input::placeholder {
             color: #a0aec0;
@@ -328,11 +389,19 @@
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>
-            <span>🔍</span>
-            <span>Graph RAG Search</span>
-        </h1>
+    <div class="header">
+        <div class="logo">Active Metadata Graph</div>
+        <div class="nav">
+            <a href="/">채팅</a>
+            <a href="/static/upload.html">업로드</a>
+            <a href="/static/graph-viewer.html">그래프</a>
+            <a href="/docs">API</a>
+        </div>
+    </div>
+
+    <div class="main-wrapper">
+        <div class="container">
+        <h1>Graph RAG Search</h1>
 
         <div class="search-box">
             <form id="searchForm">
@@ -353,6 +422,39 @@
         <div class="content">
             <div class="graph-container">
                 <div id="graph"></div>
+                <div class="graph-legend">
+                    <h3>📊 범례</h3>
+                    <div style="margin-bottom: 12px;">
+                        <div style="font-weight: 600; color: #2d3748; margin-bottom: 6px;">노드</div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #a8d5ff; border-color: #7ab8f5;"></div>
+                            <span class="legend-text">Document</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #c4b5fd; border-color: #a78bfa;"></div>
+                            <span class="legend-text">Entity</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background: #fbbf24; border-color: #f59e0b;"></div>
+                            <span class="legend-text">Topic</span>
+                        </div>
+                    </div>
+                    <div>
+                        <div style="font-weight: 600; color: #2d3748; margin-bottom: 6px;">관계</div>
+                        <div class="legend-item">
+                            <div class="legend-line" style="background: #a78bfa;"></div>
+                            <span class="legend-text">🔗 Wikidata</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-line" style="background: #7ab8f5;"></div>
+                            <span class="legend-text">💡 LLM 추론</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-line" style="background: #cbd5e0;"></div>
+                            <span class="legend-text">기본 관계</span>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="info-panel">
@@ -364,6 +466,7 @@
                 </div>
             </div>
         </div>
+    </div>
     </div>
 
     <script>
@@ -569,6 +672,16 @@
                     border: '#7ab8f5',
                     highlight: { background: '#8fc7ff', border: '#5a9ee0' }
                 },
+                'Entity': {
+                    background: '#c4b5fd',
+                    border: '#a78bfa',
+                    highlight: { background: '#b39dfa', border: '#8b5cf6' }
+                },
+                'Topic': {
+                    background: '#fbbf24',
+                    border: '#f59e0b',
+                    highlight: { background: '#faca15', border: '#eab308' }
+                },
                 'Category': {
                     background: '#ffb3ba',
                     border: '#ff8a94',
@@ -637,8 +750,32 @@
                     title += `\n\n📊 신뢰도: ${(rel.confidence * 100).toFixed(0)}%`;
                 }
 
-                // reason이 있으면 강조 (더 진한 색)
+                // Wikidata 관계 표시 (via 또는 source 체크)
+                const viaWikidata = rel.via === 'wikidata' ||
+                                   rel.source === 'wikidata' ||
+                                   rel.properties?.via === 'wikidata' ||
+                                   rel.properties?.source === 'wikidata';
+                if (viaWikidata) {
+                    title += `\n\n🔗 출처: Wikidata`;
+                    if (rel.properties?.wikidata_type || rel.wikidata_type) {
+                        title += `\n📋 타입: ${rel.properties?.wikidata_type || rel.wikidata_type}`;
+                    }
+                }
+
+                // reason이 있거나 Wikidata 관계면 강조
                 const hasReason = rel.reason && rel.reason.length > 0;
+                const isEnhanced = hasReason || viaWikidata;
+
+                // Wikidata 관계는 보라색, reason 있으면 파란색, 기본은 회색
+                let edgeColor = '#cbd5e0';
+                let edgeWidth = 2;
+                if (viaWikidata) {
+                    edgeColor = '#a78bfa';  // 보라색 (Wikidata)
+                    edgeWidth = 3;
+                } else if (hasReason) {
+                    edgeColor = '#7ab8f5';  // 파란색 (LLM 추론)
+                    edgeWidth = 3;
+                }
 
                 edgeMap.set(edgeId, {
                     id: edgeId,
@@ -650,13 +787,15 @@
                     font: {
                         size: 12,
                         align: 'top',
-                        color: hasReason ? '#2d3748' : '#718096'
+                        color: isEnhanced ? '#2d3748' : '#718096',
+                        bold: viaWikidata
                     },
                     color: {
-                        color: hasReason ? '#7ab8f5' : '#cbd5e0',
-                        highlight: '#5a9ee0'
+                        color: edgeColor,
+                        highlight: viaWikidata ? '#8b5cf6' : '#5a9ee0'
                     },
-                    width: hasReason ? 3 : 2
+                    width: edgeWidth,
+                    dashes: viaWikidata ? false : (hasReason ? false : [5, 5])
                 });
             });
 
