@@ -307,6 +307,86 @@ Query: {query_text}
 반드시 verify_document_relevance function tool을 호출하세요.
 """
 
+    SCHEMA_ANALYSIS: str = """**반드시 analyze_schema tool을 사용하여 응답할 것.**
+
+당신은 데이터 스키마 분석 전문가입니다.
+
+# 임무
+다음 데이터를 분석하여 스키마를 추론하세요.
+
+## 샘플 데이터
+{sample_data}
+
+## 통계 정보
+{statistics}
+
+# 분석 가이드
+
+## 1. 도메인 식별
+데이터의 주제/분야를 파악하세요:
+- 의료: 병원, 환자, 진료, 질병 관련
+- 법률: 법원, 판례, 사건, 소송 관련
+- 부동산: 아파트, 매물, 거래, 면적 관련
+- 음식점: 레스토랑, 메뉴, 리뷰 관련
+- 기타: 위 카테고리에 속하지 않는 경우
+
+## 2. 중심 노드명 생성
+데이터를 대표하는 한글 이름을 만드세요:
+- 좋은 예: "병원현황", "판례정보", "부동산매물", "음식점정보"
+- 나쁜 예: "데이터", "정보", "현황" (너무 추상적)
+
+## 3. 필드별 분석
+
+### 한글명 규칙
+- 명확하고 간결하게 (2-4글자)
+- 예: "CASE_NO" → "사건번호", "PRICE" → "가격"
+
+### 데이터 타입 판단
+샘플 값과 통계를 보고 타입을 정확히 추론:
+
+**text**: 일반 텍스트
+- 예: "서울중앙지방법원", "원고 승소"
+
+**number**: 숫자 (정수/실수)
+- 예: "1500", "84.5", "3"
+- 통계: unique 개수가 다양, 숫자만 포함
+
+**date**: 날짜
+- 예: "2023-05-15", "20230515", "2023.05.15"
+- 패턴: YYYY-MM-DD, YYYYMMDD 등
+
+**phone**: 전화번호
+- 예: "02-1234-5678", "01012345678"
+- 패턴: 숫자와 하이픈, 10-11자리
+
+**address**: 주소
+- 예: "서울시 강남구 테헤란로 123"
+- 키워드: 시, 구, 동, 로, 길
+
+**email**: 이메일
+- 예: "user@example.com"
+- 패턴: @와 도메인
+
+**url**: URL
+- 예: "https://example.com"
+- 패턴: http://, https://
+
+## 4. 신뢰도 평가
+다음 기준으로 0.0~1.0 점수 부여:
+- 1.0: 모든 필드의 의미와 타입이 명확
+- 0.8: 대부분 명확하지만 일부 애매함
+- 0.6: 절반 정도 추론 가능
+- 0.4 이하: 데이터가 불충분하거나 구조가 복잡
+
+## 5. 주의사항
+- unique_count가 적으면 → 카테고리/상태 필드 가능성
+- null_ratio가 높으면 → 선택적 필드
+- 샘플 값 길이가 일정하면 → 코드/ID 가능성
+
+# 출력
+반드시 analyze_schema function tool을 호출하세요.
+"""
+
     CLUSTER_NORMALIZE: str = """**반드시 normalize_cluster tool을 사용하여 응답할 것.**
 
 당신은 유사한 값들을 분석하여 적절한 정규화 값을 생성하는 전문가입니다.
@@ -451,6 +531,7 @@ Values (클러스터): {cluster_values}
             "document_relevance_verification": cls.DOCUMENT_RELEVANCE_VERIFICATION,
             "key_value_extract": cls.KEY_VALUE_EXTRACT,
             "cluster_normalize": cls.CLUSTER_NORMALIZE,
+            "schema_analysis": cls.SCHEMA_ANALYSIS,
         }
 
         if task not in prompt_map:

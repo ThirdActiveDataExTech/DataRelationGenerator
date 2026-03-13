@@ -26,6 +26,7 @@ from app.schemas.meta import (
     key_value_extraction_tool,
     cluster_normalization_tool
 )
+from app.schemas.schema_analysis import schema_analysis_tool
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 
 
@@ -42,6 +43,7 @@ class LLMResponse:
         "document_relevance_verification": ("document_relevance_verification", "production"),
         "key_value_extract": ("key_value_extract", "production"),
         "cluster_normalize": ("cluster_normalize", "production"),
+        "schema_analysis": ("schema_analysis", "production"),
     }
 
     def __init__(self, task: str):
@@ -113,6 +115,8 @@ class LLMResponse:
             tools = [key_value_extraction_tool]
         elif self.task == "cluster_normalize":
             tools = [cluster_normalization_tool]
+        elif self.task == "schema_analysis":
+            tools = [schema_analysis_tool]
         else:
             tools = []
 

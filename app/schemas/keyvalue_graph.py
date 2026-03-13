@@ -42,8 +42,7 @@ class DocumentNode(BaseModel):
     id: str = Field(..., description="문서 고유 ID")
     source_file: str = Field(..., description="원본 파일명")
     record_index: int = Field(..., description="파일 내 레코드 인덱스")
-    raw_data: Optional[Dict[str, Any]] = Field(None, description="원본 JSON 데이터 (선택적)")
-    created_at: Optional[str] = Field(None, description="생성 시각")
+    raw_text: str = Field(..., description="원본 JSON 텍스트")
 
 
 class KeyNode(BaseModel):
