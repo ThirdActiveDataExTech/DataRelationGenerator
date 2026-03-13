@@ -220,8 +220,7 @@ class GraphService:
             doc_text=doc_text,
             top_k=top_k,
             text_weight=text_weight,
-            graph_weight=graph_weight if has_graph_emb else 0,
-            use_graph_structure=True
+            graph_weight=graph_weight if has_graph_emb else 0
         )
 
         if not related_docs:
