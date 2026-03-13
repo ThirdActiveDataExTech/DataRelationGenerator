@@ -1,11 +1,10 @@
-"""스키마 자동 분석 서비스 - 샘플링 + 통계 기반"""
+from collections import Counter
+from typing import Any, Dict, List
 
 import logging
-from typing import Any, Dict, List
-from collections import Counter
 
-from app.src.meta_extract.llm_response import LLMResponse
 from app.schemas.schema_analysis import FieldStatistics, SchemaAnalysisResult
+from app.src.meta_extract.llm_response import LLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +73,7 @@ class SchemaAnalyzer:
         return samples
 
     def _collect_statistics(
-        self, records: List[Dict[str, Any]]
+            self, records: List[Dict[str, Any]]
     ) -> Dict[str, FieldStatistics]:
         """필드별 통계 정보 수집
 
@@ -136,9 +135,9 @@ class SchemaAnalyzer:
         return statistics
 
     def _llm_inference(
-        self,
-        sample_records: List[Dict[str, Any]],
-        field_statistics: Dict[str, FieldStatistics],
+            self,
+            sample_records: List[Dict[str, Any]],
+            field_statistics: Dict[str, FieldStatistics],
     ) -> SchemaAnalysisResult:
         """LLM으로 스키마 추론
 
@@ -161,7 +160,7 @@ class SchemaAnalyzer:
                 f"{field}:\n"
                 f"  - 전체: {stats.total_count}개\n"
                 f"  - 고유값: {stats.unique_count}개\n"
-                f"  - Null: {stats.null_count}개 ({stats.null_ratio*100:.1f}%)\n"
+                f"  - Null: {stats.null_count}개 ({stats.null_ratio * 100:.1f}%)\n"
                 f"  - 샘플: {stats.samples}\n"
                 f"  - 길이: min={stats.value_lengths['min']}, "
                 f"max={stats.value_lengths['max']}, "

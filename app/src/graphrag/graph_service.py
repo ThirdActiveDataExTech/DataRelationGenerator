@@ -192,7 +192,7 @@ class GraphService:
     def _get_target_documents(self, doc_id: str = None) -> List[Dict[str, str]]:
         """분석 대상 문서 조회"""
         if doc_id:
-            query = "MATCH (d:Document {id: $doc_id}) RETURN d.id as doc_id, d.text as text"
+            query = "MATCH (d:Document {id: $doc_id}) RETURN d.id as doc_id, d.raw_text as text"
             return self.graph_repo.execute_query(query, {"doc_id": doc_id})
 
         query = """
@@ -200,7 +200,7 @@ class GraphService:
         WHERE NOT EXISTS {
             MATCH (d)-[r:SIMILAR_TO|CONTRADICTS|EXTENDS|PREREQUISITE_OF|IMPLEMENTS|CO_OCCURS]->(:Document)
         }
-        RETURN d.id as doc_id, d.text as text
+        RETURN d.id as doc_id, d.raw_text as text
         """
         return self.graph_repo.execute_query(query)
 
@@ -245,24 +245,21 @@ class GraphService:
         }
 
     def _get_document_metadata(self, doc_id: str) -> Dict[str, Any]:
-        """Document 메타데이터 조회"""
+        """Document 메타데이터 조회 (Key-Value 구조)"""
         query = """
         MATCH (d:Document {id: $doc_id})
-        OPTIONAL MATCH (d)-[:HAS_TOPIC]->(t:Topic)
-        OPTIONAL MATCH (d)-[:MENTIONS]->(e:Entity)
-        RETURN d.description as description,
-               collect(DISTINCT t.name) as topics,
-               collect(DISTINCT e.name) as entities
+        OPTIONAL MATCH (d)<-[:EXTRACTED_FROM]-(v:Value)<-[:HAS_VALUE]-(k:Key)
+        RETURN d.source_file as description,
+               collect(DISTINCT k.name) as keys
         """
         result = self.graph_repo.execute_query(query, {"doc_id": doc_id})
 
         if result:
             return {
                 "description": result[0]["description"],
-                "topics": result[0]["topics"],
-                "entities": result[0]["entities"]
+                "keys": result[0]["keys"]
             }
-        return {"description": "", "topics": [], "entities": []}
+        return {"description": "", "keys": []}
 
     def _infer_document_relations(
             self,
@@ -349,19 +346,16 @@ class GraphService:
             related_doc_id: str,
             related_doc: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """관계 추론을 위한 LLM 입력 변수 구성"""
+        """관계 추론을 위한 LLM 입력 변수 구성 (Key-Value 구조)"""
         return {
             "new_doc_id": doc_id,
             "new_doc_description": metadata.get("description", ""),
-            "new_doc_entities": ", ".join(metadata.get("entities", [])),
-            "new_doc_topics": ", ".join(metadata.get("topics", [])),
+            "new_doc_keys": ", ".join(metadata.get("keys", [])),
             "new_doc_text": doc_text[:1000],
             "related_doc_id": related_doc_id,
             "related_doc_description": related_doc.get("description", "N/A"),
-            "shared_entities": ", ".join(related_doc.get("shared_entities", [])),
-            "related_doc_topics": ", ".join(related_doc.get("shared_topics", [])),
-            "graph_score": related_doc.get("graph_score", 0),
-            "related_doc_text": related_doc.get("text", "")[:500]
+            "related_doc_text": related_doc.get("text", "")[:500],
+            "similarity_score": related_doc.get("combined_score", 0)
         }
 
 
