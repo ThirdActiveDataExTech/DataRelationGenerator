@@ -14,11 +14,12 @@ class EmbeddingService:
         self._model_name: str = settings.EMBEDDING_MODEL_NAME
         self._model: SentenceTransformer = SentenceTransformer(self._model_name)
 
-    def generate_embedding(self, text: str) -> List[float]:
+    def generate_embedding(self, text: str, show_progress_bar: bool = False) -> List[float]:
         """텍스트를 embedding 벡터로 변환
 
         Args:
             text: 변환할 텍스트
+            show_progress_bar: 진행 상황 표시 여부 (기본: False)
 
         Returns:
             embedding 벡터 (float list, 차원은 모델에 따라 결정됨)
@@ -32,7 +33,7 @@ class EmbeddingService:
                 message="입력 텍스트가 비어있습니다.",
                 result={"error_type": "empty_text"}
             )
-        embedding = self._model.encode(text, convert_to_numpy=True)
+        embedding = self._model.encode(text, convert_to_numpy=True, show_progress_bar=show_progress_bar)
         return embedding.tolist()
 
     @staticmethod
