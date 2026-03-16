@@ -79,7 +79,8 @@ class DocumentRelationResult(BaseModel):
 
 class QueryCondition(BaseModel):
     """쿼리 조건"""
-    type: Literal["entity", "property"] = Field(..., description="조건 타입: entity (Entity 노드와 연결) 또는 property (Document 속성)")
+    type: Literal["entity", "property"] = Field(...,
+                                                description="조건 타입: entity (Entity 노드와 연결) 또는 property (Document 속성)")
     value: str = Field(..., description="조건 값 (예: '가평', '재활의학과', '종합병원')")
     semantic: str = Field(..., description="의미적 역할 (예: '위치', '진료과목', '병원유형')")
 
@@ -179,4 +180,26 @@ cluster_normalization_tool = pydantic_function_tool(
     ClusterNormalizationResult,
     name="normalize_cluster",
     description="유사한 값들의 클러스터를 분석하여 적절한 정규화 값을 생성합니다."
+)
+
+
+class QueryConditionField(BaseModel):
+    """쿼리 조건 필드"""
+    field: str = Field(..., description="필드명 (예: '병상수', '지역', '업종')")
+    operator: Literal["=", "!=", ">", ">=", "<", "<=", "CONTAINS"] = Field(..., description="비교 연산자")
+    value: str = Field(..., description="비교 값")
+
+
+class GraphQueryParseResult(BaseModel):
+    """Graph Query 파싱 결과"""
+    conditions: List[QueryConditionField] = Field(
+        default_factory=list,
+        description="추출된 조건 목록. 조건이 없으면 빈 배열 반환"
+    )
+
+
+graph_query_parse_tool = pydantic_function_tool(
+    GraphQueryParseResult,
+    name="parse_graph_query",
+    description="사용자 쿼리를 Key-Value 그래프 조건으로 파싱합니다."
 )

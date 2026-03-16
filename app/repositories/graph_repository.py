@@ -92,12 +92,12 @@ class GraphRepository:
         """
         self.execute_query(query)
 
-    def create_entity_embedding_index(self) -> None:
-        """Entity 노드의 binary_embedding property에 대한 vector index 생성"""
+    def create_key_name_embedding_index(self) -> None:
+        """Key 노드의 name_embedding property에 대한 vector index 생성"""
         query = """
-        CREATE VECTOR INDEX entity_embedding_index IF NOT EXISTS
-        FOR (e:Entity)
-        ON e.binary_embedding
+        CREATE VECTOR INDEX key_name_embedding_index IF NOT EXISTS
+        FOR (k:Key)
+        ON k.name_embedding
         OPTIONS {
             indexConfig: {
                 `vector.dimensions`: 768,
