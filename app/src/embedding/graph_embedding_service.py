@@ -3,6 +3,7 @@ from typing import List, Dict, Optional
 import logging
 from graphdatascience import GraphDataScience
 from neo4j.exceptions import ServiceUnavailable, ClientError
+from tqdm import tqdm
 
 from app.config import settings
 from app.constants import (
@@ -52,6 +53,11 @@ class GraphEmbeddingService:
             self._add_value_embeddings()
             logging.info("[GraphSAGE] Key, Value 노드 임베딩 생성 완료")
 
+            # 2. 모든 노드에 공통 속성 이름으로 복사 (GDS 요구사항)
+            logging.info("[GraphSAGE] 공통 feature_embedding 속성 생성 중")
+            self._copy_to_common_feature_property()
+            logging.info("[GraphSAGE] 공통 feature_embedding 속성 생성 완료")
+
             if self._graph_exists(graph_name):
                 self.gds.graph.drop(graph_name)
 
@@ -63,14 +69,21 @@ class GraphEmbeddingService:
             if not relationship_projection:
                 raise ValueError("그래프에 관계가 하나도 없습니다")
 
+            # 노드 projection with properties (모든 노드에 feature_embedding 보장됨)
+            node_projection = {
+                "Document": {"properties": ["feature_embedding"]},
+                "Key": {"properties": ["feature_embedding"]},
+                "Value": {"properties": ["feature_embedding"]}
+            }
+
             G, result = self.gds.graph.project(
                 graph_name,
-                ["Document", "Key", "Value", "Centrality"],
+                node_projection,
                 relationship_projection
             )
 
             logging.info(
-                f"[HashGNN] Graph projection 완료: {result['nodeCount']} nodes, "
+                f"[GraphSAGE] Graph projection 완료: {result['nodeCount']} nodes, "
                 f"{result['relationshipCount']} relationships"
             )
 
@@ -81,12 +94,7 @@ class GraphEmbeddingService:
             train_result = self.gds.beta.graphSage.train(
                 G,
                 modelName=model_name,
-                featureProperties={
-                    "Document": ["binary_text_embedding"],  # Document는 binary embedding 사용
-                    "Key": ["name_embedding"],
-                    "Value": ["value_embedding"]
-                },
-                projectedFeatureDimension=embedding_dim,  # 각 노드 타입의 feature를 공통 차원으로 투영
+                featureProperties=["feature_embedding"],  # 모든 노드에 공통된 속성 사용
                 embeddingDimension=embedding_dim,
                 aggregator="mean",
                 activationFunction="relu",
@@ -134,11 +142,15 @@ class GraphEmbeddingService:
 
     @staticmethod
     def _build_relationship_projection(existing_rel_types: list) -> dict:
-        """관계 projection 설정 빌드 (Key-Value 구조)"""
+        """관계 projection 설정 빌드 (Key-Value-Document 구조만)
+
+        Centrality 노드는 임베딩이 없으므로 제외:
+        - HAS_VALUE: Key -[:HAS_VALUE]-> Value
+        - EXTRACTED_FROM: Value -[:EXTRACTED_FROM]-> Document
+        """
         relationship_projection = {}
 
-        if "HAS_KEY" in existing_rel_types:
-            relationship_projection["HAS_KEY"] = {"orientation": "UNDIRECTED"}
+        # HAS_KEY는 Centrality -[:HAS_KEY]-> Key 이므로 제외
         if "HAS_VALUE" in existing_rel_types:
             relationship_projection["HAS_VALUE"] = {"orientation": "UNDIRECTED"}
         if "EXTRACTED_FROM" in existing_rel_types:
@@ -218,31 +230,34 @@ class GraphEmbeddingService:
 
         # 2. 배치 처리로 임베딩 생성 및 저장
         batch_size = 100
-        for i in range(0, len(keys), batch_size):
-            batch = keys[i:i + batch_size]
+        with tqdm(total=len(keys), desc="Key 임베딩 생성", unit="keys") as pbar:
+            for i in range(0, len(keys), batch_size):
+                batch = keys[i:i + batch_size]
 
-            # 임베딩 생성
-            embeddings_data = []
-            for key in batch:
-                name = key["name"]
-                key_id = key["id"]
+                # 임베딩 생성
+                embeddings_data = []
+                for key in batch:
+                    name = key["name"]
+                    key_id = key["id"]
 
-                try:
-                    embedding = embedding_service.generate_embedding(name)
-                    embeddings_data.append({"id": key_id, "embedding": embedding})
-                except Exception as e:
-                    logging.warning(f"Key '{name}' 임베딩 생성 실패: {e}")
-                    continue
+                    try:
+                        embedding = embedding_service.generate_embedding(name, show_progress_bar=False)
+                        embeddings_data.append({"id": key_id, "embedding": embedding})
+                    except Exception as e:
+                        logging.warning(f"Key '{name}' 임베딩 생성 실패: {e}")
+                        continue
 
-            # 배치 업데이트
-            if embeddings_data:
-                update_query = """
-                UNWIND $data AS row
-                MATCH (k:Key)
-                WHERE elementId(k) = row.id
-                SET k.name_embedding = row.embedding
-                """
-                self.graph_repo.execute_query(update_query, {"data": embeddings_data})
+                # 배치 업데이트
+                if embeddings_data:
+                    update_query = """
+                    UNWIND $data AS row
+                    MATCH (k:Key)
+                    WHERE elementId(k) = row.id
+                    SET k.name_embedding = row.embedding
+                    """
+                    self.graph_repo.execute_query(update_query, {"data": embeddings_data})
+
+                pbar.update(len(batch))
 
         logging.info(f"[GraphSAGE] Key 노드 임베딩 생성 완료")
 
@@ -256,30 +271,75 @@ class GraphEmbeddingService:
 
         # 2. 배치 처리로 임베딩 생성 및 저장
         batch_size = 100
-        for i in range(0, len(values), batch_size):
-            batch = values[i:i + batch_size]
+        with tqdm(total=len(values), desc="Value 임베딩 생성", unit="values") as pbar:
+            for i in range(0, len(values), batch_size):
+                batch = values[i:i + batch_size]
 
-            # 임베딩 생성
-            embeddings_data = []
-            for value in batch:
-                value_text = str(value["value"])  # 숫자도 문자열로 변환
-                value_id = value["id"]
+                # 임베딩 생성
+                embeddings_data = []
+                for value in batch:
+                    value_text = str(value["value"])  # 숫자도 문자열로 변환
+                    value_id = value["id"]
 
-                try:
-                    embedding = embedding_service.generate_embedding(value_text)
-                    embeddings_data.append({"id": value_id, "embedding": embedding})
-                except Exception as e:
-                    logging.warning(f"Value '{value_text}' 임베딩 생성 실패: {e}")
-                    continue
+                    try:
+                        embedding = embedding_service.generate_embedding(value_text, show_progress_bar=False)
+                        embeddings_data.append({"id": value_id, "embedding": embedding})
+                    except Exception as e:
+                        logging.warning(f"Value '{value_text}' 임베딩 생성 실패: {e}")
+                        continue
 
-            # 배치 업데이트
-            if embeddings_data:
-                update_query = """
-                UNWIND $data AS row
-                MATCH (v:Value)
-                WHERE elementId(v) = row.id
-                SET v.value_embedding = row.embedding
-                """
-                self.graph_repo.execute_query(update_query, {"data": embeddings_data})
+                # 배치 업데이트
+                if embeddings_data:
+                    update_query = """
+                    UNWIND $data AS row
+                    MATCH (v:Value)
+                    WHERE elementId(v) = row.id
+                    SET v.value_embedding = row.embedding
+                    """
+                    self.graph_repo.execute_query(update_query, {"data": embeddings_data})
+
+                pbar.update(len(batch))
 
         logging.info(f"[GraphSAGE] Value 노드 임베딩 생성 완료")
+
+    def _copy_to_common_feature_property(self):
+        """모든 노드 타입의 임베딩을 공통 feature_embedding 속성으로 복사
+
+        GDS GraphSAGE는 모든 노드에 동일한 속성 이름이 필요하므로:
+        - Document.binary_text_embedding → Document.feature_embedding (없으면 0 벡터)
+        - Key.name_embedding → Key.feature_embedding (없으면 0 벡터)
+        - Value.value_embedding → Value.feature_embedding (없으면 0 벡터)
+        """
+        zero_vector = [0.0] * 768  # 768차원 0 벡터
+
+        # Document 노드 (모든 노드에 보장)
+        query_doc = """
+        MATCH (d:Document)
+        SET d.feature_embedding = CASE
+            WHEN d.binary_text_embedding IS NOT NULL THEN d.binary_text_embedding
+            ELSE $zero_vector
+        END
+        """
+        self.graph_repo.execute_query(query_doc, {"zero_vector": zero_vector})
+
+        # Key 노드 (모든 노드에 보장)
+        query_key = """
+        MATCH (k:Key)
+        SET k.feature_embedding = CASE
+            WHEN k.name_embedding IS NOT NULL THEN k.name_embedding
+            ELSE $zero_vector
+        END
+        """
+        self.graph_repo.execute_query(query_key, {"zero_vector": zero_vector})
+
+        # Value 노드 (모든 노드에 보장)
+        query_value = """
+        MATCH (v:Value)
+        SET v.feature_embedding = CASE
+            WHEN v.value_embedding IS NOT NULL THEN v.value_embedding
+            ELSE $zero_vector
+        END
+        """
+        self.graph_repo.execute_query(query_value, {"zero_vector": zero_vector})
+
+        logging.info("[GraphSAGE] 모든 노드에 feature_embedding 속성 복사 완료 (누락 노드는 0 벡터)")

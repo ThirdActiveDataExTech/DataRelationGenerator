@@ -28,16 +28,19 @@ class KnowledgeGraphService:
             doc_id: str,
             doc_text: str,
             top_k: int = 10,
-            text_weight: float = 0.6,
-            graph_weight: float = 0.4
+            text_weight: float = 0.4,
+            graph_weight: float = 0.3,
+            normalized_value_weight: float = 0.3
     ) -> List[Dict[str, Any]]:
-        """하이브리드 검색: 텍스트 유사도 + 그래프 임베딩 유사도"""
+        """하이브리드 검색: 텍스트 + 그래프 임베딩 + 공유 NormalizedValue"""
         try:
             text_results = self._search_by_text_embedding(doc_text)
             graph_embedding_scores = self._search_by_graph_embedding(doc_id, top_k=50)
+            normalized_value_scores = self._calculate_normalized_value_overlap(doc_id, top_k=50)
 
             combined_results = self._combine_search_scores(
-                doc_id, text_results, graph_embedding_scores, text_weight, graph_weight
+                doc_id, text_results, graph_embedding_scores, normalized_value_scores,
+                text_weight, graph_weight, normalized_value_weight
             )
 
             sorted_results = sorted(
@@ -82,17 +85,56 @@ class KnowledgeGraphService:
         )
         return text_retriever.search(query_text=doc_text, top_k=50)
 
+    def _calculate_normalized_value_overlap(
+            self,
+            doc_id: str,
+            top_k: int = 50
+    ) -> Dict[str, float]:
+        """공유하는 NormalizedValue 개수 기반 유사도 (Jaccard)"""
+        query = """
+        MATCH (d1:Document {id: $doc_id})<-[:EXTRACTED_FROM]-(v1:Value)-[:SAME_AS]->(nv:NormalizedValue)
+        MATCH (d2:Document)<-[:EXTRACTED_FROM]-(v2:Value)-[:SAME_AS]->(nv)
+        WHERE d1.id <> d2.id
+        WITH d2, count(DISTINCT nv) as shared_count
+        MATCH (d1:Document {id: $doc_id})<-[:EXTRACTED_FROM]-(v1_all:Value)-[:SAME_AS]->(:NormalizedValue)
+        WITH d2, shared_count, count(DISTINCT v1_all) as d1_total
+        MATCH (d2)<-[:EXTRACTED_FROM]-(v2_all:Value)-[:SAME_AS]->(:NormalizedValue)
+        WITH d2, shared_count, d1_total, count(DISTINCT v2_all) as d2_total
+        WITH d2.id as doc_id,
+             shared_count,
+             d1_total + d2_total - shared_count as union_count
+        RETURN doc_id,
+               CASE WHEN union_count > 0
+                    THEN toFloat(shared_count) / toFloat(union_count)
+                    ELSE 0.0
+               END as jaccard_score
+        ORDER BY jaccard_score DESC
+        LIMIT $top_k
+        """
+        try:
+            results = self.graph_repo.execute_query(query, {"doc_id": doc_id, "top_k": top_k})
+            return {row["doc_id"]: row["jaccard_score"] for row in results}
+        except (ServiceUnavailable, ClientError) as e:
+            logging.warning(f"NormalizedValue overlap 계산 실패 (doc_id: {doc_id}) - DB 오류: {e}")
+            return {}
+        except (ValueError, KeyError) as e:
+            logging.warning(f"NormalizedValue overlap 계산 실패 (doc_id: {doc_id}) - 데이터 오류: {e}")
+            return {}
+
     def _combine_search_scores(
             self,
             doc_id: str,
             text_results,
             graph_embedding_scores: Dict[str, float],
+            normalized_value_scores: Dict[str, float],
             text_weight: float,
-            graph_weight: float
+            graph_weight: float,
+            normalized_value_weight: float
     ) -> Dict[str, Dict[str, Any]]:
-        """검색 점수 결합"""
+        """검색 점수 결합: 텍스트 + 그래프 임베딩 + NormalizedValue overlap"""
         combined_results = {}
 
+        # 1. 텍스트 임베딩 점수
         for item in text_results.items:
             candidate_id = self._extract_doc_id(item.content)
             if not candidate_id or candidate_id == doc_id:
@@ -104,9 +146,11 @@ class KnowledgeGraphService:
                 "doc_id": candidate_id,
                 "text_score": text_score,
                 "graph_embedding_score": 0,
+                "normalized_value_score": 0,
                 "combined_score": text_weight * text_score
             }
 
+        # 2. 그래프 임베딩 점수
         for candidate_id, graph_emb_score in graph_embedding_scores.items():
             if candidate_id == doc_id:
                 continue
@@ -119,7 +163,25 @@ class KnowledgeGraphService:
                     "doc_id": candidate_id,
                     "text_score": 0,
                     "graph_embedding_score": graph_emb_score,
+                    "normalized_value_score": 0,
                     "combined_score": graph_weight * graph_emb_score
+                }
+
+        # 3. NormalizedValue overlap 점수
+        for candidate_id, nv_score in normalized_value_scores.items():
+            if candidate_id == doc_id:
+                continue
+
+            if candidate_id in combined_results:
+                combined_results[candidate_id]["normalized_value_score"] = nv_score
+                combined_results[candidate_id]["combined_score"] += normalized_value_weight * nv_score
+            else:
+                combined_results[candidate_id] = {
+                    "doc_id": candidate_id,
+                    "text_score": 0,
+                    "graph_embedding_score": 0,
+                    "normalized_value_score": nv_score,
+                    "combined_score": normalized_value_weight * nv_score
                 }
 
         return combined_results
@@ -140,7 +202,8 @@ class KnowledgeGraphService:
                 "description": doc_info_map.get(result["doc_id"], {}).get("description", ""),
                 "combined_score": result.get("combined_score", 0),
                 "text_score": result.get("text_score", 0),
-                "graph_embedding_score": result.get("graph_embedding_score", 0)
+                "graph_embedding_score": result.get("graph_embedding_score", 0),
+                "normalized_value_score": result.get("normalized_value_score", 0)
             }
             for result in sorted_results
         ]

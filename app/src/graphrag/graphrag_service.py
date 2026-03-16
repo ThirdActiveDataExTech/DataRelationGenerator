@@ -31,6 +31,7 @@ from app.schemas.graphrag_api import (
 )
 from app.src.graphrag.reranker import BGEReranker
 from app.src.meta_extract.llm_response import LLMResponse
+from app.src.graphrag.graph_pattern_matcher import GraphPatternMatcher
 
 
 class GraphRAGService:
@@ -42,6 +43,7 @@ class GraphRAGService:
         self.driver = graph_repo.driver
         self.embedder = SentenceTransformerEmbeddings(model=settings.EMBEDDING_MODEL_NAME)
         self._reranker = None  # Lazy initialization
+        self.pattern_matcher = GraphPatternMatcher(graph_repo)
 
     @property
     def reranker(self) -> BGEReranker:
@@ -66,11 +68,31 @@ class GraphRAGService:
     def search_graph(
             self,
             query: str,
-            top_k: int = 5
+            top_k: int = 5,
+            use_graph_pattern: bool = True
     ) -> Dict[str, Any]:
-        """사용자 질의 기반 Graph RAG 검색 (Key-Value 구조)"""
+        """사용자 질의 기반 Graph RAG 검색 (Key-Value 구조)
+
+        Args:
+            query: 사용자 쿼리
+            top_k: 반환할 Document 개수
+            use_graph_pattern: Graph Pattern Matching 사용 여부 (기본: True)
+        """
         try:
-            documents = self._search_documents(query, top_k)
+            # 1. Graph Pattern Matching 시도
+            if use_graph_pattern:
+                logging.info(f"[Graph RAG] Pattern matching 시작: '{query}'")
+                doc_ids = self.pattern_matcher.search_by_graph_pattern(query, top_k * 2)
+
+                if doc_ids:
+                    logging.info(f"[Graph RAG] Pattern matching 성공: {len(doc_ids)}개")
+                    documents = self._get_documents_by_ids(doc_ids[:top_k])
+                else:
+                    logging.info(f"[Graph RAG] Pattern matching 결과 없음, 벡터 검색으로 fallback")
+                    documents = self._search_documents(query, top_k)
+            else:
+                # 벡터 검색만 사용
+                documents = self._search_documents(query, top_k)
 
             if not documents:
                 return GraphRAGSearchResponse.empty(query).model_dump()
@@ -86,7 +108,7 @@ class GraphRAGService:
             response = GraphRAGSearchResponse(
                 query=query,
                 documents=documents,
-                common_metadata=CommonMetadata(categories=[], common_entities=[]),
+                common_metadata=CommonMetadata(categories=[], common_tags=[]),
                 graph=GraphStructure(**graph)
             )
             return response.model_dump()
@@ -261,6 +283,26 @@ class GraphRAGService:
             "text": result[0].get("text", ""),
             "description": result[0].get("description", "")
         }
+
+    def _get_documents_by_ids(self, doc_ids: List[str]) -> List[Dict[str, Any]]:
+        """Document ID 리스트로 Document 정보 조회 (Graph Pattern Matching용)"""
+        if not doc_ids:
+            return []
+
+        results = self.graph_repo.execute_query(
+            GET_DOCUMENTS_BY_IDS,
+            {"doc_ids": doc_ids}
+        )
+
+        return [
+            {
+                "doc_id": row["doc_id"],
+                "text": row.get("text", ""),
+                "description": row.get("description", ""),
+                "score": 1.0  # Pattern matching은 binary (match or not)
+            }
+            for row in results
+        ]
 
 
     def _extract_graph_structure(

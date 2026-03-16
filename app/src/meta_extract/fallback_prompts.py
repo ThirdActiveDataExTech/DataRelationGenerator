@@ -384,6 +384,71 @@ Query: {query_text}
 반드시 analyze_schema function tool을 호출하세요.
 """
 
+    GRAPH_QUERY_PARSE: str = """**반드시 parse_graph_query tool을 사용하여 응답할 것.**
+
+당신은 사용자의 자연어 쿼리를 Key-Value 그래프 조건으로 파싱하는 전문가입니다.
+
+# 임무
+사용자 쿼리에서 검색 조건을 추출하여 구조화하세요.
+
+사용자 쿼리: {query}
+
+# 추출 규칙
+
+1. **필드(field) 추출**
+   - 비교 대상이 되는 속성명 추출
+   - 예: "병상수", "지역", "업종", "직원수", "의료기관유형"
+   - 자연어 표현을 필드명으로 정규화
+
+2. **연산자(operator) 판단**
+   - "~이상": ">="
+   - "~초과": ">"
+   - "~이하": "<="
+   - "~미만": "<"
+   - "~인", "~의", "~가": "="
+   - "포함", "있는": "CONTAINS"
+   - "아닌", "제외": "!="
+
+3. **값(value) 추출**
+   - 비교 대상 값
+   - 예: "100", "경기도", "병원", "제조업"
+   - 숫자는 문자열로 반환
+
+# 예시
+
+**Query:** "병상수가 100개 이상인 병원"
+→ conditions: [
+     {field: "병상수", operator: ">=", value: "100"},
+     {field: "의료기관유형", operator: "CONTAINS", value: "병원"}
+   ]
+
+**Query:** "경기도에 있는 제조업 공장"
+→ conditions: [
+     {field: "지역", operator: "CONTAINS", value: "경기도"},
+     {field: "업종", operator: "CONTAINS", value: "제조업"}
+   ]
+
+**Query:** "직원수 10명 이상 50명 이하"
+→ conditions: [
+     {field: "직원수", operator: ">=", value: "10"},
+     {field: "직원수", operator: "<=", value: "50"}
+   ]
+
+**Query:** "가평군 요양병원"
+→ conditions: [
+     {field: "지역", operator: "CONTAINS", value: "가평군"},
+     {field: "의료기관유형", operator: "CONTAINS", value: "요양병원"}
+   ]
+
+# 주의사항
+- 명시적인 조건만 추출 (추측하지 말 것)
+- 조건이 없으면 빈 배열 반환
+- 필드명은 사용자가 이해할 수 있는 자연어로 유지
+
+# 출력
+반드시 parse_graph_query function tool을 호출하세요.
+"""
+
     CLUSTER_NORMALIZE: str = """**반드시 normalize_cluster tool을 사용하여 응답할 것.**
 
 당신은 유사한 값들을 분석하여 적절한 정규화 값을 생성하는 전문가입니다.
@@ -529,6 +594,7 @@ Values (클러스터): {cluster_values}
             "key_value_extract": cls.KEY_VALUE_EXTRACT,
             "cluster_normalize": cls.CLUSTER_NORMALIZE,
             "schema_analysis": cls.SCHEMA_ANALYSIS,
+            "graph_query_parse": cls.GRAPH_QUERY_PARSE,
         }
 
         if task not in prompt_map:
