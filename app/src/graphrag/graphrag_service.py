@@ -732,15 +732,15 @@ class GraphRAGService:
         """검색된 Document들의 공통 Category/Entity 집계"""
         results = self.graph_repo.execute_query(CALCULATE_COMMON_METADATA, {"doc_ids": doc_ids})
         if not results:
-            return {"categories": [], "common_entities": []}
+            return {"categories": [], "common_tags": []}
 
         total_docs = len(doc_ids)
         categories = self._aggregate_metadata_counts(results, "categories", total_docs)
-        common_entities = self._aggregate_metadata_counts(results, "entities", total_docs)
+        common_tags = self._aggregate_metadata_counts(results, "entities", total_docs)
 
-        logging.info(f"공통 메타데이터 집계: Category {len(categories)}개, Entity {len(common_entities)}개")
+        logging.info(f"공통 메타데이터 집계: Category {len(categories)}개, Entity {len(common_tags)}개")
 
-        return {"categories": categories, "common_entities": common_entities}
+        return {"categories": categories, "common_tags": common_tags}
 
     def _get_document_nodes(self, doc_ids: List[str]) -> List[Dict[str, Any]]:
         """Document 노드 조회"""
@@ -879,12 +879,12 @@ class GraphRAGService:
         nodes = self._get_document_nodes(doc_ids)
 
         common_categories = self._filter_common_metadata(common_metadata.get("categories", []))
-        common_entities = self._filter_common_metadata(common_metadata.get("common_entities", []))
+        common_tags = self._filter_common_metadata(common_metadata.get("common_tags", []))
 
-        nodes.extend(self._create_metadata_nodes(common_categories, common_entities))
+        nodes.extend(self._create_metadata_nodes(common_categories, common_tags))
 
         category_names = [cat["name"] for cat in common_categories]
-        entity_names = [entity["name"] for entity in common_entities]
+        entity_names = [entity["name"] for entity in common_tags]
 
         relationships = []
         relationships.extend(self._get_category_relationships(doc_ids, category_names))

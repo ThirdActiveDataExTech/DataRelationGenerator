@@ -1,5 +1,6 @@
 from functools import cached_property
 from typing import Dict, Any, List
+import unicodedata
 
 import logging
 from neo4j.exceptions import ServiceUnavailable, ClientError
@@ -324,7 +325,22 @@ class GraphService:
             return None
 
         relations = result.get("relations", [])
-        return relations[0] if relations else None
+
+        if relations:
+            relation = relations[0]
+
+            # Unicode 정규화: LLM이 반환한 NFC를 Neo4j의 NFD로 변환
+            if "target_doc_id" in relation:
+                original_id = relation["target_doc_id"]
+                normalized_id = unicodedata.normalize('NFD', original_id)
+                relation["target_doc_id"] = normalized_id
+
+                if original_id != normalized_id:
+                    logging.info(f"[관계 추론] target_doc_id NFD 정규화: {repr(original_id)} -> {repr(normalized_id)}")
+
+            return relation
+
+        return None
 
     @staticmethod
     def _build_relation_inference_variables(
