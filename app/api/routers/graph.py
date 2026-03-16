@@ -49,15 +49,17 @@ async def analyze_document_relations(
         doc_id: Annotated[str | None, Body(embed=True)] = None,
         top_k: Annotated[int, Body(embed=True)] = 4,
         text_weight: Annotated[float, Body(embed=True)] = 0.4,
-        graph_weight: Annotated[float, Body(embed=True)] = 0.6
+        graph_weight: Annotated[float, Body(embed=True)] = 0.3,
+        normalized_value_weight: Annotated[float, Body(embed=True)] = 0.3
 ):
     """Document 간 관계 분석 및 생성 (Step 3)
 
     Args:
         doc_id: 분석할 Document ID (None이면 전체 문서 분석)
-        top_k: 관련 문서 최대 개수 (기본: 10)
-        text_weight: 텍스트 유사도 가중치 (기본: 0.6)
-        graph_weight: 그래프 임베딩 유사도 가중치 (기본: 0.4)
+        top_k: 관련 문서 최대 개수 (기본: 4)
+        text_weight: 텍스트 유사도 가중치 (기본: 0.4)
+        graph_weight: 그래프 임베딩 유사도 가중치 (기본: 0.3)
+        normalized_value_weight: NormalizedValue 공유 가중치 (기본: 0.3)
 
     Flow:
         Step 1: /metadata/extract - 문서 추가 (text_embedding)
@@ -65,7 +67,8 @@ async def analyze_document_relations(
         Step 3: /graph/relations/analyze - 관계 분석 ← 현재
 
     Note:
-        - 하이브리드 검색: 텍스트 임베딩 + 그래프 임베딩
+        - 하이브리드 검색: 텍스트 임베딩 + 그래프 임베딩 + NormalizedValue 공유
+        - NormalizedValue 공유로 Key-Value 쌍의 실제 값 유사도 반영
         - LLM으로 의미적 관계 추론 (SIMILAR_TO, EXTENDS, CONTRADICTS 등)
         - doc_id=null: 모든 문서에 대해 관계 분석
         - 처리 시간이 오래 걸릴 수 있음 (문서 수 × top_k × LLM 호출)
@@ -78,7 +81,8 @@ async def analyze_document_relations(
         doc_id=doc_id,
         top_k=top_k,
         text_weight=text_weight,
-        graph_weight=graph_weight
+        graph_weight=graph_weight,
+        normalized_value_weight=normalized_value_weight
     )
     return APIResponseModel(
         result=result,

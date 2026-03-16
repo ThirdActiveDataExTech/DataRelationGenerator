@@ -143,7 +143,8 @@ class GraphService:
             doc_id: str = None,
             top_k: int = 4,
             text_weight: float = 0.4,
-            graph_weight: float = 0.6
+            graph_weight: float = 0.3,
+            normalized_value_weight: float = 0.3
     ) -> Dict[str, Any]:
         """Document 간 관계 분석 및 생성"""
         try:
@@ -159,7 +160,8 @@ class GraphService:
                 current_doc_text = doc["text"]
 
                 doc_result = self._analyze_single_document(
-                    current_doc_id, current_doc_text, top_k, text_weight, graph_weight
+                    current_doc_id, current_doc_text, top_k,
+                    text_weight, graph_weight, normalized_value_weight
                 )
 
                 total_relations_created += doc_result["relations_created"]
@@ -210,7 +212,8 @@ class GraphService:
             doc_text: str,
             top_k: int,
             text_weight: float,
-            graph_weight: float
+            graph_weight: float,
+            normalized_value_weight: float
     ) -> Dict[str, Any]:
         """단일 문서에 대한 관계 분석"""
         has_graph_emb = self.check_graph_embedding_exists(doc_id)
@@ -220,7 +223,8 @@ class GraphService:
             doc_text=doc_text,
             top_k=top_k,
             text_weight=text_weight,
-            graph_weight=graph_weight if has_graph_emb else 0
+            graph_weight=graph_weight if has_graph_emb else 0,
+            normalized_value_weight=normalized_value_weight
         )
 
         if not related_docs:
@@ -231,11 +235,20 @@ class GraphService:
             }
 
         metadata = self._get_document_metadata(doc_id)
+        logging.info(f"[관계 분석] {doc_id} 메타데이터: {metadata}")
+        logging.info(f"[관계 분석] {doc_id} 관련 문서 수: {len(related_docs)}")
+
         relations = self._infer_document_relations(doc_id, doc_text, metadata, related_docs)
+
+        logging.info(f"[관계 분석] {doc_id} 추론된 관계 수: {len(relations)}, relations={relations}")
 
         created_count = 0
         if relations:
+            logging.info(f"[관계 분석] {doc_id} Neo4j에 {len(relations)}개 관계 저장 시도")
             created_count = self.graph_repo.create_document_relations(doc_id, relations)
+            logging.info(f"[관계 분석] {doc_id} Neo4j에 {created_count}개 관계 저장 완료")
+        else:
+            logging.warning(f"[관계 분석] {doc_id} 추론된 관계가 없음")
 
         return {
             "doc_id": doc_id,
@@ -312,15 +325,20 @@ class GraphService:
             doc_id, doc_text, metadata, related_doc_id, related_doc
         )
 
+        logging.info(f"[관계 추론] {doc_id} -> {related_doc_id} 변수 전달: keys={variables.get('new_doc_keys', 'N/A')}, similarity={variables.get('similarity_score', 0)}")
+
         result = LLMResponse("document_relation_inference").generate_llm_response(
             variables=variables
         )
+
+        logging.info(f"[관계 추론] LLM 응답: type={type(result).__name__}, content={result}")
 
         if not isinstance(result, dict):
             logging.warning(f"관계 추론 결과가 dict가 아님: {type(result).__name__}")
             return None
 
         relations = result.get("relations", [])
+        logging.info(f"[관계 추론] 추출된 relations: {relations}")
 
         if relations:
             relation = relations[0]
@@ -334,9 +352,11 @@ class GraphService:
                 if original_id != normalized_id:
                     logging.info(f"[관계 추론] target_doc_id NFD 정규화: {repr(original_id)} -> {repr(normalized_id)}")
 
+            logging.info(f"[관계 추론] 반환할 관계: {relation}")
             return relation
-
-        return None
+        else:
+            logging.warning(f"[관계 추론] relations가 비어있음")
+            return None
 
     @staticmethod
     def _build_relation_inference_variables(
