@@ -139,7 +139,7 @@ class SchemaAnalyzer:
             sample_records: List[Dict[str, Any]],
             field_statistics: Dict[str, FieldStatistics],
     ) -> SchemaAnalysisResult:
-        """LLM으로 스키마 추론
+        """LLM으로 스키마 추론 (긴 텍스트 필드 자동 샘플링)
 
         Args:
             sample_records: 샘플 레코드
@@ -148,12 +148,44 @@ class SchemaAnalyzer:
         Returns:
             SchemaAnalysisResult
         """
-        # 샘플 데이터를 보기 좋게 포맷팅
         import json
 
-        sample_data_str = json.dumps(sample_records, ensure_ascii=False, indent=2)
+        # 긴 텍스트 필드 감지 (평균 길이 > 500자)
+        LONG_TEXT_THRESHOLD = 500
+        TRUNCATE_PREFIX_LENGTH = 200
+        TRUNCATE_SUFFIX_LENGTH = 100
 
-        # 통계를 보기 좋게 포맷팅
+        long_text_fields = {
+            field for field, stats in field_statistics.items()
+            if stats.value_lengths["avg"] > LONG_TEXT_THRESHOLD
+        }
+
+        if long_text_fields:
+            logger.info(f"긴 텍스트 필드 감지: {long_text_fields} (평균 길이 > {LONG_TEXT_THRESHOLD}자)")
+
+        # 샘플 데이터 복사 후 긴 필드만 truncate
+        truncated_samples = []
+        for record in sample_records:
+            truncated = {}
+            for key, value in record.items():
+                if key in long_text_fields and isinstance(value, str):
+                    # 처음 200자 + ... + 마지막 100자
+                    if len(value) > (TRUNCATE_PREFIX_LENGTH + TRUNCATE_SUFFIX_LENGTH):
+                        truncated[key] = (
+                            value[:TRUNCATE_PREFIX_LENGTH]
+                            + "\n...(중략)...\n"
+                            + value[-TRUNCATE_SUFFIX_LENGTH:]
+                        )
+                        logger.debug(f"필드 '{key}' truncate: {len(value)}자 → {len(truncated[key])}자")
+                    else:
+                        truncated[key] = value
+                else:
+                    truncated[key] = value
+            truncated_samples.append(truncated)
+
+        sample_data_str = json.dumps(truncated_samples, ensure_ascii=False, indent=2)
+
+        # 통계를 보기 좋게 포맷팅 (긴 텍스트 필드는 샘플 대신 길이 정보만)
         statistics_lines = []
         for field, stats in field_statistics.items():
             line = (
@@ -161,7 +193,15 @@ class SchemaAnalyzer:
                 f"  - 전체: {stats.total_count}개\n"
                 f"  - 고유값: {stats.unique_count}개\n"
                 f"  - Null: {stats.null_count}개 ({stats.null_ratio * 100:.1f}%)\n"
-                f"  - 샘플: {stats.samples}\n"
+            )
+
+            # 긴 텍스트 필드면 샘플 생략
+            if field in long_text_fields:
+                line += f"  - 샘플: [긴 텍스트 - 평균 {stats.value_lengths['avg']}자, 최대 {stats.value_lengths['max']}자]\n"
+            else:
+                line += f"  - 샘플: {stats.samples}\n"
+
+            line += (
                 f"  - 길이: min={stats.value_lengths['min']}, "
                 f"max={stats.value_lengths['max']}, "
                 f"avg={stats.value_lengths['avg']}"
