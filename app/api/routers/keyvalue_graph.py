@@ -1,4 +1,5 @@
 from typing import Annotated
+import logging
 
 from fastapi import APIRouter, Body, UploadFile, File
 from fastapi.responses import JSONResponse
@@ -9,6 +10,7 @@ from app.src.keyvalue_graph.llm_based_loader import LLMBasedKeyValueLoader
 from app.src.keyvalue_graph.schema_analyzer import SchemaAnalyzer
 
 router = APIRouter(prefix="/keyvalue", tags=["keyvalue-graph"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/extract", tags=["keyvalue-graph"], response_model=APIResponseModel, response_class=JSONResponse)
@@ -93,15 +95,24 @@ async def batch_extract_key_value_from_json(
         analyzer = SchemaAnalyzer(sample_size=sample_size)
         detected_schema = analyzer.analyze(data_list)
 
-        # SchemaAnalysisResult의 fields를 field_mapping으로 변환
-        # fields: Dict[str, FieldAnalysis] → field_mapping: Dict[str, str]
+        # 원본 필드 매핑
         field_mapping = {
             original_key: field_info.korean_name
             for original_key, field_info in detected_schema.fields.items()
         }
 
+        # extractable_metadata 추가 (합치기!)
+        for meta_key, meta_info in detected_schema.extractable_metadata.items():
+            field_mapping[meta_key] = meta_info.korean_name
+
         # 감지된 centrality_name 사용
         centrality_name = detected_schema.centrality_name
+
+        logger.info(
+            f"통합 필드 매핑: 원본 {len(detected_schema.fields)}개 + "
+            f"메타데이터 {len(detected_schema.extractable_metadata)}개 = "
+            f"총 {len(field_mapping)}개"
+        )
 
     loader = LLMBasedKeyValueLoader(field_mapping=field_mapping)
 
@@ -115,7 +126,8 @@ async def batch_extract_key_value_from_json(
             data_text,
             centrality_name=centrality_name,
             source_file=file.filename or "batch_upload",
-            record_index=idx
+            record_index=idx,
+            extractable_metadata=detected_schema.extractable_metadata if detected_schema else None
         )
 
         if result["success"]:
@@ -293,9 +305,24 @@ async def analyze_data_schema(
                 }
                 for field_name, field_info in schema.fields.items()
             },
+            "extractable_metadata": {
+                meta_name: {
+                    "korean_name": meta_info.korean_name,
+                    "source_field": meta_info.source_field,
+                    "data_type": meta_info.data_type,
+                    "description": meta_info.description,
+                    "examples": meta_info.examples
+                }
+                for meta_name, meta_info in schema.extractable_metadata.items()
+            },
             "confidence": schema.confidence,
             "notes": schema.notes,
             "analyzed_records": len(data_list)
         },
-        description=f"스키마 분석 완료: 도메인={schema.domain}, 필드 {len(schema.fields)}개, 신뢰도={schema.confidence:.2f}"
+        description=(
+            f"스키마 분석 완료: 도메인={schema.domain}, "
+            f"필드 {len(schema.fields)}개, "
+            f"추출 가능 메타데이터 {len(schema.extractable_metadata)}개, "
+            f"신뢰도={schema.confidence:.2f}"
+        )
     )
