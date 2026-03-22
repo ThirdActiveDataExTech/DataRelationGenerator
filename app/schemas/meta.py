@@ -77,23 +77,6 @@ class DocumentRelationResult(BaseModel):
     )
 
 
-class QueryCondition(BaseModel):
-    """쿼리 조건"""
-    type: Literal["entity", "property"] = Field(...,
-                                                description="조건 타입: entity (Entity 노드와 연결) 또는 property (Document 속성)")
-    value: str = Field(..., description="조건 값 (예: '가평', '재활의학과', '종합병원')")
-    semantic: str = Field(..., description="의미적 역할 (예: '위치', '진료과목', '병원유형')")
-
-
-class QueryGraphPattern(BaseModel):
-    """쿼리 그래프 패턴"""
-    target: str = Field(default="Document", description="검색 대상 노드 타입 (보통 'Document')")
-    conditions: List[QueryCondition] = Field(
-        default_factory=list,
-        description="검색 조건 목록. 조건이 없으면 빈 배열 반환"
-    )
-
-
 Base = declarative_base()
 
 
@@ -130,12 +113,6 @@ document_relation_tool = pydantic_function_tool(
     DocumentRelationResult,
     name="infer_document_relations",
     description="새 문서와 기존 유사 문서들 간의 의미적 관계를 추론합니다."
-)
-
-query_graph_tool = pydantic_function_tool(
-    QueryGraphPattern,
-    name="parse_query_to_graph",
-    description="검색 쿼리를 그래프 패턴으로 변환합니다. 쿼리에서 검색 조건들을 추출하여 그래프 구조로 표현합니다."
 )
 
 

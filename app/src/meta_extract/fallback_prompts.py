@@ -208,56 +208,6 @@ Query: {query_text}
 {{"entities": ["entity1", "entity2", ...]}}
 """
 
-    QUERY_GRAPH_PARSING: str = """**반드시 parse_query_to_graph tool을 사용하여 응답할 것.**
-
-당신은 검색 쿼리를 그래프 패턴으로 변환하는 전문가입니다.
-
-다음 검색 쿼리를 분석하여 그래프 패턴으로 변환하세요:
-
-쿼리: {query}
-
-현재 그래프 데이터베이스 스키마:
-
-노드 레이블:
-- Document: 검색 대상 문서
-- Entity: 엔티티 (지역, 진료과목, 병원명, 개념 등)
-- Topic: 주제/토픽
-- Category: 카테고리
-
-관계 타입:
-- MENTIONS: Document → Entity (문서가 특정 엔티티를 언급)
-- HAS_TOPIC: Document/Entity → Topic (주제 보유)
-- BELONGS_TO: Topic → Category (카테고리 소속)
-- SIMILAR_TO, EXTENDS, CONTRADICTS, CO_OCCURS: Document 간 관계
-
-지침:
-1. 검색 쿼리에서 검색 조건들을 추출하세요
-2. 각 조건의 type을 결정:
-   - "entity": Entity 노드로 표현 가능한 구체적인 개체 (지명, 병원명, 진료과목 등)
-   - "property": Document의 속성으로 표현되는 특성 (병원 유형, 상태 등)
-3. 각 조건의 semantic (의미적 역할)을 명확히 기술하세요
-4. 모든 조건은 검색에 실제로 활용 가능한 것만 추출하세요
-
-예시:
-쿼리: "서울에 있는 정형외과 의원"
-→ conditions: [
-    {{"type": "entity", "value": "서울", "semantic": "위치"}},
-    {{"type": "entity", "value": "정형외과", "semantic": "진료과목"}},
-    {{"type": "property", "value": "의원", "semantic": "의료기관유형"}}
-  ]
-
-쿼리: "가평군 요양병원 중 내과가 있는 곳"
-→ conditions: [
-    {{"type": "entity", "value": "가평군", "semantic": "위치"}},
-    {{"type": "property", "value": "요양병원", "semantic": "의료기관유형"}},
-    {{"type": "entity", "value": "내과", "semantic": "진료과목"}}
-  ]
-
-주의사항:
-- 구체적인 값만 추출하세요 (모호한 표현은 제외)
-- 중복된 의미의 조건은 하나만 추출하세요
-- 조건이 없으면 빈 배열을 반환하세요
-"""
 
     DOCUMENT_RELEVANCE_VERIFICATION: str = """**반드시 verify_document_relevance tool을 사용하여 응답할 것.**
 
@@ -453,12 +403,18 @@ extractable_metadata:
 
 사용자 쿼리: {query}
 
+# 그래프 구조
+현재 그래프는 다음과 같은 Key-Value 구조입니다:
+- Key: 한글 필드명 (예: "병원명", "지역", "병상규모", "전문분야")
+- Value: 실제 데이터 값
+- Document: Key-Value들이 추출된 원본 문서
+
 # 추출 규칙
 
 1. **필드(field) 추출**
    - 비교 대상이 되는 속성명 추출
-   - 예: "병상수", "지역", "업종", "직원수", "의료기관유형"
-   - 자연어 표현을 필드명으로 정규화
+   - 예: "병원명", "병상수", "지역", "업종", "직원수", "의료기관유형", "전문분야"
+   - 자연어 표현을 한글 필드명으로 정규화
 
 2. **연산자(operator) 판단**
    - "~이상": ">="
@@ -466,7 +422,7 @@ extractable_metadata:
    - "~이하": "<="
    - "~미만": "<"
    - "~인", "~의", "~가": "="
-   - "포함", "있는": "CONTAINS"
+   - "포함", "있는", "관련": "CONTAINS"
    - "아닌", "제외": "!="
 
 3. **값(value) 추출**
@@ -478,32 +434,38 @@ extractable_metadata:
 
 **Query:** "병상수가 100개 이상인 병원"
 → conditions: [
-     {field: "병상수", operator: ">=", value: "100"},
-     {field: "의료기관유형", operator: "CONTAINS", value: "병원"}
+     {{"field": "병상규모", "operator": ">=", "value": "100"}},
+     {{"field": "병원명", "operator": "CONTAINS", "value": "병원"}}
    ]
 
 **Query:** "경기도에 있는 제조업 공장"
 → conditions: [
-     {field: "지역", operator: "CONTAINS", value: "경기도"},
-     {field: "업종", operator: "CONTAINS", value: "제조업"}
+     {{"field": "지역", "operator": "CONTAINS", "value": "경기도"}},
+     {{"field": "업종", "operator": "CONTAINS", "value": "제조업"}}
    ]
 
 **Query:** "직원수 10명 이상 50명 이하"
 → conditions: [
-     {field: "직원수", operator: ">=", value: "10"},
-     {field: "직원수", operator: "<=", value: "50"}
+     {{"field": "직원수", "operator": ">=", "value": "10"}},
+     {{"field": "직원수", "operator": "<=", "value": "50"}}
    ]
 
 **Query:** "가평군 요양병원"
 → conditions: [
-     {field: "지역", operator: "CONTAINS", value: "가평군"},
-     {field: "의료기관유형", operator: "CONTAINS", value: "요양병원"}
+     {{"field": "지역", "operator": "CONTAINS", "value": "가평군"}},
+     {{"field": "병원명", "operator": "CONTAINS", "value": "요양병원"}}
+   ]
+
+**Query:** "365매일한방병원"
+→ conditions: [
+     {{"field": "병원명", "operator": "CONTAINS", "value": "365매일한방병원"}}
    ]
 
 # 주의사항
 - 명시적인 조건만 추출 (추측하지 말 것)
 - 조건이 없으면 빈 배열 반환
-- 필드명은 사용자가 이해할 수 있는 자연어로 유지
+- 필드명은 한글로 변환 (예: "병원" → "병원명", "지역" → "지역", "병상" → "병상규모")
+- 병원/기관 이름이 언급되면 "병원명" 필드로 추출
 
 # 출력
 반드시 parse_graph_query function tool을 호출하세요.
@@ -649,7 +611,6 @@ Values (클러스터): {cluster_values}
             "category_generate": cls.CATEGORY_GENERATE,
             "document_relation_inference": cls.DOCUMENT_RELATION_INFERENCE,
             "entity_extract_from_query": cls.ENTITY_EXTRACT_FROM_QUERY,
-            "query_graph_parsing": cls.QUERY_GRAPH_PARSING,
             "document_relevance_verification": cls.DOCUMENT_RELEVANCE_VERIFICATION,
             "key_value_extract": cls.KEY_VALUE_EXTRACT,
             "cluster_normalize": cls.CLUSTER_NORMALIZE,
