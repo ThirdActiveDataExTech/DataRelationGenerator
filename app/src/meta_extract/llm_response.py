@@ -24,7 +24,7 @@ from app.schemas.meta import (
     document_relevance_tool,
     key_value_extraction_tool,
     cluster_normalization_tool,
-    graph_query_parse_tool
+    query_key_inference_tool
 )
 from app.schemas.schema_analysis import schema_analysis_tool
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
@@ -43,7 +43,7 @@ class LLMResponse:
         "key_value_extract": ("key_value_extract", "production"),
         "cluster_normalize": ("cluster_normalize", "production"),
         "schema_analysis": ("schema_analysis", "production"),
-        "graph_query_parse": ("graph_query_parse", "production"),
+        "query_key_inference": ("query_key_inference", "production"),
     }
 
     def __init__(self, task: str):
@@ -115,8 +115,8 @@ class LLMResponse:
             tools = [cluster_normalization_tool]
         elif self.task == "schema_analysis":
             tools = [schema_analysis_tool]
-        elif self.task == "graph_query_parse":
-            tools = [graph_query_parse_tool]
+        elif self.task == "query_key_inference":
+            tools = [query_key_inference_tool]
         else:
             tools = []
 

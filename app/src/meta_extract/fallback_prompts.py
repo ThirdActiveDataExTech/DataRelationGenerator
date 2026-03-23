@@ -183,30 +183,6 @@ reason은 사용자가 그래프를 탐색할 때 "왜 이 문서들이 연결�
 - 관계가 없으면: 빈 배열 반환
 """
 
-    ENTITY_EXTRACT_FROM_QUERY: str = """
-**반드시 tool call을 사용하여 응답할것.**
-
-당신은 검색 쿼리에서 핵심 Entity를 추출하는 전문가입니다.
-
-다음 검색 쿼리에서 구체적인 Entity(개체)를 추출하세요.
-
-# Entity 정의
-- 인명, 기관명, 지명, 질병명, 치료법, 제품/서비스명 등 구체적 개체
-- 일반적인 형용사나 동사는 제외
-
-# 예시
-Query: "위암 수술 후 회복기 케어 가능한 세브란스 연계 병원"
-→ Entities: ["위암", "수술", "회복기 케어", "세브란스", "세브란스병원", "연계 병원"]
-
-Query: "강남구 1차 병원 찾기"
-→ Entities: ["강남구", "1차 병원"]
-
----
-Query: {query_text}
-
-출력 형식 (JSON):
-{{"entities": ["entity1", "entity2", ...]}}
-"""
 
 
     DOCUMENT_RELEVANCE_VERIFICATION: str = """**반드시 verify_document_relevance tool을 사용하여 응답할 것.**
@@ -394,81 +370,65 @@ extractable_metadata:
 - 추출 가능한 메타데이터가 없으면 extractable_metadata는 {{}}로 반환하세요.
 """
 
-    GRAPH_QUERY_PARSE: str = """**반드시 parse_graph_query tool을 사용하여 응답할 것.**
+    QUERY_KEY_INFERENCE: str = """**반드시 infer_required_keys tool을 사용하여 응답할 것.**
 
-당신은 사용자의 자연어 쿼리를 Key-Value 그래프 조건으로 파싱하는 전문가입니다.
+당신은 사용자의 질문을 분석하여 필요한 그래프 Key들을 추론하는 전문가입니다.
 
 # 임무
-사용자 쿼리에서 검색 조건을 추출하여 구조화하세요.
+사용자 질문에서 **어떤 Key들이 검색에 필요한지** 추론하세요.
 
-사용자 쿼리: {query}
+사용자 질문: {query}
 
 # 그래프 구조
-현재 그래프는 다음과 같은 Key-Value 구조입니다:
-- Key: 한글 필드명 (예: "병원명", "지역", "병상규모", "전문분야")
-- Value: 실제 데이터 값
-- Document: Key-Value들이 추출된 원본 문서
+- Key: 데이터의 속성명 (예: "병원명", "지역", "병상규모", "전문분야", "업종", "주소")
+- Value: Key에 대한 실제 값
+- Document: 원본 데이터
 
-# 추출 규칙
+# Key 추론 규칙
 
-1. **필드(field) 추출**
-   - 비교 대상이 되는 속성명 추출
-   - 예: "병원명", "병상수", "지역", "업종", "직원수", "의료기관유형", "전문분야"
-   - 자연어 표현을 한글 필드명으로 정규화
+1. **검색어 분석**
+   - 병원/기관 이름이 언급됨 → "병원명" 또는 "기관명" Key 필요
+   - 지역/위치가 언급됨 → "지역" 또는 "주소" Key 필요
+   - 숫자/규모가 언급됨 → "병상규모", "직원수" 등 수치 Key 필요
+   - 전문분야/업종이 언급됨 → "전문분야", "업종" Key 필요
 
-2. **연산자(operator) 판단**
-   - "~이상": ">="
-   - "~초과": ">"
-   - "~이하": "<="
-   - "~미만": "<"
-   - "~인", "~의", "~가": "="
-   - "포함", "있는", "관련": "CONTAINS"
-   - "아닌", "제외": "!="
+2. **Key 이름은 일반적인 한글 단어로**
+   - 구체적이고 명확하게 (예: "병원명", "지역", "병상규모")
+   - 약어보다는 풀네임 (예: "병원명" > "병원")
 
-3. **값(value) 추출**
-   - 비교 대상 값
-   - 예: "100", "경기도", "병원", "제조업"
-   - 숫자는 문자열로 반환
+3. **검색어가 포함될 가능성이 높은 Key만 선택**
+   - 너무 많이 선택하지 말 것 (1~3개 정도)
 
 # 예시
 
-**Query:** "병상수가 100개 이상인 병원"
-→ conditions: [
-     {{"field": "병상규모", "operator": ">=", "value": "100"}},
-     {{"field": "병원명", "operator": "CONTAINS", "value": "병원"}}
-   ]
-
-**Query:** "경기도에 있는 제조업 공장"
-→ conditions: [
-     {{"field": "지역", "operator": "CONTAINS", "value": "경기도"}},
-     {{"field": "업종", "operator": "CONTAINS", "value": "제조업"}}
-   ]
-
-**Query:** "직원수 10명 이상 50명 이하"
-→ conditions: [
-     {{"field": "직원수", "operator": ">=", "value": "10"}},
-     {{"field": "직원수", "operator": "<=", "value": "50"}}
-   ]
-
-**Query:** "가평군 요양병원"
-→ conditions: [
-     {{"field": "지역", "operator": "CONTAINS", "value": "가평군"}},
-     {{"field": "병원명", "operator": "CONTAINS", "value": "요양병원"}}
-   ]
-
 **Query:** "365매일한방병원"
-→ conditions: [
-     {{"field": "병원명", "operator": "CONTAINS", "value": "365매일한방병원"}}
-   ]
+→ keys: ["병원명"]
+→ search_terms: {{"병원명": "365매일한방병원"}}
+
+**Query:** "경기도 가평군 요양병원"
+→ keys: ["지역", "병원명"]
+→ search_terms: {{"지역": "경기도 가평군", "병원명": "요양병원"}}
+
+**Query:** "병상수 100개 이상인 종합병원"
+→ keys: ["병상규모", "병원유형"]
+→ search_terms: {{"병상규모": "100", "병원유형": "종합병원"}}
+
+**Query:** "서울 정형외과"
+→ keys: ["지역", "전문분야"]
+→ search_terms: {{"지역": "서울", "전문분야": "정형외과"}}
+
+**Query:** "제조업"
+→ keys: ["업종"]
+→ search_terms: {{"업종": "제조업"}}
 
 # 주의사항
-- 명시적인 조건만 추출 (추측하지 말 것)
-- 조건이 없으면 빈 배열 반환
-- 필드명은 한글로 변환 (예: "병원" → "병원명", "지역" → "지역", "병상" → "병상규모")
-- 병원/기관 이름이 언급되면 "병원명" 필드로 추출
+- 질문과 **직접 관련**된 Key만 추론
+- 추측하지 말고 명확한 것만
+- Key 개수는 1~3개 정도가 적절
+- search_terms는 실제로 검색할 값
 
 # 출력
-반드시 parse_graph_query function tool을 호출하세요.
+반드시 infer_required_keys function tool을 호출하세요.
 """
 
     CLUSTER_NORMALIZE: str = """**반드시 normalize_cluster tool을 사용하여 응답할 것.**
@@ -610,12 +570,11 @@ Values (클러스터): {cluster_values}
             "cypher_generate": cls.CYPHER_GENERATE,
             "category_generate": cls.CATEGORY_GENERATE,
             "document_relation_inference": cls.DOCUMENT_RELATION_INFERENCE,
-            "entity_extract_from_query": cls.ENTITY_EXTRACT_FROM_QUERY,
             "document_relevance_verification": cls.DOCUMENT_RELEVANCE_VERIFICATION,
             "key_value_extract": cls.KEY_VALUE_EXTRACT,
             "cluster_normalize": cls.CLUSTER_NORMALIZE,
             "schema_analysis": cls.SCHEMA_ANALYSIS,
-            "graph_query_parse": cls.GRAPH_QUERY_PARSE,
+            "query_key_inference": cls.QUERY_KEY_INFERENCE,
         }
 
         if task not in prompt_map:
