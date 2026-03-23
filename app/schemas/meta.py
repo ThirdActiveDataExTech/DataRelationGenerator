@@ -1,4 +1,4 @@
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, field_validator
@@ -160,23 +160,20 @@ cluster_normalization_tool = pydantic_function_tool(
 )
 
 
-class QueryConditionField(BaseModel):
-    """쿼리 조건 필드"""
-    field: str = Field(..., description="필드명 (예: '병상수', '지역', '업종')")
-    operator: Literal["=", "!=", ">", ">=", "<", "<=", "CONTAINS"] = Field(..., description="비교 연산자")
-    value: str = Field(..., description="비교 값")
-
-
-class GraphQueryParseResult(BaseModel):
-    """Graph Query 파싱 결과"""
-    conditions: List[QueryConditionField] = Field(
+class QueryKeyInferenceResult(BaseModel):
+    """쿼리에 필요한 Key 추론 결과"""
+    keys: List[str] = Field(
         default_factory=list,
-        description="추출된 조건 목록. 조건이 없으면 빈 배열 반환"
+        description="검색에 필요한 Key 이름 목록 (예: ['병원명', '지역'])"
+    )
+    search_terms: Dict[str, str] = Field(
+        default_factory=dict,
+        description="각 Key에서 검색할 값 (예: {'병원명': '365매일한방병원', '지역': '경기도'})"
     )
 
 
-graph_query_parse_tool = pydantic_function_tool(
-    GraphQueryParseResult,
-    name="parse_graph_query",
-    description="사용자 쿼리를 Key-Value 그래프 조건으로 파싱합니다."
+query_key_inference_tool = pydantic_function_tool(
+    QueryKeyInferenceResult,
+    name="infer_required_keys",
+    description="사용자 질문을 분석하여 필요한 그래프 Key들을 추론합니다."
 )
