@@ -130,7 +130,7 @@ class KeyValueGraphBuilder:
         )
 
     def _create_key_node(self, key_name: str, raw_data: Dict[str, Any]) -> None:
-        """Key 노드 생성 (MERGE).
+        """Key 노드 생성 (MERGE) + name_embedding 추가.
 
         Args:
             key_name: Key명 (한글)
@@ -138,6 +138,7 @@ class KeyValueGraphBuilder:
         """
         # 원본 필드명 찾기
         from app.src.keyvalue_graph.field_mappings import FIELD_NAME_MAPPING
+        from app.src.embedding.embedding_service import embedding_service
 
         original_field = None
         for orig, korean in FIELD_NAME_MAPPING.items():
@@ -145,10 +146,18 @@ class KeyValueGraphBuilder:
                 original_field = orig
                 break
 
+        # Key 이름으로 임베딩 생성
+        try:
+            name_embedding = embedding_service.generate_embedding(key_name, show_progress_bar=False)
+        except Exception as e:
+            logger.warning(f"Key '{key_name}' 임베딩 생성 실패: {e}, 0벡터로 대체")
+            name_embedding = [0.0] * 384  # 기본 차원
+
         query = """
         MERGE (k:Key {name: $key_name})
         ON CREATE SET
             k.original_field = $original_field,
+            k.name_embedding = $name_embedding,
             k.created_at = datetime()
         """
         self.graph_repo.execute_query(
@@ -156,6 +165,7 @@ class KeyValueGraphBuilder:
             {
                 "key_name": key_name,
                 "original_field": original_field or key_name,
+                "name_embedding": name_embedding,
             },
         )
 
