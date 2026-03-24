@@ -53,9 +53,9 @@ class GraphPatternMatcher:
         # 3. 각 Key-검색어 조합으로 Document 검색 (AND 조건)
         # 교집합을 위해 각 Key별로 충분히 많은 결과를 가져옴
         search_limit = top_k * 20  # 교집합 고려하여 20배 확장
-        all_doc_ids = None
+        all_doc_ids: set[str] | None = None
 
-        for idx, key_info in enumerate(matched_keys):
+        for key_info in matched_keys:
             key_name = key_info["key_name"]
             original_key = key_info["original_key"]
             search_term = search_terms.get(original_key, query)  # fallback to full query
@@ -66,7 +66,7 @@ class GraphPatternMatcher:
             )
 
             # 첫 번째 Key는 그대로, 이후는 교집합(AND)
-            if idx == 0:
+            if all_doc_ids is None:
                 all_doc_ids = set(doc_ids)
             else:
                 all_doc_ids = all_doc_ids.intersection(doc_ids)
