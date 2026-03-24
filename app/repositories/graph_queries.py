@@ -38,15 +38,16 @@ RETURN node.id as doc_id, score
 EXTRACT_GRAPH_1HOP = """
 MATCH (d:Document)
 WHERE d.id IN $doc_ids
-OPTIONAL MATCH path = (d)-[r]-(n:Key|Value|Centrality|Document)
-WITH collect(DISTINCT d) + collect(DISTINCT n) as nodes,
-     collect(DISTINCT r) as rels
-RETURN [node IN nodes | {
+OPTIONAL MATCH (v:Value)-[r1:EXTRACTED_FROM]->(d)
+OPTIONAL MATCH (k:Key)-[r2:HAS_VALUE]->(v)
+WITH collect(DISTINCT d) + collect(DISTINCT v) + collect(DISTINCT k) as all_nodes,
+     collect(DISTINCT r1) + collect(DISTINCT r2) as all_rels
+RETURN [node IN all_nodes WHERE node IS NOT NULL | {
     id: COALESCE(node.id, node.name, elementId(node)),
     labels: labels(node),
     properties: properties(node)
 }] as nodes,
-[rel IN rels WHERE rel IS NOT NULL | {
+[rel IN all_rels WHERE rel IS NOT NULL | {
     type: type(rel),
     start: COALESCE(startNode(rel).id, startNode(rel).name, elementId(startNode(rel))),
     end: COALESCE(endNode(rel).id, endNode(rel).name, elementId(endNode(rel))),
