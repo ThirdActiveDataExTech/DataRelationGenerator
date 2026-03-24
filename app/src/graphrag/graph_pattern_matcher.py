@@ -10,6 +10,9 @@ from app.src.meta_extract.llm_response import LLMResponse
 class GraphPatternMatcher:
     """Graph Pattern Matching 서비스"""
 
+    # 교집합으로 인한 결과 부족을 고려한 검색 확장 계수
+    SEARCH_EXPANSION_FACTOR = 20
+
     def __init__(self, graph_repo: GraphRepository):
         """초기화"""
         self.graph_repo = graph_repo
@@ -52,7 +55,7 @@ class GraphPatternMatcher:
 
         # 3. 각 Key-검색어 조합으로 Document 검색 (AND 조건)
         # 교집합을 위해 각 Key별로 충분히 많은 결과를 가져옴
-        search_limit = top_k * 20  # 교집합 고려하여 20배 확장
+        search_limit = top_k * self.SEARCH_EXPANSION_FACTOR
         all_doc_ids: set[str] | None = None
 
         for key_info in matched_keys:
@@ -72,7 +75,12 @@ class GraphPatternMatcher:
                 all_doc_ids = all_doc_ids.intersection(doc_ids)
                 logging.info(f"[Graph Pattern] 교집합 적용 후 → {len(all_doc_ids)}개 Document")
 
-        result_doc_ids = list(all_doc_ids) if all_doc_ids else []
+                # 조기 종료: 교집합이 빈 집합이면 더 이상 검색 불필요
+                if len(all_doc_ids) == 0:
+                    logging.info("[Graph Pattern] 교집합 결과가 0개, 조기 종료")
+                    break
+
+        result_doc_ids = list(all_doc_ids) if all_doc_ids is not None else []
         result_doc_ids = result_doc_ids[:top_k]
         logging.info(f"[Graph Pattern] 최종 {len(result_doc_ids)}개 Document 반환 (AND 조건, top_k={top_k})")
 
@@ -220,34 +228,48 @@ class GraphPatternMatcher:
             logging.warning(f"[Numeric Search] value가 없음: {condition}")
             return []
 
-        # Cypher 연산자 검증
-        valid_operators = {">=", ">", "<=", "<", "==", "="}
-        if operator not in valid_operators:
+        # value를 float로 변환 (예외 처리)
+        try:
+            numeric_value = float(value)
+        except (ValueError, TypeError) as e:
+            logging.warning(f"[Numeric Search] value를 float로 변환 실패: {value}, {e}")
+            return []
+
+        # Cypher 연산자 템플릿 (SQL injection 방지)
+        query_templates = {
+            ">=": "toFloat(clean_value) >= $value",
+            ">": "toFloat(clean_value) > $value",
+            "<=": "toFloat(clean_value) <= $value",
+            "<": "toFloat(clean_value) < $value",
+            "==": "toFloat(clean_value) = $value",
+            "=": "toFloat(clean_value) = $value"
+        }
+
+        if operator not in query_templates:
             logging.warning(f"[Numeric Search] 잘못된 연산자: {operator}")
             return []
 
-        # 디버그: 해당 Key의 Value들 샘플 조회 (전체 속성 확인)
-        debug_query = """
-        MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
-        RETURN properties(v) as all_properties, labels(v) as labels
-        LIMIT 5
-        """
+        # 디버그: DEBUG 레벨일 때만 Value 샘플 조회
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            debug_query = """
+            MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
+            RETURN properties(v) as all_properties, labels(v) as labels
+            LIMIT 5
+            """
+            try:
+                debug_results = self.graph_repo.execute_query(debug_query, {"key_name": key_name})
+                logging.debug(f"[DEBUG] Key '{key_name}'의 Value 노드 전체 속성:")
+                for idx, row in enumerate(debug_results):
+                    logging.debug(f"  [{idx}] {row}")
+            except Exception as e:
+                logging.debug(f"[DEBUG] Value 샘플 조회 실패: {e}")
 
-        try:
-            debug_results = self.graph_repo.execute_query(debug_query, {"key_name": key_name})
-            logging.info(f"[DEBUG] Key '{key_name}'의 Value 노드 전체 속성:")
-            for idx, row in enumerate(debug_results):
-                logging.info(f"  [{idx}] {row}")
-        except Exception as e:
-            logging.warning(f"[DEBUG] Value 샘플 조회 실패: {e}")
-
-        # Value.name을 숫자로 변환하여 비교 (속성명은 'name'임!)
-        # 쉼표 제거하여 변환 시도
+        # Value.name을 숫자로 변환하여 비교
         query = f"""
         MATCH (k:Key {{name: $key_name}})-[:HAS_VALUE]->(v:Value)-[:EXTRACTED_FROM]->(d:Document)
         WITH v, d, replace(v.name, ',', '') as clean_value
         WHERE toFloatOrNull(clean_value) IS NOT NULL
-          AND toFloat(clean_value) {operator} $value
+          AND {query_templates[operator]}
         RETURN DISTINCT d.id as doc_id
         LIMIT $top_k
         """
@@ -255,7 +277,7 @@ class GraphPatternMatcher:
         try:
             results = self.graph_repo.execute_query(
                 query,
-                {"key_name": key_name, "value": float(value), "top_k": top_k}
+                {"key_name": key_name, "value": numeric_value, "top_k": top_k}
             )
 
             doc_ids = [row["doc_id"] for row in results]
