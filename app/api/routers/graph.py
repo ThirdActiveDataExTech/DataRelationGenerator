@@ -5,9 +5,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.schemas.graphrag_api import (
     GraphRAGSearchRequest,
-    GraphRAGSearchResponse,
-    NodeExploreRequest,
-    NodeExploreResponse
+    GraphRAGSearchResponse
 )
 from app.schemas.response import APIResponseModel
 from app.src.graphrag.graph_service import graph_service
@@ -33,7 +31,6 @@ async def update_graph_embeddings(
     Note:
         - HashGNN 알고리즘으로 그래프 구조 학습
         - 관계 타입별로 다른 해시 함수 사용 (heterogeneous=True)
-        - EXTENDS ≠ HAS_TOPIC ≠ SIMILAR_TO 구분 가능
         - 전체 그래프에 대해 1회 실행
         - 처리 시간이 오래 걸릴 수 있음 (문서 수에 비례)
     """
@@ -52,15 +49,17 @@ async def analyze_document_relations(
         doc_id: Annotated[str | None, Body(embed=True)] = None,
         top_k: Annotated[int, Body(embed=True)] = 4,
         text_weight: Annotated[float, Body(embed=True)] = 0.4,
-        graph_weight: Annotated[float, Body(embed=True)] = 0.6
+        graph_weight: Annotated[float, Body(embed=True)] = 0.3,
+        normalized_value_weight: Annotated[float, Body(embed=True)] = 0.3
 ):
     """Document 간 관계 분석 및 생성 (Step 3)
 
     Args:
         doc_id: 분석할 Document ID (None이면 전체 문서 분석)
-        top_k: 관련 문서 최대 개수 (기본: 10)
-        text_weight: 텍스트 유사도 가중치 (기본: 0.6)
-        graph_weight: 그래프 임베딩 유사도 가중치 (기본: 0.4)
+        top_k: 관련 문서 최대 개수 (기본: 4)
+        text_weight: 텍스트 유사도 가중치 (기본: 0.4)
+        graph_weight: 그래프 임베딩 유사도 가중치 (기본: 0.3)
+        normalized_value_weight: NormalizedValue 공유 가중치 (기본: 0.3)
 
     Flow:
         Step 1: /metadata/extract - 문서 추가 (text_embedding)
@@ -68,8 +67,9 @@ async def analyze_document_relations(
         Step 3: /graph/relations/analyze - 관계 분석 ← 현재
 
     Note:
-        - 하이브리드 검색: 텍스트 + 그래프 임베딩 + 그래프 구조
-        - LLM으로 의미적 관계 추론 (EXTENDS, USES, PREREQUISITE_OF 등)
+        - 하이브리드 검색: 텍스트 임베딩 + 그래프 임베딩 + NormalizedValue 공유
+        - NormalizedValue 공유로 Key-Value 쌍의 실제 값 유사도 반영
+        - LLM으로 의미적 관계 추론 (SIMILAR_TO, EXTENDS, CONTRADICTS 등)
         - doc_id=null: 모든 문서에 대해 관계 분석
         - 처리 시간이 오래 걸릴 수 있음 (문서 수 × top_k × LLM 호출)
     """
@@ -81,7 +81,8 @@ async def analyze_document_relations(
         doc_id=doc_id,
         top_k=top_k,
         text_weight=text_weight,
-        graph_weight=graph_weight
+        graph_weight=graph_weight,
+        normalized_value_weight=normalized_value_weight
     )
     return APIResponseModel(
         result=result,
@@ -92,7 +93,7 @@ async def analyze_document_relations(
 @router.post("/search", tags=["graph"], response_model=GraphRAGSearchResponse,
              response_class=JSONResponse)
 async def search_graph_rag(request: GraphRAGSearchRequest):
-    """사용자 질의 기반 Graph RAG 검색
+    """사용자 질의 기반 Graph RAG 검색 (Key-Value 구조)
 
     Args:
         request: GraphRAGSearchRequest
@@ -103,41 +104,34 @@ async def search_graph_rag(request: GraphRAGSearchRequest):
         GraphRAGSearchResponse
             - query: 사용자 질의
             - documents: 검색된 Document 목록 (벡터 유사도 순)
-            - common_metadata: 검색된 Document들의 공통 Category/Tag 집계
-                * categories: Category별 출현 빈도 및 비율
-                * common_tags: Tag별 출현 빈도 및 비율
+            - graph: Key-Value 그래프 구조
 
     Note:
-        - 벡터 검색으로 관련 Document 찾기
-        - 공통 메타데이터(Category, Tag)를 집계하여 검색 결과 요약 제공
+        - 텍스트 임베딩 벡터 검색 + Reranker + LLM 검증
+        - Key-Value 그래프 구조 반환
         - 답변 생성(Generation)은 포함하지 않음
 
     Example:
         Request:
         {
-            "query": "암환자 케어 가능한 병원",
+            "query": "병상수가 100개 이상인 병원",
             "top_k": 5
         }
 
         Response:
         {
-            "query": "암환자 케어 가능한 병원",
+            "query": "병상수가 100개 이상인 병원",
             "documents": [
                 {
                     "doc_id": "hospital_001",
                     "text": "...",
-                    "description": "세브란스 협력센터",
+                    "description": "병원데이터_test.jsonl",
                     "score": 0.95
                 }
             ],
-            "common_metadata": {
-                "categories": [
-                    {"name": "중소형병원", "doc_count": 5, "coverage": 1.0}
-                ],
-                "common_tags": [
-                    {"name": "암환자케어", "doc_count": 5, "coverage": 1.0},
-                    {"name": "병상가용", "doc_count": 4, "coverage": 0.8}
-                ]
+            "graph": {
+                "nodes": [...],
+                "relationships": [...]
             }
         }
     """
@@ -149,52 +143,6 @@ async def search_graph_rag(request: GraphRAGSearchRequest):
     return GraphRAGSearchResponse(**result)
 
 
-@router.post("/explore", tags=["graph"], response_model=NodeExploreResponse,
-             response_class=JSONResponse)
-async def explore_node(request: NodeExploreRequest):
-    """노드 중심 1-hop 그래프 탐색
-
-    Args:
-        request: NodeExploreRequest
-            - node_id: 탐색할 노드 ID
-
-    Returns:
-        NodeExploreResponse
-            - center_node: 중심 노드 정보
-            - connected_documents: 연결된 Document 목록
-            - graph: 중심 노드 기준 1-hop 그래프 구조
-
-    Note:
-        - 클릭한 노드를 중심으로 depth 1 연결된 모든 노드/관계 반환
-        - 연결된 Document들도 함께 반환하여 탐색 가능
-
-    Example:
-        Request:
-        {
-            "node_id": "hospital_001"
-        }
-
-        Response:
-        {
-            "center_node": {
-                "id": "hospital_001",
-                "labels": ["Document"],
-                "properties": {"description": "..."}
-            },
-            "connected_documents": [
-                {"doc_id": "related_001", "text": "...", "score": 0}
-            ],
-            "graph": {
-                "nodes": [...],
-                "relationships": [...]
-            }
-        }
-    """
-    result = graph_service.graphrag_service.explore_node(
-        node_id=request.node_id
-    )
-
-    return NodeExploreResponse(**result)
 
 
 @router.get("/viewer", tags=["graph"], include_in_schema=False)

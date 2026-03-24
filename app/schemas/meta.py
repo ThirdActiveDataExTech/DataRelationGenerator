@@ -1,4 +1,4 @@
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Union, Any
 
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, field_validator
@@ -77,22 +77,6 @@ class DocumentRelationResult(BaseModel):
     )
 
 
-class QueryCondition(BaseModel):
-    """쿼리 조건"""
-    type: Literal["entity", "property"] = Field(..., description="조건 타입: entity (Entity 노드와 연결) 또는 property (Document 속성)")
-    value: str = Field(..., description="조건 값 (예: '가평', '재활의학과', '종합병원')")
-    semantic: str = Field(..., description="의미적 역할 (예: '위치', '진료과목', '병원유형')")
-
-
-class QueryGraphPattern(BaseModel):
-    """쿼리 그래프 패턴"""
-    target: str = Field(default="Document", description="검색 대상 노드 타입 (보통 'Document')")
-    conditions: List[QueryCondition] = Field(
-        default_factory=list,
-        description="검색 조건 목록. 조건이 없으면 빈 배열 반환"
-    )
-
-
 Base = declarative_base()
 
 
@@ -129,12 +113,6 @@ document_relation_tool = pydantic_function_tool(
     DocumentRelationResult,
     name="infer_document_relations",
     description="새 문서와 기존 유사 문서들 간의 의미적 관계를 추론합니다."
-)
-
-query_graph_tool = pydantic_function_tool(
-    QueryGraphPattern,
-    name="parse_query_to_graph",
-    description="검색 쿼리를 그래프 패턴으로 변환합니다. 쿼리에서 검색 조건들을 추출하여 그래프 구조로 표현합니다."
 )
 
 
@@ -179,4 +157,27 @@ cluster_normalization_tool = pydantic_function_tool(
     ClusterNormalizationResult,
     name="normalize_cluster",
     description="유사한 값들의 클러스터를 분석하여 적절한 정규화 값을 생성합니다."
+)
+
+
+class QueryKeyInferenceResult(BaseModel):
+    """쿼리에 필요한 Key 추론 결과"""
+    keys: List[str] = Field(
+        default_factory=list,
+        description="검색에 필요한 Key 이름 목록 (예: ['병원명', '지역'])"
+    )
+    search_terms: Dict[str, Union[str, Dict[str, Any]]] = Field(
+        default_factory=dict,
+        description=(
+            "각 Key에서 검색할 값. "
+            "텍스트 검색: {'병원명': '365매일한방병원'}, "
+            "숫자 조건: {'병상수': {'operator': '>=', 'value': 100}}"
+        )
+    )
+
+
+query_key_inference_tool = pydantic_function_tool(
+    QueryKeyInferenceResult,
+    name="infer_required_keys",
+    description="사용자 질문을 분석하여 필요한 그래프 Key들을 추론합니다."
 )
