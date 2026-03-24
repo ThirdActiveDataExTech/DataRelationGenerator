@@ -21,10 +21,10 @@ from app.schemas.meta import (
     cypher_tool,
     category_generation_tool,
     document_relation_tool,
-    query_graph_tool,
     document_relevance_tool,
     key_value_extraction_tool,
-    cluster_normalization_tool
+    cluster_normalization_tool,
+    query_key_inference_tool
 )
 from app.schemas.schema_analysis import schema_analysis_tool
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
@@ -39,11 +39,11 @@ class LLMResponse:
         "document_relation_inference": (
         DOCUMENT_RELATION_INFERENCE_PROMPT_NAME, DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL),
         "cypher_generate": (GENERATE_CYPHER_PROMPT_NAME, GENERATE_CYPHER_PROMPT_LABEL),
-        "query_graph_parsing": ("query_graph_parsing", "production"),
         "document_relevance_verification": ("document_relevance_verification", "production"),
         "key_value_extract": ("key_value_extract", "production"),
         "cluster_normalize": ("cluster_normalize", "production"),
         "schema_analysis": ("schema_analysis", "production"),
+        "query_key_inference": ("query_key_inference", "production"),
     }
 
     def __init__(self, task: str):
@@ -107,8 +107,6 @@ class LLMResponse:
             tools = [category_generation_tool]
         elif self.task == "document_relation_inference":
             tools = [document_relation_tool]
-        elif self.task == "query_graph_parsing":
-            tools = [query_graph_tool]
         elif self.task == "document_relevance_verification":
             tools = [document_relevance_tool]
         elif self.task == "key_value_extract":
@@ -117,6 +115,8 @@ class LLMResponse:
             tools = [cluster_normalization_tool]
         elif self.task == "schema_analysis":
             tools = [schema_analysis_tool]
+        elif self.task == "query_key_inference":
+            tools = [query_key_inference_tool]
         else:
             tools = []
 

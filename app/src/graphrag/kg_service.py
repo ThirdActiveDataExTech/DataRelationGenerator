@@ -10,8 +10,7 @@ from app.config import settings
 from app.repositories.graph_repository import GraphRepository
 from app.repositories.graph_queries import (
     GET_DOCUMENTS_BY_IDS,
-    SEARCH_BY_GRAPH_EMBEDDING,
-    GET_GRAPH_CONNECTIONS
+    SEARCH_BY_GRAPH_EMBEDDING
 )
 
 
@@ -29,21 +28,20 @@ class KnowledgeGraphService:
             doc_id: str,
             doc_text: str,
             top_k: int = 10,
-            text_weight: float = 0.6,
-            graph_weight: float = 0.4,
-            use_graph_structure: bool = True
+            text_weight: float = 0.4,
+            graph_weight: float = 0.3,
+            normalized_value_weight: float = 0.3
     ) -> List[Dict[str, Any]]:
-        """하이브리드 검색: 텍스트 유사도 + 그래프 임베딩 유사도 + 그래프 연결 정보"""
+        """하이브리드 검색: 텍스트 + 그래프 임베딩 + 공유 NormalizedValue"""
         try:
             text_results = self._search_by_text_embedding(doc_text)
             graph_embedding_scores = self._search_by_graph_embedding(doc_id, top_k=50)
+            normalized_value_scores = self._calculate_normalized_value_overlap(doc_id, top_k=50)
 
             combined_results = self._combine_search_scores(
-                doc_id, text_results, graph_embedding_scores, text_weight, graph_weight
+                doc_id, text_results, graph_embedding_scores, normalized_value_scores,
+                text_weight, graph_weight, normalized_value_weight
             )
-
-            if use_graph_structure:
-                self._add_graph_structure_info(doc_id, combined_results)
 
             sorted_results = sorted(
                 combined_results.values(),
@@ -87,17 +85,56 @@ class KnowledgeGraphService:
         )
         return text_retriever.search(query_text=doc_text, top_k=50)
 
+    def _calculate_normalized_value_overlap(
+            self,
+            doc_id: str,
+            top_k: int = 50
+    ) -> Dict[str, float]:
+        """공유하는 NormalizedValue 개수 기반 유사도 (Jaccard)"""
+        query = """
+        MATCH (d1:Document {id: $doc_id})<-[:EXTRACTED_FROM]-(v1:Value)-[:SAME_AS]->(nv:NormalizedValue)
+        MATCH (d2:Document)<-[:EXTRACTED_FROM]-(v2:Value)-[:SAME_AS]->(nv)
+        WHERE d1.id <> d2.id
+        WITH d2, count(DISTINCT nv) as shared_count
+        MATCH (d1:Document {id: $doc_id})<-[:EXTRACTED_FROM]-(v1_all:Value)-[:SAME_AS]->(:NormalizedValue)
+        WITH d2, shared_count, count(DISTINCT v1_all) as d1_total
+        MATCH (d2)<-[:EXTRACTED_FROM]-(v2_all:Value)-[:SAME_AS]->(:NormalizedValue)
+        WITH d2, shared_count, d1_total, count(DISTINCT v2_all) as d2_total
+        WITH d2.id as doc_id,
+             shared_count,
+             d1_total + d2_total - shared_count as union_count
+        RETURN doc_id,
+               CASE WHEN union_count > 0
+                    THEN toFloat(shared_count) / toFloat(union_count)
+                    ELSE 0.0
+               END as jaccard_score
+        ORDER BY jaccard_score DESC
+        LIMIT $top_k
+        """
+        try:
+            results = self.graph_repo.execute_query(query, {"doc_id": doc_id, "top_k": top_k})
+            return {row["doc_id"]: row["jaccard_score"] for row in results}
+        except (ServiceUnavailable, ClientError) as e:
+            logging.warning(f"NormalizedValue overlap 계산 실패 (doc_id: {doc_id}) - DB 오류: {e}")
+            return {}
+        except (ValueError, KeyError) as e:
+            logging.warning(f"NormalizedValue overlap 계산 실패 (doc_id: {doc_id}) - 데이터 오류: {e}")
+            return {}
+
     def _combine_search_scores(
             self,
             doc_id: str,
             text_results,
             graph_embedding_scores: Dict[str, float],
+            normalized_value_scores: Dict[str, float],
             text_weight: float,
-            graph_weight: float
+            graph_weight: float,
+            normalized_value_weight: float
     ) -> Dict[str, Dict[str, Any]]:
-        """검색 점수 결합"""
+        """검색 점수 결합: 텍스트 + 그래프 임베딩 + NormalizedValue overlap"""
         combined_results = {}
 
+        # 1. 텍스트 임베딩 점수
         for item in text_results.items:
             candidate_id = self._extract_doc_id(item.content)
             if not candidate_id or candidate_id == doc_id:
@@ -109,10 +146,11 @@ class KnowledgeGraphService:
                 "doc_id": candidate_id,
                 "text_score": text_score,
                 "graph_embedding_score": 0,
-                "graph_score": 0,
+                "normalized_value_score": 0,
                 "combined_score": text_weight * text_score
             }
 
+        # 2. 그래프 임베딩 점수
         for candidate_id, graph_emb_score in graph_embedding_scores.items():
             if candidate_id == doc_id:
                 continue
@@ -125,19 +163,28 @@ class KnowledgeGraphService:
                     "doc_id": candidate_id,
                     "text_score": 0,
                     "graph_embedding_score": graph_emb_score,
-                    "graph_score": 0,
+                    "normalized_value_score": 0,
                     "combined_score": graph_weight * graph_emb_score
                 }
 
-        return combined_results
+        # 3. NormalizedValue overlap 점수
+        for candidate_id, nv_score in normalized_value_scores.items():
+            if candidate_id == doc_id:
+                continue
 
-    def _add_graph_structure_info(self, doc_id: str, combined_results: Dict[str, Dict[str, Any]]):
-        """그래프 구조 정보 추가"""
-        for candidate_id in list(combined_results.keys()):
-            graph_data = self._get_graph_connections(doc_id, candidate_id)
-            combined_results[candidate_id]["shared_entities"] = graph_data["shared_entities"]
-            combined_results[candidate_id]["shared_topics"] = graph_data["shared_topics"]
-            combined_results[candidate_id]["graph_score"] = graph_data["graph_score"]
+            if candidate_id in combined_results:
+                combined_results[candidate_id]["normalized_value_score"] = nv_score
+                combined_results[candidate_id]["combined_score"] += normalized_value_weight * nv_score
+            else:
+                combined_results[candidate_id] = {
+                    "doc_id": candidate_id,
+                    "text_score": 0,
+                    "graph_embedding_score": 0,
+                    "normalized_value_score": nv_score,
+                    "combined_score": normalized_value_weight * nv_score
+                }
+
+        return combined_results
 
     def _enrich_with_document_info(self, sorted_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """문서 상세 정보 추가"""
@@ -153,12 +200,10 @@ class KnowledgeGraphService:
                 "doc_id": result["doc_id"],
                 "text": doc_info_map.get(result["doc_id"], {}).get("text", ""),
                 "description": doc_info_map.get(result["doc_id"], {}).get("description", ""),
-                "shared_topics": result.get("shared_topics", []),
-                "shared_entities": result.get("shared_entities", []),
-                "graph_score": result.get("graph_score", 0),
                 "combined_score": result.get("combined_score", 0),
                 "text_score": result.get("text_score", 0),
-                "graph_embedding_score": result.get("graph_embedding_score", 0)
+                "graph_embedding_score": result.get("graph_embedding_score", 0),
+                "normalized_value_score": result.get("normalized_value_score", 0)
             }
             for result in sorted_results
         ]
@@ -196,170 +241,3 @@ class KnowledgeGraphService:
         except (ValueError, KeyError) as e:
             logging.warning(f"그래프 임베딩 검색 실패 (doc_id: {doc_id}) - 데이터 오류: {e}")
             return {}
-
-    def _get_graph_connections(self, source_doc_id: str, target_doc_id: str) -> Dict[str, Any]:
-        """두 문서 간의 그래프 연결 정보 조회"""
-        result = self.graph_repo.execute_query(
-            GET_GRAPH_CONNECTIONS,
-            {'source_id': source_doc_id, 'target_id': target_doc_id}
-        )
-
-        if not result:
-            return {"shared_topics": [], "shared_entities": [], "graph_score": 0}
-
-        return {
-            "shared_topics": result[0].get("shared_topics", []),
-            "shared_entities": result[0].get("shared_entities", []),
-            "graph_score": result[0].get("graph_score", 0)
-        }
-
-    def find_related_documents_by_entity(
-            self,
-            query_text: str,
-            top_k_entities: int = 5,
-            top_k_docs: int = 10
-    ) -> List[Dict[str, Any]]:
-        """Entity 중심 검색
-
-        1. Query → Entity 추출 (LLM)
-        2. Entity 임베딩 유사도 검색
-        3. RELATED_TO 2-hop 확장
-        4. MENTIONS 역방향 → Document 수집
-
-        Args:
-            query_text: 검색 쿼리
-            top_k_entities: Entity 검색 결과 수
-            top_k_docs: 최종 Document 결과 수
-
-        Returns:
-            Document 목록
-        """
-        try:
-            # Step 1: Query에서 Entity 추출
-            query_entities = self._extract_entities_from_query(query_text)
-            if not query_entities:
-                logging.warning(f"Query에서 Entity 추출 실패: {query_text}")
-                return []
-
-            logging.info(f"Query Entities: {query_entities}")
-
-            # Step 2: Entity 유사도 검색
-            entity_candidates = []
-            for entity in query_entities:
-                similar_entities = self._search_similar_entities(entity, top_k_entities)
-                entity_candidates.extend(similar_entities)
-
-            if not entity_candidates:
-                logging.warning(f"유사 Entity 검색 실패")
-                return []
-
-            # 중복 제거
-            unique_entities = list(set([e["entity_name"] for e in entity_candidates]))
-            logging.info(f"유사 Entity {len(unique_entities)}개 발견: {unique_entities[:10]}")
-
-            # Step 3: RELATED_TO 확장
-            expanded_entities = self._expand_via_related_to(unique_entities)
-            logging.info(f"RELATED_TO 확장 후 {len(expanded_entities)}개 Entity")
-
-            # Step 4: Document 수집
-            doc_results = self._collect_documents_from_entities(expanded_entities, top_k_docs)
-            logging.info(f"최종 {len(doc_results)}개 Document 반환")
-
-            return doc_results
-
-        except (ServiceUnavailable, ClientError):
-            logging.exception(f"Entity 중심 검색 실패 - DB 오류")
-            return []
-        except (ValueError, KeyError, AttributeError):
-            logging.exception(f"Entity 중심 검색 실패 - 데이터 처리 오류")
-            return []
-
-    def _extract_entities_from_query(self, query_text: str) -> List[str]:
-        """LLM으로 Query에서 Entity 추출"""
-        from app.src.meta_extract.llm_response import LLMResponse
-
-        try:
-            result = LLMResponse("entity_extract_from_query").generate_llm_response(
-                variables={"query_text": query_text}
-            )
-            return result.get("entities", []) if isinstance(result, dict) else []
-        except Exception as e:
-            logging.error(f"Entity 추출 실패: {e}")
-            return []
-
-    def _search_similar_entities(
-            self,
-            entity_name: str,
-            top_k: int
-    ) -> List[Dict[str, Any]]:
-        """Entity 노드에서 vector search"""
-        entity_emb = self.embedder.embed_query(entity_name)
-
-        query = """
-        CALL db.index.vector.queryNodes('entity_embedding_index', $top_k, $embedding)
-        YIELD node, score
-        RETURN node.name as entity_name, score
-        """
-
-        try:
-            result = self.graph_repo.execute_query(
-                query,
-                {"top_k": top_k, "embedding": entity_emb}
-            )
-            return result
-        except Exception as e:
-            logging.warning(f"Entity 벡터 검색 실패: {e}")
-            return []
-
-    def _expand_via_related_to(self, entity_names: List[str]) -> List[str]:
-        """RELATED_TO로 2-hop 확장"""
-        if not entity_names:
-            return []
-
-        query = """
-        MATCH (e:Entity)
-        WHERE e.name IN $entity_names
-        MATCH (e)-[:RELATED_TO*1..2]-(related:Entity)
-        RETURN DISTINCT related.name as entity_name
-        ORDER BY related.name
-        LIMIT 100
-        """
-
-        try:
-            result = self.graph_repo.execute_query(query, {"entity_names": entity_names})
-            expanded = [r["entity_name"] for r in result]
-            return list(set(entity_names + expanded))  # 원본 + 확장
-        except Exception as e:
-            logging.warning(f"RELATED_TO 확장 실패: {e}")
-            return entity_names  # 실패 시 원본만 반환
-
-    def _collect_documents_from_entities(
-            self,
-            entity_names: List[str],
-            top_k: int
-    ) -> List[Dict[str, Any]]:
-        """Entity → MENTIONS 역방향으로 Document 수집"""
-        if not entity_names:
-            return []
-
-        query = """
-        MATCH (e:Entity)<-[:MENTIONS]-(d:Document)
-        WHERE e.name IN $entity_names
-        WITH d, count(DISTINCT e) as entity_overlap
-        ORDER BY entity_overlap DESC
-        LIMIT $top_k
-        RETURN d.id as doc_id,
-               d.text as text,
-               d.description as description,
-               entity_overlap
-        """
-
-        try:
-            result = self.graph_repo.execute_query(
-                query,
-                {"entity_names": entity_names, "top_k": top_k}
-            )
-            return result
-        except Exception as e:
-            logging.error(f"Document 수집 실패: {e}")
-            return []

@@ -92,12 +92,27 @@ class GraphRepository:
         """
         self.execute_query(query)
 
-    def create_entity_embedding_index(self) -> None:
-        """Entity 노드의 binary_embedding property에 대한 vector index 생성"""
+    def create_key_name_embedding_index(self) -> None:
+        """Key 노드의 name_embedding property에 대한 vector index 생성"""
         query = """
-        CREATE VECTOR INDEX entity_embedding_index IF NOT EXISTS
-        FOR (e:Entity)
-        ON e.binary_embedding
+        CREATE VECTOR INDEX key_name_embedding_index IF NOT EXISTS
+        FOR (k:Key)
+        ON k.name_embedding
+        OPTIONS {
+            indexConfig: {
+                `vector.dimensions`: 768,
+                `vector.similarity_function`: 'cosine'
+            }
+        }
+        """
+        self.execute_query(query)
+
+    def create_value_embedding_index(self) -> None:
+        """Value 노드의 value_embedding property에 대한 vector index 생성"""
+        query = """
+        CREATE VECTOR INDEX value_embedding_index IF NOT EXISTS
+        FOR (v:Value)
+        ON v.value_embedding
         OPTIONS {
             indexConfig: {
                 `vector.dimensions`: 768,
@@ -146,7 +161,10 @@ class GraphRepository:
             생성된 관계 개수
         """
         if not relations:
+            logging.info(f"[create_document_relations] relations가 비어있음")
             return 0
+
+        logging.info(f"[create_document_relations] source_doc_id={source_doc_id}, relations={relations}")
 
         # APOC 사용 시도 (MERGE로 중복 방지)
         query = """
@@ -174,10 +192,16 @@ class GraphRepository:
             "relations": relations
         }
 
+        logging.info(f"[create_document_relations] 쿼리 실행 파라미터: {parameters}")
+
         try:
             results = self.execute_query(query, parameters)
             count = results[0]["count"] if results else 0
-            logging.info(f"Document {source_doc_id}에 대해 {count}개의 관계 처리 완료")
+            logging.info(f"[create_document_relations] Document {source_doc_id}에 대해 {count}개의 관계 처리 완료")
+
+            if count == 0 and relations:
+                logging.warning(f"[create_document_relations] 관계 데이터는 있지만 생성된 관계가 0개. target 문서가 존재하지 않을 가능성")
+
             return count
         except Exception as e:
             logging.error(f"Document 관계 생성 실패 (APOC): {e}")
