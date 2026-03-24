@@ -50,22 +50,31 @@ class GraphPatternMatcher:
 
         logging.info(f"[Graph Pattern] 매칭된 Key: {matched_keys}")
 
-        # 3. 각 Key-검색어 조합으로 Document 검색
-        all_doc_ids = set()
+        # 3. 각 Key-검색어 조합으로 Document 검색 (AND 조건)
+        # 교집합을 위해 각 Key별로 충분히 많은 결과를 가져옴
+        search_limit = top_k * 20  # 교집합 고려하여 20배 확장
+        all_doc_ids = None
 
-        for key_info in matched_keys:
+        for idx, key_info in enumerate(matched_keys):
             key_name = key_info["key_name"]
             original_key = key_info["original_key"]
             search_term = search_terms.get(original_key, query)  # fallback to full query
 
-            doc_ids = self._search_documents_by_key_value(key_name, search_term, top_k)
+            doc_ids = self._search_documents_by_key_value(key_name, search_term, search_limit)
             logging.info(
                 f"[Graph Pattern] Key '{key_name}' + Term '{search_term}' → {len(doc_ids)}개 Document"
             )
-            all_doc_ids.update(doc_ids)
 
-        result_doc_ids = list(all_doc_ids)[:top_k]
-        logging.info(f"[Graph Pattern] 총 {len(result_doc_ids)}개 Document 매칭")
+            # 첫 번째 Key는 그대로, 이후는 교집합(AND)
+            if idx == 0:
+                all_doc_ids = set(doc_ids)
+            else:
+                all_doc_ids = all_doc_ids.intersection(doc_ids)
+                logging.info(f"[Graph Pattern] 교집합 적용 후 → {len(all_doc_ids)}개 Document")
+
+        result_doc_ids = list(all_doc_ids) if all_doc_ids else []
+        result_doc_ids = result_doc_ids[:top_k]
+        logging.info(f"[Graph Pattern] 최종 {len(result_doc_ids)}개 Document 반환 (AND 조건, top_k={top_k})")
 
         return result_doc_ids
 
@@ -166,14 +175,109 @@ class GraphPatternMatcher:
     def _search_documents_by_key_value(
             self,
             key_name: str,
+            search_term: Any,
+            top_k: int = 50
+    ) -> List[str]:
+        """특정 Key의 Value에서 검색하여 Document 반환
+
+        Args:
+            key_name: Key 이름 (예: "BIZPLC NM", "병상수")
+            search_term: 검색어 또는 숫자 조건
+                - 문자열: 벡터 유사도 검색 (예: "365매일한방병원")
+                - dict: 숫자 조건 (예: {"operator": ">=", "value": 100})
+            top_k: 최대 반환 개수
+
+        Returns:
+            Document ID 목록
+        """
+        # 숫자 조건인 경우
+        if isinstance(search_term, dict) and "operator" in search_term and "value" in search_term:
+            return self._search_by_numeric_condition(key_name, search_term, top_k)
+
+        # 텍스트 검색인 경우
+        return self._search_by_text_similarity(key_name, str(search_term), top_k)
+
+    def _search_by_numeric_condition(
+            self,
+            key_name: str,
+            condition: Dict[str, Any],
+            top_k: int = 50
+    ) -> List[str]:
+        """숫자 조건으로 Document 검색
+
+        Args:
+            key_name: Key 이름
+            condition: {"operator": ">=", "value": 100}
+            top_k: 최대 반환 개수
+
+        Returns:
+            Document ID 목록
+        """
+        operator = condition.get("operator", "==")
+        value = condition.get("value")
+
+        if value is None:
+            logging.warning(f"[Numeric Search] value가 없음: {condition}")
+            return []
+
+        # Cypher 연산자 검증
+        valid_operators = {">=", ">", "<=", "<", "==", "="}
+        if operator not in valid_operators:
+            logging.warning(f"[Numeric Search] 잘못된 연산자: {operator}")
+            return []
+
+        # 디버그: 해당 Key의 Value들 샘플 조회 (전체 속성 확인)
+        debug_query = """
+        MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
+        RETURN properties(v) as all_properties, labels(v) as labels
+        LIMIT 5
+        """
+
+        try:
+            debug_results = self.graph_repo.execute_query(debug_query, {"key_name": key_name})
+            logging.info(f"[DEBUG] Key '{key_name}'의 Value 노드 전체 속성:")
+            for idx, row in enumerate(debug_results):
+                logging.info(f"  [{idx}] {row}")
+        except Exception as e:
+            logging.warning(f"[DEBUG] Value 샘플 조회 실패: {e}")
+
+        # Value.name을 숫자로 변환하여 비교 (속성명은 'name'임!)
+        # 쉼표 제거하여 변환 시도
+        query = f"""
+        MATCH (k:Key {{name: $key_name}})-[:HAS_VALUE]->(v:Value)-[:EXTRACTED_FROM]->(d:Document)
+        WITH v, d, replace(v.name, ',', '') as clean_value
+        WHERE toFloatOrNull(clean_value) IS NOT NULL
+          AND toFloat(clean_value) {operator} $value
+        RETURN DISTINCT d.id as doc_id
+        LIMIT $top_k
+        """
+
+        try:
+            results = self.graph_repo.execute_query(
+                query,
+                {"key_name": key_name, "value": float(value), "top_k": top_k}
+            )
+
+            doc_ids = [row["doc_id"] for row in results]
+            logging.info(
+                f"[Numeric Search] Key '{key_name}' {operator} {value} → {len(doc_ids)}개 Document")
+            return doc_ids
+
+        except Exception as e:
+            logging.exception(f"[Numeric Search] 검색 실패: {e}")
+            return []
+
+    def _search_by_text_similarity(
+            self,
+            key_name: str,
             search_term: str,
             top_k: int = 50
     ) -> List[str]:
-        """특정 Key의 Value에서 벡터 유사도로 검색하여 Document 반환
+        """텍스트 유사도로 Document 검색 (기존 벡터 검색 로직)
 
         Args:
-            key_name: Key 이름 (예: "BIZPLC NM")
-            search_term: 검색어 (예: "365매일한방병원")
+            key_name: Key 이름
+            search_term: 검색어
             top_k: 최대 반환 개수
 
         Returns:
@@ -210,9 +314,9 @@ class GraphPatternMatcher:
 
             doc_ids = [row["doc_id"] for row in results]
             logging.info(
-                f"[Value Vector Search] Key '{key_name}' + Term '{search_term}' → {len(doc_ids)}개 Document (벡터 검색)")
+                f"[Text Vector Search] Key '{key_name}' + Term '{search_term}' → {len(doc_ids)}개 Document")
             return doc_ids
 
         except Exception as e:
-            logging.exception(f"[Value Vector Search] 검색 실패: {e}")
+            logging.exception(f"[Text Vector Search] 검색 실패: {e}")
             return []

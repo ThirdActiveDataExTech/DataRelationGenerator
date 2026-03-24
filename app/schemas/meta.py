@@ -1,4 +1,4 @@
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Union, Any
 
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field, field_validator
@@ -166,9 +166,13 @@ class QueryKeyInferenceResult(BaseModel):
         default_factory=list,
         description="검색에 필요한 Key 이름 목록 (예: ['병원명', '지역'])"
     )
-    search_terms: Dict[str, str] = Field(
+    search_terms: Dict[str, Union[str, Dict[str, Any]]] = Field(
         default_factory=dict,
-        description="각 Key에서 검색할 값 (예: {'병원명': '365매일한방병원', '지역': '경기도'})"
+        description=(
+            "각 Key에서 검색할 값. "
+            "텍스트 검색: {'병원명': '365매일한방병원'}, "
+            "숫자 조건: {'병상수': {'operator': '>=', 'value': 100}}"
+        )
     )
 
 
