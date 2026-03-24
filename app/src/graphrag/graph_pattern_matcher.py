@@ -169,7 +169,7 @@ class GraphPatternMatcher:
             search_term: str,
             top_k: int = 50
     ) -> List[str]:
-        """특정 Key의 Value에서 검색어를 찾고 해당 Document 반환
+        """특정 Key의 Value에서 벡터 유사도로 검색하여 Document 반환
 
         Args:
             key_name: Key 이름 (예: "BIZPLC NM")
@@ -179,12 +179,22 @@ class GraphPatternMatcher:
         Returns:
             Document ID 목록
         """
-        # Value.name에서 검색어 포함하는 것 찾기
+        # 1. 검색어 임베딩 생성
+        search_embedding = embedding_service.generate_embedding(search_term)
+
+        # 2. Value 벡터 검색 + Key 필터링
         query = """
-        MATCH (k:Key {{name: $key_name}})-[:HAS_VALUE]->(v:Value)
-        WHERE v.name CONTAINS $search_term
+        MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
+        WITH collect(elementId(v)) as valid_value_ids
+
+        CALL db.index.vector.queryNodes('value_embedding_index', $top_k * 3, $search_embedding)
+        YIELD node, score
+        WHERE elementId(node) IN valid_value_ids
+
+        WITH node as v, score
         MATCH (v)-[:EXTRACTED_FROM]->(d:Document)
-        RETURN DISTINCT d.id as doc_id
+        RETURN DISTINCT d.id as doc_id, max(score) as score
+        ORDER BY score DESC
         LIMIT $top_k
         """
 
@@ -193,15 +203,16 @@ class GraphPatternMatcher:
                 query,
                 {
                     "key_name": key_name,
-                    "search_term": search_term,
+                    "search_embedding": search_embedding,
                     "top_k": top_k
                 }
             )
 
             doc_ids = [row["doc_id"] for row in results]
+            logging.info(
+                f"[Value Vector Search] Key '{key_name}' + Term '{search_term}' → {len(doc_ids)}개 Document (벡터 검색)")
             return doc_ids
 
         except Exception as e:
-            logging.exception(f"[Value Search] 검색 실패: {e}")
+            logging.exception(f"[Value Vector Search] 검색 실패: {e}")
             return []
-

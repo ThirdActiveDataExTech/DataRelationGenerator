@@ -107,6 +107,21 @@ class GraphRepository:
         """
         self.execute_query(query)
 
+    def create_value_embedding_index(self) -> None:
+        """Value 노드의 value_embedding property에 대한 vector index 생성"""
+        query = """
+        CREATE VECTOR INDEX value_embedding_index IF NOT EXISTS
+        FOR (v:Value)
+        ON v.value_embedding
+        OPTIONS {
+            indexConfig: {
+                `vector.dimensions`: 768,
+                `vector.similarity_function`: 'cosine'
+            }
+        }
+        """
+        self.execute_query(query)
+
     def create_fulltext_index_entity(self) -> None:
         """Entity 노드의 name property에 대한 Full-Text Index 생성 (CJK 분석기)"""
         query = """

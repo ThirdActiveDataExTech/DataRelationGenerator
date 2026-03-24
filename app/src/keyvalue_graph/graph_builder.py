@@ -104,19 +104,30 @@ class KeyValueGraphBuilder:
         logger.info(f"Centrality 노드 생성: {centrality_name}")
 
     def _create_document_node(self, record: DataRecord) -> None:
-        """Document 노드 생성.
+        """Document 노드 생성 + binary_text_embedding 추가.
 
         Args:
             record: 데이터 레코드
         """
         import json
+        from app.src.embedding.embedding_service import embedding_service
+
+        raw_text = json.dumps(record.raw_data, ensure_ascii=False)
+
+        # 텍스트 임베딩 생성
+        try:
+            text_embedding = embedding_service.generate_embedding(raw_text, show_progress_bar=False)
+        except Exception as e:
+            logger.warning(f"Document '{record.get_document_id()}' 임베딩 생성 실패: {e}, 0벡터로 대체")
+            text_embedding = [0.0] * 768
 
         query = """
         CREATE (d:Document {
             id: $doc_id,
             source_file: $source_file,
             record_index: $record_index,
-            raw_text: $raw_text
+            raw_text: $raw_text,
+            binary_text_embedding: $binary_text_embedding
         })
         """
         self.graph_repo.execute_query(
@@ -125,7 +136,8 @@ class KeyValueGraphBuilder:
                 "doc_id": record.get_document_id(),
                 "source_file": record.source_file,
                 "record_index": record.record_index,
-                "raw_text": json.dumps(record.raw_data, ensure_ascii=False),
+                "raw_text": raw_text,
+                "binary_text_embedding": text_embedding,
             },
         )
 
@@ -170,7 +182,7 @@ class KeyValueGraphBuilder:
         )
 
     def _create_value_node(self, key_name: str, value: str, value_type: str) -> str:
-        """Value 노드 생성.
+        """Value 노드 생성 + value_embedding 추가.
 
         Args:
             key_name: Key명
@@ -180,7 +192,16 @@ class KeyValueGraphBuilder:
         Returns:
             Value ID (key_name:value 형식)
         """
+        from app.src.embedding.embedding_service import embedding_service
+
         value_id = f"{key_name}:{value}"
+
+        # Value로 임베딩 생성
+        try:
+            value_embedding = embedding_service.generate_embedding(value, show_progress_bar=False)
+        except Exception as e:
+            logger.warning(f"Value '{value}' 임베딩 생성 실패: {e}, 0벡터로 대체")
+            value_embedding = [0.0] * 384
 
         query = """
         MERGE (v:Value {id: $value_id})
@@ -188,6 +209,7 @@ class KeyValueGraphBuilder:
             v.name = $value,
             v.value_type = $value_type,
             v.key_name = $key_name,
+            v.value_embedding = $value_embedding,
             v.created_at = datetime()
         """
         self.graph_repo.execute_query(
@@ -197,6 +219,7 @@ class KeyValueGraphBuilder:
                 "value": value,
                 "value_type": value_type,
                 "key_name": key_name,
+                "value_embedding": value_embedding,
             },
         )
 
