@@ -12,6 +12,8 @@
 
 ## 개요
 
+![System Architecture](./docs/images/architecture.png)
+
 다양한 데이터 소스의 액티브 메타데이터를 수집하고, **Key-Value 기반 그래프 구조**로 데이터 간 관계를 자동 생성하는 시스템입니다.
 
 정적 메타데이터 중심의 기존 방식을 넘어, 데이터의 특징과 사용 맥락을 반영하여 **능동적으로 생성·확장·갱신되는 액티브 메타데이터**를 기반으로 데이터 간 의미적 관계와 잠재적 연관성을 탐색할 수 있습니다.
@@ -241,11 +243,7 @@ data-relation-generate/
 ├── static/                         # 정적 파일 (그래프 뷰어)
 ├── tests/                          # 테스트
 ├── .env                            # 환경 변수
-├── pyproject.toml                  # 프로젝트 설정 및 의존성
-├── CLAUDE.md                       # 개발 가이드
-├── ImplementScope.md               # 구현 범위
-├── GRAPH_STRUCTURE.md              # 그래프 구조 설계
-└── TODO.md                         # 작업 목록
+└── pyproject.toml                  # 프로젝트 설정 및 의존성
 ```
 
 ---
@@ -286,16 +284,6 @@ environment:
 $ uv run pytest -v
 ```
 
-### 코드 품질 검사
-
-```bash
-# Ruff 린트
-$ uv run ruff check .
-
-# Pyright 타입 체크
-$ uv run pyright
-```
-
 ### Neo4j 관리
 
 ```bash
@@ -314,21 +302,6 @@ $ docker compose down -v
 # 재시작
 $ docker compose restart neo4j
 ```
-
----
-
-## 문서
-
-- [구현 범위 (ImplementScope.md)](./ImplementScope.md) - 프로젝트 목표 및 배경
-- [그래프 구조 (GRAPH_STRUCTURE.md)](./GRAPH_STRUCTURE.md) - 그래프 모델 상세 설계
-- [작업 목록 (TODO.md)](./TODO.md) - 진행 상황 및 남은 작업
-- [개발 가이드 (CLAUDE.md)](./CLAUDE.md) - LangGraph 패턴 및 코딩 규칙
-
----
-
-## 라이선스
-
-LICENSE 파일 참고
 
 ---
 
