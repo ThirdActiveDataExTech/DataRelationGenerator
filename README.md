@@ -252,27 +252,28 @@ data-relation-generate/
 
 ### 서비스 구성
 
-| 서비스 | 포트 | 설명 |
-|--------|------|------|
-| neo4j | 7474 (HTTP), 7687 (Bolt) | Neo4j 그래프 데이터베이스 |
+| 서비스 | 포트 | 설명 | 버전 |
+|--------|------|------|------|
+| neo4j | 7474 (HTTP), 7687 (Bolt) | Neo4j 그래프 데이터베이스 | 5.26-community |
 
 ### 볼륨 관리
 
 Docker Compose는 다음 볼륨을 자동으로 생성하여 데이터를 영구 저장합니다:
 
-- `neo4j_data`: Neo4j 데이터베이스 파일
-- `neo4j_logs`: Neo4j 로그 파일
+- `neo4j_data`: Neo4j 데이터베이스 파일 (K8s: 20Gi PVC)
+- `neo4j_logs`: Neo4j 로그 파일 (K8s: 5Gi PVC)
 - `neo4j_import`: 데이터 임포트용 디렉토리
-- `neo4j_plugins`: Neo4j 플러그인 (APOC 등)
+- `neo4j_plugins`: Neo4j 플러그인
 
-### APOC 플러그인 활성화 (선택)
+### 개발 vs 배포 환경
 
-`docker-compose.yaml` 파일에서 주석을 해제:
-
-```yaml
-environment:
-  - NEO4J_PLUGINS=["apoc"]  # 주석 해제
-```
+| 항목 | 로컬 (Docker Compose) | K8s (배포) |
+|------|----------------------|-----------|
+| Neo4j 버전 | 5.26-community | 5.26 |
+| 인증 | `neo4j/password` (하드코딩) | Secret으로 관리 |
+| 메모리 | 동일 설정 | 동일 설정 |
+| 플러그인 | APOC, GDS | APOC, GDS |
+| 스토리지 | Named Volumes | PersistentVolumeClaim |
 
 ---
 

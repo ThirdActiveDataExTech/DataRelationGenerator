@@ -2,14 +2,19 @@ version: '3.8'
 
 services:
   neo4j:
-    image: neo4j:5.15-community
+    image: neo4j:5.26-community
     container_name: neo4j
     ports:
       - "7474:7474"  # HTTP
       - "7687:7687"  # Bolt
     environment:
       - NEO4J_AUTH=neo4j/password
-      # - NEO4J_PLUGINS=["apoc"]  # APOC 플러그인이 필요한 경우 주석 해제
+      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+      - NEO4J_server_config_strict__validation_enabled=false
+      - NEO4J_server_memory_heap_initial__size=512m
+      - NEO4J_server_memory_heap_max__size=2G
+      - NEO4J_server_memory_pagecache_size=1G
+      - TZ=Asia/Seoul
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
