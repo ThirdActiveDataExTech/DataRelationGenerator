@@ -35,54 +35,62 @@ class GraphPatternMatcher:
         key_inference = self._infer_required_keys(query)
 
         if not key_inference or not key_inference.get("keys"):
-            logging.info("[Graph Pattern] Key 추론 실패, 빈 결과 반환")
+            logging.info("  └─ Key 추론 실패")
             return []
 
         required_keys = key_inference.get("keys", [])
         search_terms = key_inference.get("search_terms", {})
 
-        logging.info(f"[Graph Pattern] 추론된 Key: {required_keys}")
-        logging.info(f"[Graph Pattern] 검색어: {search_terms}")
+        logging.info(f"  ├─ 추론된 Key: {required_keys}")
+        logging.info(f"  └─ 검색 조건: {search_terms}")
 
         # 2. Key 이름 → 실제 Key 노드 매칭 (벡터 검색)
         matched_keys = self._match_keys_by_name(required_keys)
 
         if not matched_keys:
-            logging.info("[Graph Pattern] Key 매칭 실패, 빈 결과 반환")
+            logging.info("  └─ Key 매칭 실패")
             return []
 
-        logging.info(f"[Graph Pattern] 매칭된 Key: {matched_keys}")
+        matched_key_names = [k["key_name"] for k in matched_keys]
+        logging.info(f"  └─ 매칭된 Key: {matched_key_names}")
 
         # 3. 각 Key-검색어 조합으로 Document 검색 (AND 조건)
         # 교집합을 위해 각 Key별로 충분히 많은 결과를 가져옴
         search_limit = top_k * self.SEARCH_EXPANSION_FACTOR
         all_doc_ids: set[str] | None = None
 
-        for key_info in matched_keys:
+        logging.info(f"  ├─ 검색 시작 (AND 조건)")
+        for idx, key_info in enumerate(matched_keys, 1):
             key_name = key_info["key_name"]
             original_key = key_info["original_key"]
             search_term = search_terms.get(original_key, query)  # fallback to full query
 
+            # 검색 조건 포맷팅
+            if isinstance(search_term, dict):
+                condition_str = f"{search_term.get('operator', '==')} {search_term.get('value')}"
+            else:
+                condition_str = f"~= '{search_term}'"
+
+            logging.info(f"  │  [{idx}] Key='{key_name}', Condition={condition_str}")
             doc_ids = self._search_documents_by_key_value(key_name, search_term, search_limit)
-            logging.info(
-                f"[Graph Pattern] Key '{key_name}' + Term '{search_term}' → {len(doc_ids)}개 Document"
-            )
+            logging.info(f"  │      → {len(doc_ids)}개 문서")
 
             # 첫 번째 Key는 그대로, 이후는 교집합(AND)
             if all_doc_ids is None:
                 all_doc_ids = set(doc_ids)
             else:
+                prev_count = len(all_doc_ids)
                 all_doc_ids = all_doc_ids.intersection(doc_ids)
-                logging.info(f"[Graph Pattern] 교집합 적용 후 → {len(all_doc_ids)}개 Document")
+                logging.info(f"  │      → 교집합: {prev_count}개 ∩ {len(doc_ids)}개 = {len(all_doc_ids)}개")
 
                 # 조기 종료: 교집합이 빈 집합이면 더 이상 검색 불필요
                 if len(all_doc_ids) == 0:
-                    logging.info("[Graph Pattern] 교집합 결과가 0개, 조기 종료")
+                    logging.info(f"  └─ 교집합 0개, 조기 종료")
                     break
 
         result_doc_ids = list(all_doc_ids) if all_doc_ids is not None else []
         result_doc_ids = result_doc_ids[:top_k]
-        logging.info(f"[Graph Pattern] 최종 {len(result_doc_ids)}개 Document 반환 (AND 조건, top_k={top_k})")
+        logging.info(f"  └─ 최종 결과: {len(result_doc_ids)}개 문서")
 
         return result_doc_ids
 
@@ -132,12 +140,6 @@ class GraphPatternMatcher:
                     "key_name": result["key_name"],
                     "score": result["score"]
                 })
-                logging.info(
-                    f"[Key 매칭] '{key_name}' → '{result['key_name']}' "
-                    f"(score: {result['score']:.3f})"
-                )
-            else:
-                logging.warning(f"[Key 매칭] '{key_name}'에 매칭되는 Key 없음 (threshold: {threshold})")
 
         return matched
 
@@ -281,12 +283,10 @@ class GraphPatternMatcher:
             )
 
             doc_ids = [row["doc_id"] for row in results]
-            logging.info(
-                f"[Numeric Search] Key '{key_name}' {operator} {value} → {len(doc_ids)}개 Document")
             return doc_ids
 
         except Exception as e:
-            logging.exception(f"[Numeric Search] 검색 실패: {e}")
+            logging.error(f"Numeric search 실패: {e}")
             return []
 
     def _search_by_text_similarity(
@@ -335,10 +335,8 @@ class GraphPatternMatcher:
             )
 
             doc_ids = [row["doc_id"] for row in results]
-            logging.info(
-                f"[Text Vector Search] Key '{key_name}' + Term '{search_term}' → {len(doc_ids)}개 Document")
             return doc_ids
 
         except Exception as e:
-            logging.exception(f"[Text Vector Search] 검색 실패: {e}")
+            logging.error(f"Text search 실패: {e}")
             return []
