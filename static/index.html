@@ -3,9 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Active Metadata Graph</title>
+    <title>Active Metadata Graph v2.0</title>
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <!-- Updated: 2026-03-24 - Added hover tooltip & 1-hop exploration -->
     <style>
         * {
             margin: 0;
@@ -555,10 +556,50 @@
                     ? `${label}:${node.properties.name}`
                     : node.id;
 
+                // 호버 시 모든 property 표시 (임베딩 제외)
+                let tooltip = `━━━━━━━━━━━━━━━━━━━━━━\n`;
+                tooltip += `📦 ${label}\n`;
+                tooltip += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+                tooltip += `ID: ${node.id}\n\n`;
+
+                const props = node.properties || {};
+                // 임베딩 및 불필요한 필드 제외
+                const skipKeys = [
+                    'text_embedding', 'value_embedding', 'graph_embedding', 'name_embedding',
+                    'binary_text_embedding', 'binary_value_embedding', 'binary_graph_embedding'
+                ];
+
+                const displayProps = Object.keys(props)
+                    .filter(key => !skipKeys.includes(key))
+                    .sort();
+
+                if (displayProps.length > 0) {
+                    tooltip += `[속성]\n`;
+                    displayProps.forEach(key => {
+                        let value = props[key];
+                        if (typeof value === 'string' && value.length > 80) {
+                            value = value.substring(0, 80) + '...';
+                        }
+                        if (Array.isArray(value)) {
+                            value = `[${value.length} items]`;
+                        }
+                        if (typeof value === 'object' && value !== null) {
+                            value = JSON.stringify(value);
+                            if (value.length > 80) {
+                                value = value.substring(0, 80) + '...';
+                            }
+                        }
+                        tooltip += `  • ${key}: ${value}\n`;
+                    });
+                }
+
+                tooltip += `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
+                tooltip += `💡 클릭하면 1-hop 탐색`;
+
                 return {
                     id: mergeKey,
                     label: displayLabel,
-                    title: `${label}: ${node.properties.name || node.id}`,
+                    title: tooltip,
                     color: colors,
                     shape: label === 'Document' ? 'box' : 'ellipse',
                     size: 25,
@@ -614,7 +655,121 @@
             }
 
             network = new vis.Network(container, data, options);
+
+            // 노드 클릭 시 1-hop 탐색
+            network.on('click', async function(params) {
+                console.log('클릭 이벤트 발생:', params);
+                if (params.nodes.length > 0) {
+                    const nodeId = params.nodes[0];
+                    console.log('노드 클릭:', nodeId);
+                    await exploreNode(nodeId);
+                }
+            });
+
+            // 호버 효과
+            network.on('hoverNode', function() {
+                container.style.cursor = 'pointer';
+            });
+
+            network.on('blurNode', function() {
+                container.style.cursor = 'default';
+            });
+
             console.log('그래프 렌더링 완료');
+        }
+
+        async function exploreNode(nodeId) {
+            console.log('exploreNode 함수 호출, nodeId:', nodeId);
+
+            if (!APP_CONFIG) {
+                console.error('APP_CONFIG가 없습니다');
+                alert('설정을 불러오는 중입니다.');
+                return;
+            }
+
+            const resultsDiv = document.getElementById('results');
+            const searchBtn = document.getElementById('searchBtn');
+
+            try {
+                searchBtn.disabled = true;
+                searchBtn.textContent = '탐색 중...';
+                resultsDiv.innerHTML = '<div class="loading">노드 탐색 중...</div>';
+
+                console.log('API 호출 시작:', '/graph/explore', nodeId);
+
+                const response = await fetch('/graph/explore', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-token': APP_CONFIG.x_token
+                    },
+                    body: JSON.stringify({ node_id: nodeId })
+                });
+
+                if (!response.ok) {
+                    console.error('API 응답 에러:', response.status);
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+                console.log('API 응답 데이터:', data);
+
+                // 결과 표시
+                displayExploreResults(data);
+
+                // 그래프 렌더링
+                if (data.graph && data.graph.nodes.length > 0) {
+                    console.log('그래프 렌더링:', data.graph.nodes.length, '개 노드');
+                    renderGraph(data.graph);
+                } else {
+                    console.log('그래프 데이터 없음');
+                }
+
+            } catch (error) {
+                console.error('exploreNode 에러:', error);
+                resultsDiv.innerHTML = `<div style="color: #d73a49; font-size: 13px;">오류: ${escapeHtml(error.message)}</div>`;
+            } finally {
+                searchBtn.disabled = false;
+                searchBtn.textContent = '검색';
+            }
+        }
+
+        function displayExploreResults(data) {
+            const resultsDiv = document.getElementById('results');
+
+            if (!data.center_node) {
+                resultsDiv.innerHTML = '<div class="empty-state">노드를 찾을 수 없습니다</div>';
+                return;
+            }
+
+            const centerLabel = data.center_node.labels[0] || 'Unknown';
+            const centerName = data.center_node.properties.name || data.center_node.id;
+
+            let html = `
+                <div class="status-badge" style="background: #fff5b1; color: #735c0f;">
+                    🎯 ${centerLabel}: ${centerName}
+                </div>
+                <div style="font-size: 12px; color: #6a737d; margin-bottom: 12px;">
+                    ${data.connected_documents.length}개 연결 문서
+                </div>
+            `;
+
+            if (data.connected_documents.length === 0) {
+                html += '<div class="empty-state">연결된 문서가 없습니다</div>';
+            } else {
+                data.connected_documents.forEach((doc, idx) => {
+                    html += `
+                        <div class="result-item">
+                            <div class="result-header">
+                                <div class="result-id">${idx + 1}. ${doc.doc_id}</div>
+                            </div>
+                            <div class="result-text">${doc.description || doc.text.substring(0, 120)}...</div>
+                        </div>
+                    `;
+                });
+            }
+
+            resultsDiv.innerHTML = html;
         }
     </script>
 </body>
