@@ -53,8 +53,6 @@ class BGEReranker:
                 doc_text = doc_text[:2000]
             pairs.append((query, doc_text))
 
-        logging.info(f"Reranker 점수 계산 중: {len(pairs)}개 문서")
-
         # 재순위화 점수 계산
         scores = self.model.predict(pairs)
 
@@ -68,10 +66,5 @@ class BGEReranker:
         # 상위 top_k * 2개 반환 (LLM 검증용)
         selected_count = min(top_k * 2, len(sorted_docs))
         result = sorted_docs[:selected_count]
-
-        logging.info(
-            f"Reranker 완료: {len(documents)}개 → {len(result)}개 선택 "
-            f"(점수 범위: {result[0]['rerank_score']:.3f} ~ {result[-1]['rerank_score']:.3f})"
-        )
 
         return result
