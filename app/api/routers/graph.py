@@ -145,6 +145,30 @@ async def search_graph_rag(request: GraphRAGSearchRequest):
 
 
 
+@router.post("/explore", tags=["graph"], response_class=JSONResponse)
+async def explore_node(
+        node_id: Annotated[str, Body(embed=True)]
+):
+    """노드 ID를 중심으로 1-hop 관계 탐색
+
+    Args:
+        node_id: 탐색할 노드 ID
+
+    Returns:
+        {
+            "center_node": {...},
+            "connected_documents": [...],
+            "graph": {"nodes": [...], "relationships": [...]}
+        }
+
+    Note:
+        - 클릭한 노드를 중심으로 직접 연결된 노드와 관계만 반환
+        - 그래프 시각화에서 노드 클릭 시 사용
+    """
+    result = graph_service.graphrag_service.explore_node_onehop(node_id)
+    return result
+
+
 @router.get("/viewer", tags=["graph"], include_in_schema=False)
 async def graph_viewer():
     """Graph RAG 시각화 페이지로 리다이렉트
