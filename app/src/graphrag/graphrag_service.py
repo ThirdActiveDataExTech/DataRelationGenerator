@@ -17,21 +17,18 @@ from app.repositories.graph_queries import (
     GET_DOCUMENT_INFO,
     EXTRACT_GRAPH_1HOP,
     EXTRACT_GRAPH_2HOP,
-    GET_DOCUMENT_NODES,
     GET_NODE_BY_ID,
     GET_DOCUMENTS_BY_IDS
 )
 from app.repositories.graph_repository import GraphRepository
 from app.schemas.graphrag_api import (
     GraphRAGSearchResponse,
-    NodeExploreResponse,
     GraphStructure,
-    CommonMetadata,
-    GraphNode
+    CommonMetadata
 )
+from app.src.graphrag.graph_pattern_matcher import GraphPatternMatcher
 from app.src.graphrag.reranker import BGEReranker
 from app.src.meta_extract.llm_response import LLMResponse
-from app.src.graphrag.graph_pattern_matcher import GraphPatternMatcher
 
 
 class GraphRAGService:
@@ -81,17 +78,16 @@ class GraphRAGService:
         try:
             # 1. Graph Pattern Matching 시도
             if use_graph_pattern:
-                logging.info(f"[Graph RAG] Pattern matching 시작: '{query}'")
+                logging.info(f"🔍 Query: '{query}'")
                 doc_ids = self.pattern_matcher.search_by_graph_pattern(query, top_k * 2)
-
                 if doc_ids:
-                    logging.info(f"[Graph RAG] Pattern matching 성공: {len(doc_ids)}개")
+                    logging.info(f"✓ Pattern matching: {len(doc_ids)}개 문서")
                     documents = self._get_documents_by_ids(doc_ids[:top_k])
                 else:
-                    logging.info(f"[Graph RAG] Pattern matching 결과 없음, 벡터 검색으로 fallback")
+                    logging.info(f"  └─ Pattern matching 실패, 벡터 검색으로 fallback")
                     documents = self._search_documents(query, top_k)
             else:
-                # 벡터 검색만 사용
+                logging.info(f"🔍 Query: '{query}' (벡터 검색 모드)")
                 documents = self._search_documents(query, top_k)
 
             if not documents:
@@ -101,8 +97,7 @@ class GraphRAGService:
             graph = self._extract_graph_structure(doc_ids, depth=1)
 
             logging.info(
-                f"Graph RAG 검색 완료: {len(documents)}개 Document, "
-                f"{len(graph['nodes'])}개 노드, {len(graph['relationships'])}개 관계"
+                f"✓ 검색 완료: {len(documents)}개 문서, {len(graph['nodes'])}개 노드, {len(graph['relationships'])}개 관계"
             )
 
             response = GraphRAGSearchResponse(
@@ -119,26 +114,21 @@ class GraphRAGService:
 
     def _search_documents(self, query: str, top_k: int) -> List[Dict[str, Any]]:
         """텍스트 임베딩 + Reranker + LLM 검증 기반 검색"""
-        logging.info(f"검색 시작: query='{query}', top_k={top_k}")
-
         # 1. 텍스트 임베딩 기반 검색
         vector_results = self._search_by_text_embedding(query, top_k * 10)
-        logging.info(f"[1단계] 벡터 검색 결과: {len(vector_results)}개")
-
         if not vector_results:
             return []
 
         # 2. Document 정보 추가
         enriched_results = self._enrich_vector_results(vector_results)
-        logging.info(f"[2단계] Document 정보 추가: {len(enriched_results)}개")
 
         # 3. 경량 Reranker 필터링 (BGE Reranker)
         reranked_results = self.reranker.rerank(query, enriched_results, top_k * 3)
-        logging.info(f"[3단계] Reranker 필터링: {len(enriched_results)}개 → {len(reranked_results)}개")
+        logging.info(f"→ Reranker: {len(enriched_results)}개 → {len(reranked_results)}개")
 
         # 4. LLM 검증 (상위 후보만, early stopping 적용)
         verified_results = self._verify_results_with_llm(query, reranked_results, top_k)
-        logging.info(f"[4단계] LLM 검증 통과: {len(verified_results)}개")
+        logging.info(f"→ LLM 검증: {len(verified_results)}개 통과")
 
         return verified_results[:top_k]
 
@@ -156,12 +146,10 @@ class GraphRAGService:
             top_k: 목표 결과 개수 (이만큼 확보하면 조기 종료)
         """
         verified = []
-        filtered_out = []
 
-        for idx, result in enumerate(results):
+        for result in results:
             # Early stopping: top_k개 확보하면 중단
             if len(verified) >= top_k:
-                logging.info(f"✓ {top_k}개 확보 완료, LLM 검증 조기 종료 ({idx}/{len(results)} 검증)")
                 break
 
             try:
@@ -169,9 +157,6 @@ class GraphRAGService:
                 document = result.get("text", "")
                 if len(document) > 10000:
                     document = document[:10000]
-
-                logging.info(
-                    f"[LLM 검증 {idx + 1}/{len(results)}] doc_id: {result.get('doc_id')}, text_len: {len(document)}")
 
                 # LLM 검증
                 verification = LLMResponse("document_relevance_verification").generate_llm_response(
@@ -182,33 +167,16 @@ class GraphRAGService:
                     result["llm_relevant"] = verification.get("is_relevant", False)
                     result["llm_reason"] = verification.get("reason", "")
 
-                    # 적합하다고 판단된 것만 통과
                     if result["llm_relevant"]:
-                        logging.info(f"  ✓ 통과 - {result['llm_reason'][:50]}...")
                         verified.append(result)
-                    else:
-                        logging.info(f"  ✗ 제외 - {result['llm_reason'][:100]}...")
-                        filtered_out.append({
-                            "doc_id": result.get('doc_id'),
-                            "reason": result['llm_reason']
-                        })
                 else:
-                    logging.warning(f"LLM 검증 결과가 dict가 아님: {type(verification)}")
-                    # 검증 실패시 일단 포함 (보수적 접근)
                     result["llm_relevant"] = True
                     verified.append(result)
 
             except Exception as e:
-                logging.exception(f"LLM 검증 중 에러: {e}")
-                # 검증 실패시 일단 포함
+                logging.error(f"LLM 검증 중 에러: {e}")
                 result["llm_relevant"] = True
                 verified.append(result)
-
-        logging.info(f"LLM 검증 완료: {len(results)}개 → {len(verified)}개 통과, {len(filtered_out)}개 제외")
-        if filtered_out:
-            logging.info(f"제외된 문서 목록:")
-            for item in filtered_out:
-                logging.info(f"  - {item['doc_id']}: {item['reason'][:100]}")
 
         return verified
 
@@ -304,7 +272,6 @@ class GraphRAGService:
             for row in results
         ]
 
-
     def _extract_graph_structure(
             self,
             doc_ids: List[str],
@@ -381,6 +348,147 @@ class GraphRAGService:
 
         return formatted
 
+    def explore_node_onehop(self, node_id: str) -> Dict[str, Any]:
+        """노드 ID를 중심으로 1-hop 관계만 탐색
+
+        Args:
+            node_id: 탐색할 중심 노드 ID
+
+        Returns:
+            {
+                "center_node": {...},
+                "connected_documents": [...],
+                "graph": {"nodes": [...], "relationships": [...]}
+            }
+        """
+        try:
+            logging.info(f"🔍 Explore: node_id='{node_id}'")
+
+            # 1. 중심 노드 정보 조회
+            center_node_result = self.graph_repo.execute_query(
+                GET_NODE_BY_ID,
+                {"node_id": node_id}
+            )
+
+            if not center_node_result:
+                return {
+                    "center_node": None,
+                    "connected_documents": [],
+                    "graph": {"nodes": [], "relationships": []}
+                }
+
+            # Neo4j Result를 dict로 변환
+            center_node = dict(center_node_result[0])
+
+            # 2. 1-hop 연결 노드 및 관계 조회
+            query = """
+            MATCH (center)
+            WHERE elementId(center) = $node_id OR center.id = $node_id
+
+            OPTIONAL MATCH (center)-[r]-(connected)
+
+            WITH center, collect(DISTINCT r) as relationships, collect(DISTINCT connected) as connected_nodes
+
+            RETURN center,
+                   relationships,
+                   connected_nodes
+            """
+
+            logging.info(f"  └─ Cypher: MATCH (center) WHERE elementId(center) = '{node_id}' ... OPTIONAL MATCH (center)-[r]-(connected)")
+            result = self.graph_repo.execute_query(query, {"node_id": node_id})
+
+            if not result:
+                return {
+                    "center_node": center_node,
+                    "connected_documents": [],
+                    "graph": {"nodes": [center_node], "relationships": []}
+                }
+
+            # 3. 연결된 Document 노드만 추출
+            # Neo4j Result를 dict로 변환
+            result_dict = dict(result[0])
+            connected_nodes = result_dict.get("connected_nodes", [])
+            relationships = result_dict.get("relationships", [])
+
+            doc_ids = []
+            all_nodes = [center_node]
+
+            for node in connected_nodes:
+                if not node:
+                    continue
+
+                # 이미 dict인 경우와 Neo4j Node 객체인 경우 처리
+                if isinstance(node, dict):
+                    node_dict = node
+                else:
+                    # Neo4j Node 객체를 dict로 변환
+                    node_dict = {
+                        "id": node.element_id if hasattr(node, 'element_id') else str(node.id) if hasattr(node,
+                                                                                                          'id') else str(
+                            node),
+                        "labels": list(node.labels) if hasattr(node, 'labels') else [],
+                        "properties": dict(node) if hasattr(node, 'items') else {}
+                    }
+
+                all_nodes.append(node_dict)
+
+                # Document 노드인 경우 doc_id 수집
+                labels = node_dict.get("labels", [])
+                if "Document" in labels:
+                    # properties.id 또는 node_dict.id 시도
+                    doc_id = node_dict.get("properties", {}).get("id") or node_dict.get("id")
+                    if doc_id:
+                        doc_ids.append(doc_id)
+
+            # 4. Document 상세 정보 조회
+            documents = []
+            if doc_ids:
+                documents = self._get_documents_by_ids(doc_ids)
+
+            # 5. 관계 변환 (Neo4j Relationship → dict)
+            formatted_relationships = []
+            for rel in relationships:
+                if not rel:
+                    continue
+
+                # 이미 dict인 경우와 Neo4j Relationship 객체인 경우 처리
+                if isinstance(rel, dict):
+                    rel_dict = rel
+                else:
+                    # Neo4j Relationship 객체를 dict로 변환
+                    rel_dict = {
+                        "type": rel.type if hasattr(rel, 'type') else str(rel),
+                        "start": rel.start_node.element_id if hasattr(rel, 'start_node') else None,
+                        "end": rel.end_node.element_id if hasattr(rel, 'end_node') else None,
+                        "properties": dict(rel) if hasattr(rel, 'items') else {}
+                    }
+                formatted_relationships.append(rel_dict)
+
+            # 6. 그래프 구조 포맷팅
+            graph_structure = {
+                "nodes": self._format_nodes(all_nodes),
+                "relationships": self._format_relationships(formatted_relationships)
+            }
+
+            logging.info(
+                f"✓ Explore: {len(all_nodes)}개 노드, {len(formatted_relationships)}개 관계"
+            )
+
+            return {
+                "center_node": center_node,
+                "connected_documents": documents,
+                "graph": graph_structure
+            }
+
+        except (ServiceUnavailable, TransientError, ClientError, ValueError, KeyError, AttributeError) as e:
+            logging.exception(f"1-hop 탐색 실패: {e}")
+            return {
+                "center_node": None,
+                "connected_documents": [],
+                "graph": {"nodes": [], "relationships": []},
+                "error": str(e)
+            }
+
     def _format_relationships(
             self,
             relationships: List[Dict[str, Any]],
@@ -446,5 +554,3 @@ class GraphRAGService:
             formatted.append(rel_data)
 
         return formatted
-
-
