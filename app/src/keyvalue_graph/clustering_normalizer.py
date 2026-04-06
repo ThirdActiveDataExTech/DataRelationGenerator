@@ -326,6 +326,7 @@ class ClusteringNormalizer:
         )
 
         # 2. 각 Value에서 NormalizedValue로 SAME_AS 관계 생성
+        # 동시에 Value가 연결된 Document와 NormalizedValue도 연결
         create_relation_query = """
         MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
         WHERE v.name = $value
@@ -335,6 +336,11 @@ class ClusteringNormalizer:
         ON MATCH SET
             nv.count = nv.count + 1,
             r.updated_at = datetime()
+
+        WITH v, nv
+        MATCH (v)-[:EXTRACTED_FROM]->(d:Document)
+        MERGE (d)-[r2:HAS_NORMALIZED_VALUE]->(nv)
+        ON CREATE SET r2.created_at = datetime()
         """
 
         count = 0

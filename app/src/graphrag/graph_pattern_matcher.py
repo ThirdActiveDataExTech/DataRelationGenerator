@@ -11,7 +11,7 @@ class GraphPatternMatcher:
     """Graph Pattern Matching 서비스"""
 
     # 교집합으로 인한 결과 부족을 고려한 검색 확장 계수
-    SEARCH_EXPANSION_FACTOR = 20
+    SEARCH_EXPANSION_FACTOR = 5
 
     def __init__(self, graph_repo: GraphRepository):
         """초기화"""

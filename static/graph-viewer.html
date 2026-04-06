@@ -710,10 +710,44 @@
                     displayLabel = node.properties.name || node.id;
                 }
 
+                // 호버 시 모든 property 표시
+                let tooltip = `<div style="font-family: monospace; white-space: pre-wrap;">`;
+                tooltip += `<strong style="font-size: 14px; color: #2d3748;">${label}</strong>\n`;
+                tooltip += `<strong>ID:</strong> ${node.id}\n\n`;
+
+                // properties를 보기 좋게 정렬
+                const props = node.properties || {};
+                const skipKeys = ['text_embedding', 'value_embedding', 'graph_embedding', 'name_embedding']; // 임베딩은 제외
+
+                Object.keys(props).sort().forEach(key => {
+                    if (skipKeys.includes(key)) return;
+
+                    let value = props[key];
+                    // 긴 텍스트는 줄여서 표시
+                    if (typeof value === 'string' && value.length > 100) {
+                        value = value.substring(0, 100) + '...';
+                    }
+                    // 배열은 간단히 표시
+                    if (Array.isArray(value)) {
+                        value = `[${value.length} items]`;
+                    }
+                    // 객체는 JSON 형식으로
+                    if (typeof value === 'object' && value !== null) {
+                        value = JSON.stringify(value);
+                        if (value.length > 100) {
+                            value = value.substring(0, 100) + '...';
+                        }
+                    }
+
+                    tooltip += `<strong>${key}:</strong> ${value}\n`;
+                });
+
+                tooltip += `</div>`;
+
                 return {
                     id: node.id,
                     label: displayLabel,
-                    title: `${label}: ${node.properties.name || node.id}`,
+                    title: tooltip,
                     color: colors,
                     shape: label === 'Document' ? 'box' : 'ellipse',
                     size: 30,
