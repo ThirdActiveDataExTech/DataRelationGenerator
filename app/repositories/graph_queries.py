@@ -75,7 +75,7 @@ RETURN [node IN nodes | {
 """
 
 EXTRACT_GRAPH_FROM_VALUES = """
-// 1. 검색된 Value 노드들과 연결된 Key, Document 찾기
+// 1. 검색된 Value 노드들과 연결된 Key, Document만 찾기
 MATCH (v:Value)
 WHERE v.id IN $value_ids
 
@@ -85,13 +85,9 @@ OPTIONAL MATCH (v)-[r1:EXTRACTED_FROM]->(d:Document)
 // 3. Key -> Value (HAS_VALUE)
 OPTIONAL MATCH (k:Key)-[r2:HAS_VALUE]->(v)
 
-// 4. 해당 Document들의 다른 Key-Value들도 포함 (컨텍스트 제공)
-OPTIONAL MATCH (other_v:Value)-[r3:EXTRACTED_FROM]->(d)
-OPTIONAL MATCH (other_k:Key)-[r4:HAS_VALUE]->(other_v)
-
-// 5. 모든 노드와 관계 수집
-WITH collect(DISTINCT v) + collect(DISTINCT d) + collect(DISTINCT k) + collect(DISTINCT other_v) + collect(DISTINCT other_k) as all_nodes,
-     collect(DISTINCT r1) + collect(DISTINCT r2) + collect(DISTINCT r3) + collect(DISTINCT r4) as all_rels
+// 4. 검색 조건의 Key, Value, Document만 수집 (다른 노드들은 제외)
+WITH collect(DISTINCT v) + collect(DISTINCT d) + collect(DISTINCT k) as all_nodes,
+     collect(DISTINCT r1) + collect(DISTINCT r2) as all_rels
 
 RETURN [node IN all_nodes WHERE node IS NOT NULL | {
     id: COALESCE(node.id, node.name, elementId(node)),
