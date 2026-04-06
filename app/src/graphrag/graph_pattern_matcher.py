@@ -21,7 +21,7 @@ class GraphPatternMatcher:
             self,
             query: str,
             top_k: int = 50
-    ) -> List[str]:
+    ) -> Dict[str, Any]:
         """Query를 Graph Pattern으로 변환하여 검색
 
         Args:
@@ -29,7 +29,10 @@ class GraphPatternMatcher:
             top_k: 반환할 Document ID 최대 개수
 
         Returns:
-            Document ID 리스트
+            {
+                "doc_ids": Document ID 리스트,
+                "matched_values": 매칭된 Value 정보 리스트 [{"value_id": str, "key_name": str, "value_name": str}, ...]
+            }
         """
         # 1. LLM에게 필요한 Key 추론 요청
         key_inference = self._infer_required_keys(query)
@@ -308,19 +311,29 @@ class GraphPatternMatcher:
         # 1. 검색어 임베딩 생성
         search_embedding = embedding_service.generate_embedding(search_term)
 
+        # 디버그: Key와 연결된 Value 개수 확인
+        debug_query = """
+        MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
+        RETURN count(v) as total_values, collect(v.name)[0..5] as sample_values
+        """
+        debug_result = self.graph_repo.execute_query(debug_query, {"key_name": key_name})
+        if debug_result:
+            logging.info(f"  │  └─ Key '{key_name}'의 Value 개수: {debug_result[0]['total_values']}개, 샘플: {debug_result[0]['sample_values']}")
+
         # 2. Value 벡터 검색 + Key 필터링
+        vector_limit = max(top_k * 3, 50)  # 최소 50개는 검색
         query = """
         MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
         WITH collect(elementId(v)) as valid_value_ids
 
-        CALL db.index.vector.queryNodes('value_embedding_index', $top_k * 3, $search_embedding)
+        CALL db.index.vector.queryNodes('value_embedding_index', $vector_limit, $search_embedding)
         YIELD node, score
         WHERE elementId(node) IN valid_value_ids
 
         WITH node as v, score
         MATCH (v)-[:EXTRACTED_FROM]->(d:Document)
-        RETURN DISTINCT d.id as doc_id, max(score) as score
-        ORDER BY score DESC
+        RETURN DISTINCT d.id as doc_id, max(score) as max_score
+        ORDER BY max_score DESC
         LIMIT $top_k
         """
 
@@ -330,9 +343,15 @@ class GraphPatternMatcher:
                 {
                     "key_name": key_name,
                     "search_embedding": search_embedding,
+                    "vector_limit": vector_limit,
                     "top_k": top_k
                 }
             )
+
+            if results:
+                logging.info(f"  │      → 벡터 검색 결과: {len(results)}개 (최고 유사도: {results[0].get('max_score', 0):.3f})")
+            else:
+                logging.warning(f"  │      → 벡터 검색 결과: 0개")
 
             doc_ids = [row["doc_id"] for row in results]
             return doc_ids
