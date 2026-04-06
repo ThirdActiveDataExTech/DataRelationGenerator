@@ -82,6 +82,7 @@ class GraphRepository:
         query = f"""
         CREATE VECTOR INDEX graph_embedding_index IF NOT EXISTS
         FOR (d:Document)
+        
         ON d.graph_embedding
         OPTIONS {{
             indexConfig: {{
@@ -161,10 +162,7 @@ class GraphRepository:
             생성된 관계 개수
         """
         if not relations:
-            logging.info(f"[create_document_relations] relations가 비어있음")
             return 0
-
-        logging.info(f"[create_document_relations] source_doc_id={source_doc_id}, relations={relations}")
 
         # APOC 사용 시도 (MERGE로 중복 방지)
         query = """
@@ -192,15 +190,12 @@ class GraphRepository:
             "relations": relations
         }
 
-        logging.info(f"[create_document_relations] 쿼리 실행 파라미터: {parameters}")
-
         try:
             results = self.execute_query(query, parameters)
             count = results[0]["count"] if results else 0
-            logging.info(f"[create_document_relations] Document {source_doc_id}에 대해 {count}개의 관계 처리 완료")
 
             if count == 0 and relations:
-                logging.warning(f"[create_document_relations] 관계 데이터는 있지만 생성된 관계가 0개. target 문서가 존재하지 않을 가능성")
+                logging.warning(f"관계 생성 실패 (target 문서 부재 가능성): {source_doc_id}")
 
             return count
         except Exception as e:
@@ -247,11 +242,8 @@ class GraphRepository:
                 self.execute_query(query, parameters)
                 count += 1
             except Exception as e:
-                logging.error(
-                    f"관계 생성 실패 ({source_doc_id} -[{relation_type}]-> {rel['target_doc_id']}): {e}"
-                )
+                logging.error(f"관계 생성 실패: {e}")
 
-        logging.info(f"Document {source_doc_id}에 대해 {count}개의 관계 생성 완료 (APOC 없이)")
         return count
 
     def create_entity_relations(
@@ -288,12 +280,7 @@ class GraphRepository:
             try:
                 self.execute_query(query, parameters)
                 count += 1
-                logging.info(
-                    f"Entity 관계 생성: {new_entity} -[RELATED_TO]- {candidate['name']} (score: {candidate['score']:.2f})"
-                )
             except Exception as e:
-                logging.error(
-                    f"Entity 관계 생성 실패 ({new_entity} -[RELATED_TO]- {candidate['name']}): {e}"
-                )
+                logging.error(f"Entity 관계 생성 실패: {e}")
 
         return count
