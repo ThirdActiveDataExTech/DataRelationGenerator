@@ -17,6 +17,7 @@ from app.repositories.graph_queries import (
     GET_DOCUMENT_INFO,
     EXTRACT_GRAPH_1HOP,
     EXTRACT_GRAPH_2HOP,
+    EXTRACT_GRAPH_FROM_VALUES,
     GET_NODE_BY_ID,
     GET_DOCUMENTS_BY_IDS
 )
@@ -77,11 +78,16 @@ class GraphRAGService:
         """
         try:
             # 1. Graph Pattern Matching 시도
+            value_ids = []
             if use_graph_pattern:
                 logging.info(f"🔍 Query: '{query}'")
-                doc_ids = self.pattern_matcher.search_by_graph_pattern(query, top_k * 2)
+                search_result = self.pattern_matcher.search_by_graph_pattern(query, top_k * 2)
+                doc_ids = search_result.get("doc_ids", [])
+                matched_values = search_result.get("matched_values", [])
+                value_ids = [v["value_id"] for v in matched_values]
+
                 if doc_ids:
-                    logging.info(f"✓ Pattern matching: {len(doc_ids)}개 문서")
+                    logging.info(f"✓ Pattern matching: {len(doc_ids)}개 문서, {len(value_ids)}개 Value")
                     documents = self._get_documents_by_ids(doc_ids[:top_k])
                 else:
                     logging.info(f"  └─ Pattern matching 실패, 벡터 검색으로 fallback")
@@ -93,8 +99,13 @@ class GraphRAGService:
             if not documents:
                 return GraphRAGSearchResponse.empty(query).model_dump()
 
-            doc_ids = [doc["doc_id"] for doc in documents]
-            graph = self._extract_graph_structure(doc_ids, depth=1)
+            # 2. 그래프 구성: Value 중심으로 (검색 조건이 있으면)
+            if value_ids:
+                graph = self._extract_graph_from_values(value_ids[:top_k])
+            else:
+                # Fallback: Document 중심 그래프
+                doc_ids = [doc["doc_id"] for doc in documents]
+                graph = self._extract_graph_structure(doc_ids, depth=1)
 
             logging.info(
                 f"✓ 검색 완료: {len(documents)}개 문서, {len(graph['nodes'])}개 노드, {len(graph['relationships'])}개 관계"
@@ -288,6 +299,31 @@ class GraphRAGService:
         """
         query = self._build_graph_extraction_query(depth)
         result = self.graph_repo.execute_query(query, {"doc_ids": doc_ids})
+
+        if not result:
+            return {"nodes": [], "relationships": []}
+
+        nodes = result[0].get("nodes", [])
+        relationships = result[0].get("relationships", [])
+
+        return {
+            "nodes": self._format_nodes(nodes),
+            "relationships": self._format_relationships(relationships)
+        }
+
+    def _extract_graph_from_values(
+            self,
+            value_ids: List[str]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Value 노드를 중심으로 그래프 구조 추출
+
+        Args:
+            value_ids: Value ID 목록 (검색 조건에 매칭된 Value들)
+
+        Returns:
+            그래프 구조 dict
+        """
+        result = self.graph_repo.execute_query(EXTRACT_GRAPH_FROM_VALUES, {"value_ids": value_ids})
 
         if not result:
             return {"nodes": [], "relationships": []}

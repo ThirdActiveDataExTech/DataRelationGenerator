@@ -39,7 +39,7 @@ class GraphPatternMatcher:
 
         if not key_inference or not key_inference.get("keys"):
             logging.info("  └─ Key 추론 실패")
-            return []
+            return {"doc_ids": [], "matched_values": []}
 
         required_keys = key_inference.get("keys", [])
         search_terms = key_inference.get("search_terms", {})
@@ -52,7 +52,7 @@ class GraphPatternMatcher:
 
         if not matched_keys:
             logging.info("  └─ Key 매칭 실패")
-            return []
+            return {"doc_ids": [], "matched_values": []}
 
         matched_key_names = [k["key_name"] for k in matched_keys]
         logging.info(f"  └─ 매칭된 Key: {matched_key_names}")
@@ -61,6 +61,7 @@ class GraphPatternMatcher:
         # 교집합을 위해 각 Key별로 충분히 많은 결과를 가져옴
         search_limit = top_k * self.SEARCH_EXPANSION_FACTOR
         all_doc_ids: set[str] | None = None
+        all_matched_values: List[Dict[str, Any]] = []
 
         logging.info(f"  ├─ 검색 시작 (AND 조건)")
         for idx, key_info in enumerate(matched_keys, 1):
@@ -75,8 +76,14 @@ class GraphPatternMatcher:
                 condition_str = f"~= '{search_term}'"
 
             logging.info(f"  │  [{idx}] Key='{key_name}', Condition={condition_str}")
-            doc_ids = self._search_documents_by_key_value(key_name, search_term, search_limit)
-            logging.info(f"  │      → {len(doc_ids)}개 문서")
+            search_result = self._search_documents_by_key_value(key_name, search_term, search_limit)
+            doc_ids = search_result["doc_ids"]
+            matched_values = search_result["matched_values"]
+
+            logging.info(f"  │      → {len(doc_ids)}개 문서, {len(matched_values)}개 Value")
+
+            # Value 정보 수집
+            all_matched_values.extend(matched_values)
 
             # 첫 번째 Key는 그대로, 이후는 교집합(AND)
             if all_doc_ids is None:
@@ -93,9 +100,17 @@ class GraphPatternMatcher:
 
         result_doc_ids = list(all_doc_ids) if all_doc_ids is not None else []
         result_doc_ids = result_doc_ids[:top_k]
-        logging.info(f"  └─ 최종 결과: {len(result_doc_ids)}개 문서")
 
-        return result_doc_ids
+        # Value ID 중복 제거 (상위 top_k개만)
+        unique_values = {v["value_id"]: v for v in all_matched_values}.values()
+        result_values = list(unique_values)[:top_k]
+
+        logging.info(f"  └─ 최종 결과: {len(result_doc_ids)}개 문서, {len(result_values)}개 고유 Value")
+
+        return {
+            "doc_ids": result_doc_ids,
+            "matched_values": result_values
+        }
 
     def _infer_required_keys(self, query: str) -> Dict[str, Any]:
         """LLM에게 필요한 Key들 추론 요청"""
@@ -190,7 +205,7 @@ class GraphPatternMatcher:
             key_name: str,
             search_term: Any,
             top_k: int = 50
-    ) -> List[str]:
+    ) -> Dict[str, Any]:
         """특정 Key의 Value에서 검색하여 Document 반환
 
         Args:
@@ -201,7 +216,10 @@ class GraphPatternMatcher:
             top_k: 최대 반환 개수
 
         Returns:
-            Document ID 목록
+            {
+                "doc_ids": Document ID 목록,
+                "matched_values": 매칭된 Value 정보 [{"value_id": str, "key_name": str, "value_name": str}, ...]
+            }
         """
         # 숫자 조건인 경우
         if isinstance(search_term, dict) and "operator" in search_term and "value" in search_term:
@@ -215,7 +233,7 @@ class GraphPatternMatcher:
             key_name: str,
             condition: Dict[str, Any],
             top_k: int = 50
-    ) -> List[str]:
+    ) -> Dict[str, Any]:
         """숫자 조건으로 Document 검색
 
         Args:
@@ -224,21 +242,24 @@ class GraphPatternMatcher:
             top_k: 최대 반환 개수
 
         Returns:
-            Document ID 목록
+            {
+                "doc_ids": Document ID 목록,
+                "matched_values": 매칭된 Value 정보
+            }
         """
         operator = condition.get("operator", "==")
         value = condition.get("value")
 
         if value is None:
             logging.warning(f"[Numeric Search] value가 없음: {condition}")
-            return []
+            return {"doc_ids": [], "matched_values": []}
 
         # value를 float로 변환 (예외 처리)
         try:
             numeric_value = float(value)
         except (ValueError, TypeError) as e:
             logging.warning(f"[Numeric Search] value를 float로 변환 실패: {value}, {e}")
-            return []
+            return {"doc_ids": [], "matched_values": []}
 
         # Cypher 연산자 템플릿 (SQL injection 방지)
         query_templates = {
@@ -252,7 +273,7 @@ class GraphPatternMatcher:
 
         if operator not in query_templates:
             logging.warning(f"[Numeric Search] 잘못된 연산자: {operator}")
-            return []
+            return {"doc_ids": [], "matched_values": []}
 
         # 디버그: DEBUG 레벨일 때만 Value 샘플 조회
         if logging.getLogger().isEnabledFor(logging.DEBUG):
@@ -275,7 +296,7 @@ class GraphPatternMatcher:
         WITH v, d, replace(v.name, ',', '') as clean_value
         WHERE toFloatOrNull(clean_value) IS NOT NULL
           AND {query_templates[operator]}
-        RETURN DISTINCT d.id as doc_id
+        RETURN DISTINCT d.id as doc_id, v.id as value_id, v.name as value_name
         LIMIT $top_k
         """
 
@@ -286,18 +307,27 @@ class GraphPatternMatcher:
             )
 
             doc_ids = [row["doc_id"] for row in results]
-            return doc_ids
+            matched_values = [
+                {
+                    "value_id": row["value_id"],
+                    "key_name": key_name,
+                    "value_name": row["value_name"]
+                }
+                for row in results
+            ]
+
+            return {"doc_ids": doc_ids, "matched_values": matched_values}
 
         except Exception as e:
             logging.error(f"Numeric search 실패: {e}")
-            return []
+            return {"doc_ids": [], "matched_values": []}
 
     def _search_by_text_similarity(
             self,
             key_name: str,
             search_term: str,
             top_k: int = 50
-    ) -> List[str]:
+    ) -> Dict[str, Any]:
         """텍스트 유사도로 Document 검색 (기존 벡터 검색 로직)
 
         Args:
@@ -306,7 +336,10 @@ class GraphPatternMatcher:
             top_k: 최대 반환 개수
 
         Returns:
-            Document ID 목록
+            {
+                "doc_ids": Document ID 목록,
+                "matched_values": 매칭된 Value 정보
+            }
         """
         # 1. 검색어 임베딩 생성
         search_embedding = embedding_service.generate_embedding(search_term)
@@ -332,7 +365,7 @@ class GraphPatternMatcher:
 
         WITH node as v, score
         MATCH (v)-[:EXTRACTED_FROM]->(d:Document)
-        RETURN DISTINCT d.id as doc_id, max(score) as max_score
+        RETURN DISTINCT d.id as doc_id, v.id as value_id, v.name as value_name, max(score) as max_score
         ORDER BY max_score DESC
         LIMIT $top_k
         """
@@ -354,8 +387,17 @@ class GraphPatternMatcher:
                 logging.warning(f"  │      → 벡터 검색 결과: 0개")
 
             doc_ids = [row["doc_id"] for row in results]
-            return doc_ids
+            matched_values = [
+                {
+                    "value_id": row["value_id"],
+                    "key_name": key_name,
+                    "value_name": row["value_name"]
+                }
+                for row in results
+            ]
+
+            return {"doc_ids": doc_ids, "matched_values": matched_values}
 
         except Exception as e:
             logging.error(f"Text search 실패: {e}")
-            return []
+            return {"doc_ids": [], "matched_values": []}
