@@ -295,6 +295,91 @@
             color: #0366d6;
             margin-bottom: 12px;
         }
+
+        /* 커스텀 툴팁 */
+        #nodeTooltip {
+            position: absolute;
+            background: white;
+            border: 1px solid #e1e4e8;
+            border-radius: 8px;
+            padding: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 1000;
+            pointer-events: none;
+            display: none;
+            max-width: 320px;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        #nodeTooltip.show {
+            display: block;
+        }
+
+        .tooltip-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #e1e4e8;
+        }
+
+        .tooltip-icon {
+            font-size: 18px;
+        }
+
+        .tooltip-type {
+            font-weight: 600;
+            color: #24292e;
+            font-size: 13px;
+        }
+
+        .tooltip-id {
+            color: #586069;
+            font-size: 11px;
+            font-family: monospace;
+            margin-bottom: 10px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .tooltip-props {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .tooltip-prop {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 8px;
+            font-size: 11px;
+        }
+
+        .tooltip-prop-key {
+            color: #6a737d;
+            font-weight: 500;
+        }
+
+        .tooltip-prop-value {
+            color: #24292e;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .tooltip-footer {
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px solid #e1e4e8;
+            color: #0366d6;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
     </style>
 </head>
 <body>
@@ -355,6 +440,7 @@
                     검색 결과가 그래프로 표시됩니다
                 </div>
             </div>
+            <div id="nodeTooltip"></div>
             <div class="graph-legend">
                 <h3>📊 범례</h3>
                 <div style="margin-bottom: 12px;">
@@ -540,7 +626,8 @@
 
             console.log('병합 후 노드 수:', nodeMap.size);
 
-            // 노드 변환
+            // 노드 변환 및 메타데이터 저장
+            const nodeMetadata = new Map();
             const nodes = Array.from(nodeMap.values()).map(node => {
                 const label = node.labels[0] || 'Unknown';
                 const colors = colorMap[label] || { background: '#f6f8fa', border: '#d1d5da' };
@@ -556,50 +643,43 @@
                     ? `${label}:${node.properties.name}`
                     : node.id;
 
-                // 호버 시 모든 property 표시 (임베딩 제외)
-                let tooltip = `━━━━━━━━━━━━━━━━━━━━━━\n`;
-                tooltip += `📦 ${label}\n`;
-                tooltip += `━━━━━━━━━━━━━━━━━━━━━━\n\n`;
-                tooltip += `ID: ${node.id}\n\n`;
-
+                // 노드 메타데이터 저장 (tooltip용)
                 const props = node.properties || {};
-                // 임베딩 및 불필요한 필드 제외
                 const skipKeys = [
                     'text_embedding', 'value_embedding', 'graph_embedding', 'name_embedding',
                     'binary_text_embedding', 'binary_value_embedding', 'binary_graph_embedding'
                 ];
 
-                const displayProps = Object.keys(props)
+                const displayProps = {};
+                Object.keys(props)
                     .filter(key => !skipKeys.includes(key))
-                    .sort();
-
-                if (displayProps.length > 0) {
-                    tooltip += `[속성]\n`;
-                    displayProps.forEach(key => {
+                    .sort()
+                    .forEach(key => {
                         let value = props[key];
-                        if (typeof value === 'string' && value.length > 80) {
-                            value = value.substring(0, 80) + '...';
+                        if (typeof value === 'string' && value.length > 60) {
+                            value = value.substring(0, 60) + '...';
                         }
                         if (Array.isArray(value)) {
                             value = `[${value.length} items]`;
                         }
                         if (typeof value === 'object' && value !== null) {
                             value = JSON.stringify(value);
-                            if (value.length > 80) {
-                                value = value.substring(0, 80) + '...';
+                            if (value.length > 60) {
+                                value = value.substring(0, 60) + '...';
                             }
                         }
-                        tooltip += `  • ${key}: ${value}\n`;
+                        displayProps[key] = value;
                     });
-                }
 
-                tooltip += `\n━━━━━━━━━━━━━━━━━━━━━━\n`;
-                tooltip += `💡 클릭하면 1-hop 탐색`;
+                nodeMetadata.set(mergeKey, {
+                    label,
+                    nodeId: node.id,
+                    props: displayProps
+                });
 
                 return {
                     id: mergeKey,
                     label: displayLabel,
-                    title: tooltip,
                     color: colors,
                     shape: label === 'Document' ? 'box' : 'ellipse',
                     size: 25,
@@ -666,14 +746,98 @@
                 }
             });
 
-            // 호버 효과
-            network.on('hoverNode', function() {
+            // 호버 효과 및 커스텀 tooltip
+            const tooltip = document.getElementById('nodeTooltip');
+
+            network.on('hoverNode', function(params) {
                 container.style.cursor = 'pointer';
+
+                const nodeId = params.node;
+                const metadata = nodeMetadata.get(nodeId);
+
+                if (metadata) {
+                    showTooltip(params.event, metadata);
+                }
             });
 
             network.on('blurNode', function() {
                 container.style.cursor = 'default';
+                hideTooltip();
             });
+
+            // 마우스 이동 시 tooltip 위치 업데이트
+            network.on('hoverNode', function(params) {
+                const metadata = nodeMetadata.get(params.node);
+                if (metadata && tooltip.classList.contains('show')) {
+                    updateTooltipPosition(params.event);
+                }
+            });
+
+            function showTooltip(event, metadata) {
+                const iconMap = {
+                    'Document': '📄',
+                    'Key': '🔑',
+                    'Value': '💎',
+                    'Entity': '🎯',
+                    'Topic': '🏷️'
+                };
+
+                let html = `
+                    <div class="tooltip-header">
+                        <div class="tooltip-icon">${iconMap[metadata.label] || '📦'}</div>
+                        <div class="tooltip-type">${metadata.label}</div>
+                    </div>
+                    <div class="tooltip-id">${escapeHtml(metadata.nodeId)}</div>
+                `;
+
+                const propKeys = Object.keys(metadata.props);
+                if (propKeys.length > 0) {
+                    html += '<div class="tooltip-props">';
+                    propKeys.slice(0, 5).forEach(key => {
+                        html += `
+                            <div class="tooltip-prop">
+                                <div class="tooltip-prop-key">${escapeHtml(key)}</div>
+                                <div class="tooltip-prop-value">${escapeHtml(String(metadata.props[key]))}</div>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                }
+
+                html += `
+                    <div class="tooltip-footer">
+                        💡 클릭하면 1-hop 탐색
+                    </div>
+                `;
+
+                tooltip.innerHTML = html;
+                updateTooltipPosition(event);
+                tooltip.classList.add('show');
+            }
+
+            function hideTooltip() {
+                tooltip.classList.remove('show');
+            }
+
+            function updateTooltipPosition(event) {
+                const graphPanel = document.querySelector('.graph-panel');
+                const rect = graphPanel.getBoundingClientRect();
+
+                let x = event.clientX - rect.left + 15;
+                let y = event.clientY - rect.top + 15;
+
+                // 화면 밖으로 나가지 않도록 조정
+                const tooltipRect = tooltip.getBoundingClientRect();
+                if (x + tooltipRect.width > rect.width) {
+                    x = event.clientX - rect.left - tooltipRect.width - 15;
+                }
+                if (y + tooltipRect.height > rect.height) {
+                    y = event.clientY - rect.top - tooltipRect.height - 15;
+                }
+
+                tooltip.style.left = x + 'px';
+                tooltip.style.top = y + 'px';
+            }
 
             console.log('그래프 렌더링 완료');
         }
