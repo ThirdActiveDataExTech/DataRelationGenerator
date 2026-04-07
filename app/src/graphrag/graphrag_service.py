@@ -419,11 +419,18 @@ class GraphRAGService:
             # 2. 1-hop 연결 노드 및 관계 조회
             query = """
             MATCH (center)
-            WHERE elementId(center) = $node_id OR center.id = $node_id
+            WHERE elementId(center) = $node_id OR center.id = $node_id OR center.name = $node_id
 
             OPTIONAL MATCH (center)-[r]-(connected)
 
-            WITH center, collect(DISTINCT r) as relationships, collect(DISTINCT connected) as connected_nodes
+            WITH center,
+                 collect(DISTINCT connected) as connected_nodes,
+                 collect(DISTINCT {
+                     type: type(r),
+                     start: COALESCE(startNode(r).id, startNode(r).name),
+                     end: COALESCE(endNode(r).id, endNode(r).name),
+                     properties: properties(r)
+                 }) as relationships
 
             RETURN center,
                    relationships,
@@ -440,65 +447,76 @@ class GraphRAGService:
                     "graph": {"nodes": [center_node], "relationships": []}
                 }
 
-            # 3. 연결된 Document 노드만 추출
-            # Neo4j Result를 dict로 변환
+            # 3. 연결된 노드 추출 및 변환
             result_dict = dict(result[0])
             connected_nodes = result_dict.get("connected_nodes", [])
             relationships = result_dict.get("relationships", [])
 
-            doc_ids = []
-            all_nodes = [center_node]
+            logging.info(f"  ├─ 연결된 노드: {len(connected_nodes)}개")
+            logging.info(f"  └─ 관계: {len(relationships)}개")
 
+            doc_ids = []
+            all_nodes = []
+
+            # Center 노드 추가
+            center_labels = center_node.get("labels", [])
+            center_props = center_node.get("properties", {})
+            center_id = center_props.get("id") or center_props.get("name") or center_node.get("id")
+
+            all_nodes.append({
+                "id": center_id,
+                "labels": center_labels,
+                "properties": center_props
+            })
+
+            # 연결된 노드들 추가
             for node in connected_nodes:
                 if not node:
                     continue
 
-                # 이미 dict인 경우와 Neo4j Node 객체인 경우 처리
-                if isinstance(node, dict):
-                    node_dict = node
-                else:
-                    # Neo4j Node 객체를 dict로 변환
+                # Neo4j Node 객체를 dict로 변환
+                if hasattr(node, 'labels'):
+                    labels = list(node.labels)
+                    props = dict(node)
+                    node_id = props.get("id") or props.get("name")
+
                     node_dict = {
-                        "id": node.element_id if hasattr(node, 'element_id') else str(node.id) if hasattr(node,
-                                                                                                          'id') else str(
-                            node),
-                        "labels": list(node.labels) if hasattr(node, 'labels') else [],
-                        "properties": dict(node) if hasattr(node, 'items') else {}
+                        "id": node_id,
+                        "labels": labels,
+                        "properties": props
                     }
+                else:
+                    # 이미 dict인 경우
+                    node_dict = node
+                    labels = node_dict.get("labels", [])
+                    node_id = node_dict.get("properties", {}).get("id") or node_dict.get("properties", {}).get("name")
 
                 all_nodes.append(node_dict)
 
                 # Document 노드인 경우 doc_id 수집
-                labels = node_dict.get("labels", [])
                 if "Document" in labels:
-                    # properties.id 또는 node_dict.id 시도
-                    doc_id = node_dict.get("properties", {}).get("id") or node_dict.get("id")
-                    if doc_id:
-                        doc_ids.append(doc_id)
+                    if node_id:
+                        doc_ids.append(node_id)
 
             # 4. Document 상세 정보 조회
             documents = []
             if doc_ids:
                 documents = self._get_documents_by_ids(doc_ids)
 
-            # 5. 관계 변환 (Neo4j Relationship → dict)
+            # 5. 관계 변환 (이미 dict로 변환됨)
             formatted_relationships = []
             for rel in relationships:
                 if not rel:
                     continue
 
-                # 이미 dict인 경우와 Neo4j Relationship 객체인 경우 처리
+                # 쿼리에서 이미 dict로 변환했으므로 그대로 사용
                 if isinstance(rel, dict):
-                    rel_dict = rel
+                    # null 값 필터링
+                    if rel.get("type") and rel.get("start") and rel.get("end"):
+                        formatted_relationships.append(rel)
+                        logging.debug(f"    관계: {rel.get('start')} -[{rel.get('type')}]-> {rel.get('end')}")
                 else:
-                    # Neo4j Relationship 객체를 dict로 변환
-                    rel_dict = {
-                        "type": rel.type if hasattr(rel, 'type') else str(rel),
-                        "start": rel.start_node.element_id if hasattr(rel, 'start_node') else None,
-                        "end": rel.end_node.element_id if hasattr(rel, 'end_node') else None,
-                        "properties": dict(rel) if hasattr(rel, 'items') else {}
-                    }
-                formatted_relationships.append(rel_dict)
+                    logging.warning(f"    dict가 아닌 관계: {type(rel)}")
 
             # 6. 그래프 구조 포맷팅
             graph_structure = {
@@ -544,6 +562,11 @@ class GraphRAGService:
 
         for rel in relationships:
             if not rel:
+                continue
+
+            # dict가 아닌 경우 스킵
+            if not isinstance(rel, dict):
+                logging.warning(f"[_format_relationships] dict가 아닌 관계: {type(rel)}")
                 continue
 
             rel_type = rel.get("type")
