@@ -15,11 +15,11 @@ interface Props {
 }
 
 const WORKFLOW_STEPS = [
-  { id: 1, name: '입력 데이터 수신', icon: '📥' },
-  { id: 2, name: '스키마 분석', icon: '🔍' },
-  { id: 3, name: 'Key-Value 추출\n& 그래프 생성', icon: '⚙️' },
-  { id: 4, name: 'Value 정규화', icon: '🔄' },
-  { id: 5, name: '완료', icon: '🎉' },
+  { id: 1, name: 'Data Ingestion', description: '입력 데이터 수신' },
+  { id: 2, name: 'Schema Analysis', description: '데이터 구조 분석' },
+  { id: 3, name: 'Graph Construction', description: 'Key-Value 추출 및 그래프 생성' },
+  { id: 4, name: 'Value Normalization', description: '데이터 정규화 및 통합' },
+  { id: 5, name: 'Completion', description: '파이프라인 완료' },
 ]
 
 export default function WorkflowVisualization({ events, isRunning }: Props) {
@@ -48,11 +48,11 @@ export default function WorkflowVisualization({ events, isRunning }: Props) {
   return (
     <div className="workflow-visualization">
       <div className="workflow-header">
-        <h2>🔄 워크플로우 진행 상태</h2>
+        <h2>Data Lineage Pipeline</h2>
         {isRunning && (
           <div className="running-indicator">
             <span className="pulse-dot"></span>
-            실행 중
+            Running
           </div>
         )}
       </div>
@@ -65,16 +65,17 @@ export default function WorkflowVisualization({ events, isRunning }: Props) {
           return (
             <div key={step.id} className="step-wrapper">
               <div className={`step-card step-${status}`}>
-                <div className="step-icon">{step.icon}</div>
+                <div className="step-number">{step.id}</div>
                 <div className="step-content">
                   <div className="step-title">{step.name}</div>
+                  <div className="step-description">{step.description}</div>
                   <div className="step-status-badge">
-                    {status === 'idle' && '대기 중'}
+                    {status === 'idle' && <span className="status-idle">● Pending</span>}
                     {status === 'processing' && (
-                      <span className="processing">⏳ 진행 중...</span>
+                      <span className="status-processing">▶ Processing...</span>
                     )}
-                    {status === 'completed' && <span className="completed">✅ 완료</span>}
-                    {status === 'error' && <span className="error">❌ 오류</span>}
+                    {status === 'completed' && <span className="status-completed">✓ Completed</span>}
+                    {status === 'error' && <span className="status-error">✗ Error</span>}
                   </div>
                   {data && (
                     <div className="step-data">
@@ -103,11 +104,11 @@ export default function WorkflowVisualization({ events, isRunning }: Props) {
       </div>
 
       <div className="logs-panel">
-        <h3>📋 실행 로그</h3>
+        <h3>Execution Logs</h3>
         <div className="logs">
           {events.length === 0 ? (
             <div className="empty-logs">
-              워크플로우를 실행하면 로그가 표시됩니다.
+              Logs will appear here when the workflow runs
             </div>
           ) : (
             <>

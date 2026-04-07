@@ -106,7 +106,7 @@ export default function WorkflowUpload() {
   return (
     <div className="workflow-container">
       <div className="upload-panel">
-        <h2>📁 파일 업로드</h2>
+        <h2>Data Upload</h2>
 
         <div className="file-input-wrapper">
           <input
@@ -119,7 +119,7 @@ export default function WorkflowUpload() {
         </div>
 
         <div className="options">
-          <h3>⚙️ 옵션</h3>
+          <h3>Pipeline Configuration</h3>
 
           <label className="checkbox-label">
             <input
@@ -128,13 +128,13 @@ export default function WorkflowUpload() {
               onChange={e => setAutoDetectSchema(e.target.checked)}
               disabled={isRunning}
             />
-            스키마 자동 감지
+            Auto-detect Schema
           </label>
 
           {autoDetectSchema && (
             <div className="option-group">
               <label>
-                샘플 크기:
+                Sample Size
                 <input
                   type="number"
                   value={sampleSize}
@@ -149,7 +149,7 @@ export default function WorkflowUpload() {
 
           <div className="option-group">
             <label>
-              유사도 임계값:
+              Similarity Threshold
               <input
                 type="number"
                 value={similarityThreshold}
@@ -164,7 +164,7 @@ export default function WorkflowUpload() {
 
           <div className="option-group">
             <label>
-              최소 클러스터 크기:
+              Min Cluster Size
               <input
                 type="number"
                 value={minClusterSize}
@@ -182,7 +182,7 @@ export default function WorkflowUpload() {
           onClick={handleSubmit}
           disabled={!file || isRunning || !config}
         >
-          {!config ? '⏳ 설정 로딩 중...' : isRunning ? '⏳ 실행 중...' : '🚀 워크플로우 실행'}
+          {!config ? 'Loading Configuration...' : isRunning ? 'Running Pipeline...' : 'Execute Pipeline'}
         </button>
       </div>
 
