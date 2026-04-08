@@ -6,7 +6,9 @@ from fastapi.responses import JSONResponse
 
 from app.schemas.response import APIResponseModel
 from app.src.keyvalue_graph.clustering_normalizer import ClusteringNormalizer
+from app.src.keyvalue_graph.data_loader import DataRecord
 from app.src.keyvalue_graph.llm_based_loader import LLMBasedKeyValueLoader
+from app.src.keyvalue_graph.rdf_graph_builder import RdfGraphBuilder
 from app.src.keyvalue_graph.schema_analyzer import SchemaAnalyzer
 
 router = APIRouter(prefix="/keyvalue", tags=["keyvalue-graph"])
@@ -325,4 +327,79 @@ async def analyze_data_schema(
             f"추출 가능 메타데이터 {len(schema.extractable_metadata)}개, "
             f"신뢰도={schema.confidence:.2f}"
         )
+    )
+
+
+@router.post("/rdf/extract", tags=["keyvalue-graph"], response_model=APIResponseModel, response_class=JSONResponse)
+async def extract_key_value_as_rdf(
+    data: Annotated[str, Body(embed=True)], centrality_name: Annotated[str, Body(embed=True)] = "병원현황"
+):
+    """데이터에서 Key-Value를 추출하고 RDF(JSON-LD)로 변환.
+
+    Args:
+        data: 원본 데이터 (JSON 문자열)
+        centrality_name: 중심 노드 이름 (예: "병원현황", "판례정보")
+
+    Returns:
+        JSON-LD 딕셔너리
+    """
+    import json as json_mod
+
+    raw_data = json_mod.loads(data.strip())
+    record = DataRecord(source_file="api_request", record_index=0, raw_data=raw_data)
+    record.extract_key_values()
+
+    builder = RdfGraphBuilder()
+    result = builder.build_from_record(record, centrality_name=centrality_name)
+
+    if result.success:
+        return APIResponseModel(
+            result={"document_id": result.document_id, "json_ld": result.json_ld},
+            description=f"RDF(JSON-LD) 변환 완료 (Centrality: {centrality_name}, Document ID: {result.document_id})",
+        )
+    else:
+        return APIResponseModel(
+            result={"document_id": result.document_id, "error": result.message},
+            description=f"RDF 변환 실패: {result.message}",
+        )
+
+
+@router.post("/rdf/batch_extract", tags=["keyvalue-graph"], response_model=APIResponseModel, response_class=JSONResponse)
+async def batch_extract_as_rdf(file: Annotated[UploadFile, File()], centrality_name: str = "병원현황"):
+    """JSON 배열 파일에서 Key-Value를 추출하고 RDF(JSON-LD)로 배치 변환.
+
+    Args:
+        file: JSON 배열 파일 [{...}, {...}, ...]
+        centrality_name: 중심 노드 이름
+
+    Returns:
+        배치 처리 결과 (JSON-LD 리스트 포함)
+    """
+    import json as json_mod
+
+    content = await file.read()
+    data_list = json_mod.loads(content.decode("utf-8"))
+
+    if not isinstance(data_list, list):
+        data_list = [data_list]
+
+    builder = RdfGraphBuilder()
+    records = []
+    for idx, raw_data in enumerate(data_list):
+        record = DataRecord(
+            source_file=file.filename or "batch_upload",
+            record_index=idx,
+            raw_data=raw_data,
+        )
+        record.extract_key_values()
+        records.append(record)
+
+    batch_result = builder.build_batch(records, centrality_name=centrality_name)
+
+    return APIResponseModel(
+        result=batch_result,
+        description=(
+            f"RDF 배치 변환 완료 (Centrality: {centrality_name}): "
+            f"{batch_result['success']}건 성공, {batch_result['failed']}건 실패"
+        ),
     )
