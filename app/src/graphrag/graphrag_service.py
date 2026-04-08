@@ -88,7 +88,9 @@ class GraphRAGService:
 
                 if doc_ids:
                     logging.info(f"✓ Pattern matching: {len(doc_ids)}개 문서, {len(value_ids)}개 Value")
-                    documents = self._get_documents_by_ids(doc_ids[:top_k])
+                    # matched_values에서 doc_id별 최고 점수 추출
+                    doc_scores = self._extract_doc_scores(doc_ids[:top_k], matched_values)
+                    documents = self._get_documents_by_ids(doc_ids[:top_k], doc_scores)
                 else:
                     logging.info(f"  └─ Pattern matching 실패, 벡터 검색으로 fallback")
                     documents = self._search_documents(query, top_k)
@@ -263,8 +265,67 @@ class GraphRAGService:
             "description": result[0].get("description", "")
         }
 
-    def _get_documents_by_ids(self, doc_ids: List[str]) -> List[Dict[str, Any]]:
-        """Document ID 리스트로 Document 정보 조회 (Graph Pattern Matching용)"""
+    def _extract_doc_scores(
+            self,
+            doc_ids: List[str],
+            matched_values: List[Dict[str, Any]]
+    ) -> Dict[str, float]:
+        """matched_values에서 doc_id별 최고 점수 추출
+
+        Args:
+            doc_ids: Document ID 목록
+            matched_values: Value 매칭 결과 (value_id, score 포함)
+
+        Returns:
+            {doc_id: max_score} 매핑
+        """
+        # Value ID에서 Document ID 매핑 조회
+        value_ids = [v["value_id"] for v in matched_values]
+        if not value_ids:
+            return {doc_id: 1.0 for doc_id in doc_ids}
+
+        query = """
+        UNWIND $value_ids as vid
+        MATCH (v:Value {id: vid})-[:EXTRACTED_FROM]->(d:Document)
+        RETURN v.id as value_id, d.id as doc_id
+        """
+
+        try:
+            results = self.graph_repo.execute_query(query, {"value_ids": value_ids})
+            value_to_doc = {row["value_id"]: row["doc_id"] for row in results}
+
+            # doc_id별 최고 점수 계산
+            doc_scores: Dict[str, float] = {}
+            for value_info in matched_values:
+                value_id = value_info["value_id"]
+                score = value_info.get("score", 1.0)
+                doc_id = value_to_doc.get(value_id)
+
+                if doc_id and doc_id in doc_ids:
+                    doc_scores[doc_id] = max(doc_scores.get(doc_id, 0), score)
+
+            # 매핑되지 않은 doc_id는 기본값 1.0
+            for doc_id in doc_ids:
+                if doc_id not in doc_scores:
+                    doc_scores[doc_id] = 1.0
+
+            return doc_scores
+
+        except Exception as e:
+            logging.warning(f"점수 추출 실패: {e}, 기본값 1.0 사용")
+            return {doc_id: 1.0 for doc_id in doc_ids}
+
+    def _get_documents_by_ids(
+            self,
+            doc_ids: List[str],
+            doc_scores: Dict[str, float] = None
+    ) -> List[Dict[str, Any]]:
+        """Document ID 리스트로 Document 정보 조회 (Graph Pattern Matching용)
+
+        Args:
+            doc_ids: Document ID 목록
+            doc_scores: doc_id별 점수 (없으면 1.0)
+        """
         if not doc_ids:
             return []
 
@@ -278,7 +339,7 @@ class GraphRAGService:
                 "doc_id": row["doc_id"],
                 "text": row.get("text", ""),
                 "description": row.get("description", ""),
-                "score": 1.0  # Pattern matching은 binary (match or not)
+                "score": doc_scores.get(row["doc_id"], 1.0) if doc_scores else 1.0
             }
             for row in results
         ]
@@ -461,7 +522,7 @@ class GraphRAGService:
             # Center 노드 추가
             center_labels = center_node.get("labels", [])
             center_props = center_node.get("properties", {})
-            center_id = center_props.get("id") or center_props.get("name") or center_node.get("id")
+            center_id: str | None = center_props.get("id") or center_props.get("name") or center_node.get("id")
 
             all_nodes.append({
                 "id": center_id,
@@ -478,10 +539,10 @@ class GraphRAGService:
                 if hasattr(node, 'labels'):
                     labels = list(node.labels)
                     props = dict(node)
-                    node_id = props.get("id") or props.get("name")
+                    connected_node_id: str | None = props.get("id") or props.get("name")
 
                     node_dict = {
-                        "id": node_id,
+                        "id": connected_node_id,
                         "labels": labels,
                         "properties": props
                     }
@@ -489,14 +550,14 @@ class GraphRAGService:
                     # 이미 dict인 경우
                     node_dict = node
                     labels = node_dict.get("labels", [])
-                    node_id = node_dict.get("properties", {}).get("id") or node_dict.get("properties", {}).get("name")
+                    connected_node_id: str | None = node_dict.get("properties", {}).get("id") or node_dict.get("properties", {}).get("name")
 
                 all_nodes.append(node_dict)
 
                 # Document 노드인 경우 doc_id 수집
                 if "Document" in labels:
-                    if node_id:
-                        doc_ids.append(node_id)
+                    if connected_node_id:
+                        doc_ids.append(connected_node_id)
 
             # 4. Document 상세 정보 조회
             documents = []

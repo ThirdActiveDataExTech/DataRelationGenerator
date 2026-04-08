@@ -31,6 +31,48 @@ const COLOR_MAP: Record<string, { background: string; border: string }> = {
   Centrality: { background: '#fce7f3', border: '#ec4899' },
 }
 
+function formatTooltip(node: GraphNode): string {
+  const label = node.labels[0] || 'Unknown'
+  const props = node.properties
+
+  // 임베딩 제외한 주요 속성만 추출
+  const displayProps: Record<string, any> = {}
+  for (const [key, value] of Object.entries(props)) {
+    if (!key.includes('embedding') && value !== null && value !== undefined) {
+      displayProps[key] = value
+    }
+  }
+
+  // 툴팁 HTML 생성
+  let tooltip = `<div style="font-family: monospace; font-size: 12px; max-width: 300px;">
+    <div style="font-weight: bold; margin-bottom: 8px; color: #1a1d29;">
+      ${label}
+    </div>
+    <div style="margin-bottom: 8px; color: #64748b;">
+      ID: ${node.id}
+    </div>`
+
+  // 주요 속성 표시
+  if (Object.keys(displayProps).length > 0) {
+    tooltip += `<div style="margin-bottom: 8px; border-top: 1px solid #e1e7ef; padding-top: 8px;">`
+    for (const [key, value] of Object.entries(displayProps)) {
+      const displayValue = typeof value === 'string' && value.length > 50
+        ? value.substring(0, 50) + '...'
+        : String(value)
+      tooltip += `<div style="margin: 4px 0; color: #475569;">
+        <span style="color: #94a3b8;">${key}:</span> ${displayValue}
+      </div>`
+    }
+    tooltip += `</div>`
+  }
+
+  tooltip += `<div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e1e7ef; color: #3b82f6; font-size: 11px;">
+    💡 클릭하면 1-hop 탐색
+  </div></div>`
+
+  return tooltip
+}
+
 export default function GraphViewer({ graph }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const networkRef = useRef<Network | null>(null)
@@ -77,6 +119,7 @@ export default function GraphViewer({ graph }: Props) {
       return {
         id: mergeKey,
         label: displayLabel,
+        title: formatTooltip(node),  // 툴팁 추가
         color: colors,
         shape: label === 'Document' ? 'box' : 'ellipse',
         font: { size: 12, color: '#1a1d29' },

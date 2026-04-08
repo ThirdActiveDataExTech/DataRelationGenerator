@@ -235,9 +235,10 @@ reason은 사용자가 그래프를 탐색할 때 "왜 이 문서들이 연결�
 # 임무
 다음 데이터를 분석하여:
 1. 데이터의 **도메인**과 **중심 개념**을 파악하고
-2. **긴 텍스트 필드에서 추출 가능한 메타데이터**를 설계하세요
+2. **모든 원본 필드명을 의미있는 한글로 변환**하고
+3. **긴 텍스트 필드에서 추출 가능한 메타데이터**를 설계하세요
 
-**중요: 원본 필드 구조는 이미 코드로 처리됩니다. 당신은 extractable_metadata 설계에만 집중하세요.**
+**중요: 모든 필드명(원본 필드 + extractable_metadata)은 반드시 한글로 작성하세요.**
 
 ## 샘플 데이터
 {sample_data}
@@ -247,7 +248,20 @@ reason은 사용자가 그래프를 탐색할 때 "왜 이 문서들이 연결�
 
 ---
 
-# 핵심 임무: 추출 가능한 메타데이터 설계 (extractable_metadata) ⭐
+# 핵심 임무 1: 원본 필드 한글 변환 (fields) ⭐⭐⭐
+
+**반드시 모든 원본 필드를 한글로 번역하세요!**
+
+예시 (병원 데이터):
+```
+원본: BIZPLC_NM → korean_name: "병원명"
+원본: GENRL_AMBLNC_VCNT → korean_name: "일반구급차수"
+원본: SICKBD_CNT → korean_name: "병상수"
+```
+
+---
+
+# 핵심 임무 2: 추출 가능한 메타데이터 설계 (extractable_metadata) ⭐
 
 **원칙:**
 1. 긴 텍스트 필드("text", "content", "description" 등)의 **내용을 분석**
@@ -347,6 +361,14 @@ extractable_metadata:
 {{
     "domain": "도메인명 (예: 의료연구, 법률, 제조업)",
     "centrality_name": "중심노드명 (예: 논문정보, 판례정보, 공장현황)",
+    "fields": {{
+        "원본필드명": {{
+            "korean_name": "의미있는 한글명",
+            "data_type": "타입 (text, number, date 등)",
+            "description": "필드 설명"
+        }},
+        ...
+    }},
     "extractable_metadata": {{
         "메타필드명": {{
             "korean_name": "한글명",
@@ -362,8 +384,9 @@ extractable_metadata:
 }}
 ```
 
-**주의:**
-- 원본 필드(fields)는 출력하지 마세요. 코드에서 자동 처리됩니다.
+**필수: 원본 필드(fields)도 반드시 출력하세요!**
+- **모든 원본 필드의 korean_name을 의미있는 한글로 번역** (예: "GENRL_AMBLNC_VCNT" → "일반구급차수")
+- 영문 약어는 풀어서 의미를 명확히 (CNT→수, NM→명, ADDR→주소 등)
 - extractable_metadata만 집중해서 설계하세요.
 - 추출 가능한 메타데이터가 없으면 extractable_metadata는 {{}}로 반환하세요.
 """
