@@ -116,6 +116,17 @@ class GraphBuildResult(BaseModel):
     message: Optional[str] = Field(None, description="메시지")
 
 
+class RdfGraphBuildResult(BaseModel):
+    """RDF 그래프 구축 결과."""
+
+    document_id: str = Field(..., description="생성된 문서 ID")
+    keys_count: int = Field(default=0, description="생성된 Key 수")
+    values_count: int = Field(default=0, description="생성된 Value 수")
+    json_ld: Optional[Any] = Field(None, description="JSON-LD 딕셔너리")
+    success: bool = Field(default=True, description="성공 여부")
+    message: Optional[str] = Field(None, description="메시지")
+
+
 # ===== 검색 모델 =====
 
 
