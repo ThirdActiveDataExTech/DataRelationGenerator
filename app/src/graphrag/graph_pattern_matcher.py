@@ -311,7 +311,8 @@ class GraphPatternMatcher:
                 {
                     "value_id": row["value_id"],
                     "key_name": key_name,
-                    "value_name": row["value_name"]
+                    "value_name": row["value_name"],
+                    "score": 1.0  # 숫자 조건은 binary match
                 }
                 for row in results
             ]
@@ -391,7 +392,8 @@ class GraphPatternMatcher:
                 {
                     "value_id": row["value_id"],
                     "key_name": key_name,
-                    "value_name": row["value_name"]
+                    "value_name": row["value_name"],
+                    "score": row.get("max_score", 0.0)  # 벡터 유사도 포함
                 }
                 for row in results
             ]
