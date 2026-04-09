@@ -46,6 +46,31 @@ export default function SearchPage() {
     }
   }
 
+  const handleNodeClick = async (nodeId: string) => {
+    if (!config) return
+
+    try {
+      const response = await fetch('/graph/explore', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-token': config.x_token,
+        },
+        body: JSON.stringify({ node_id: nodeId }),
+      })
+
+      const data = await response.json()
+
+      if (data.graph && data.graph.nodes.length > 0) {
+        // 클릭한 노드 중심으로 새로운 그래프 표시
+        setGraph(data.graph)
+      }
+    } catch (error) {
+      console.error('Node explore error:', error)
+      alert('노드 탐색 중 오류가 발생했습니다.')
+    }
+  }
+
   return (
     <div className="search-page">
       <div className="search-layout">
@@ -108,7 +133,7 @@ export default function SearchPage() {
         </div>
 
         <div className="graph-section">
-          <GraphViewer graph={graph} />
+          <GraphViewer graph={graph} onNodeClick={handleNodeClick} />
         </div>
       </div>
     </div>

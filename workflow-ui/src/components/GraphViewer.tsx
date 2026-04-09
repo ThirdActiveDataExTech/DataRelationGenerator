@@ -21,6 +21,7 @@ interface GraphData {
 
 interface Props {
   graph: GraphData | null
+  onNodeClick?: (nodeId: string) => void
 }
 
 const COLOR_MAP: Record<string, { background: string; border: string }> = {
@@ -73,7 +74,7 @@ function formatTooltip(node: GraphNode): string {
   return tooltip
 }
 
-export default function GraphViewer({ graph }: Props) {
+export default function GraphViewer({ graph, onNodeClick }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const networkRef = useRef<Network | null>(null)
 
@@ -175,13 +176,23 @@ export default function GraphViewer({ graph }: Props) {
     // 새 네트워크 생성
     networkRef.current = new Network(containerRef.current, data, options)
 
+    // 노드 클릭 이벤트 등록
+    if (onNodeClick) {
+      networkRef.current.on('click', (params) => {
+        if (params.nodes.length > 0) {
+          const nodeId = params.nodes[0]
+          onNodeClick(nodeId)
+        }
+      })
+    }
+
     return () => {
       if (networkRef.current) {
         networkRef.current.destroy()
         networkRef.current = null
       }
     }
-  }, [graph])
+  }, [graph, onNodeClick])
 
   if (!graph || graph.nodes.length === 0) {
     return (
