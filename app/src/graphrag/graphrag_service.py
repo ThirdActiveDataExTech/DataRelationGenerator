@@ -51,6 +51,27 @@ class GraphRAGService:
         return self._reranker
 
     @staticmethod
+    def _parse_node_id(node_id: str) -> tuple[str, str | None]:
+        """Synthetic ID를 파싱하여 실제 ID와 타입 추출
+
+        Args:
+            node_id: 노드 ID (synthetic ID일 수 있음)
+
+        Returns:
+            (actual_id, node_type_hint): 실제 ID와 타입 힌트
+
+        Examples:
+            "Key:병상수" -> ("병상수", "Key")
+            "Value:doc_001_병상수_100" -> ("doc_001_병상수_100", "Value")
+            "doc_001" -> ("doc_001", None)
+        """
+        if ":" in node_id:
+            parts = node_id.split(":", 1)
+            if len(parts) == 2 and parts[0] in ["Key", "Value", "NormalizedValue", "Centrality"]:
+                return parts[1], parts[0]
+        return node_id, None
+
+    @staticmethod
     def _sanitize_properties(properties: Dict[str, Any]) -> Dict[str, Any]:
         """Neo4j 속성을 JSON 직렬화 가능한 형태로 변환"""
         sanitized = {}
@@ -446,10 +467,10 @@ class GraphRAGService:
         return formatted
 
     def explore_node_onehop(self, node_id: str) -> Dict[str, Any]:
-        """노드 ID를 중심으로 1-hop 관계만 탐색
+        """노드 ID를 중심으로 1-hop 관계 탐색 (노드 타입별 다른 동작)
 
         Args:
-            node_id: 탐색할 중심 노드 ID
+            node_id: 탐색할 중심 노드 ID (synthetic ID일 수 있음: "Key:xxx", "Value:xxx")
 
         Returns:
             {
@@ -457,49 +478,55 @@ class GraphRAGService:
                 "connected_documents": [...],
                 "graph": {"nodes": [...], "relationships": [...]}
             }
+
+        노드 타입별 동작:
+            - Document: Document <- Value, Value <- Key
+            - Value: Value <- Key, Value -> NormalizedValue
+            - Key: Key -> Value, Key -> Centrality
+            - NormalizedValue: NormalizedValue <- Document
         """
         try:
             logging.info(f"🔍 Explore: node_id='{node_id}'")
 
-            # 1. 중심 노드 정보 조회
+            # Synthetic ID 파싱 (예: "Key:병상수" -> "병상수")
+            actual_node_id, node_type_hint = self._parse_node_id(node_id)
+            logging.info(f"  ├─ Parsed ID: '{actual_node_id}'")
+            logging.info(f"  └─ Type hint: {node_type_hint}")
+
+            # 1. 중심 노드 정보 조회 (실제 ID 또는 name으로)
             center_node_result = self.graph_repo.execute_query(
                 GET_NODE_BY_ID,
-                {"node_id": node_id}
+                {"node_id": actual_node_id}
             )
 
             if not center_node_result:
+                logging.warning(f"  └─ 노드를 찾을 수 없음: {actual_node_id}")
                 return {
                     "center_node": None,
                     "connected_documents": [],
                     "graph": {"nodes": [], "relationships": []}
                 }
 
-            # Neo4j Result를 dict로 변환
             center_node = dict(center_node_result[0])
+            center_labels = center_node.get("labels", [])
+            node_type = node_type_hint or (center_labels[0] if center_labels else None)
 
-            # 2. 1-hop 연결 노드 및 관계 조회
-            query = """
-            MATCH (center)
-            WHERE elementId(center) = $node_id OR center.id = $node_id OR center.name = $node_id
+            logging.info(f"  └─ 노드 타입: {node_type}")
 
-            OPTIONAL MATCH (center)-[r]-(connected)
+            # 2. 노드 타입별 쿼리 선택 (실제 ID 사용)
+            if node_type == "Document":
+                query = self._build_document_explore_query()
+            elif node_type == "Value":
+                query = self._build_value_explore_query()
+            elif node_type == "Key":
+                query = self._build_key_explore_query()
+            elif node_type == "NormalizedValue":
+                query = self._build_normalizedvalue_explore_query()
+            else:
+                # 기본 동작: 모든 1-hop 연결
+                query = self._build_default_explore_query()
 
-            WITH center,
-                 collect(DISTINCT connected) as connected_nodes,
-                 collect(DISTINCT {
-                     type: type(r),
-                     start: COALESCE(startNode(r).id, startNode(r).name),
-                     end: COALESCE(endNode(r).id, endNode(r).name),
-                     properties: properties(r)
-                 }) as relationships
-
-            RETURN center,
-                   relationships,
-                   connected_nodes
-            """
-
-            logging.info(f"  └─ Cypher: MATCH (center) WHERE elementId(center) = '{node_id}' ... OPTIONAL MATCH (center)-[r]-(connected)")
-            result = self.graph_repo.execute_query(query, {"node_id": node_id})
+            result = self.graph_repo.execute_query(query, {"node_id": actual_node_id})
 
             if not result:
                 return {
@@ -508,7 +535,7 @@ class GraphRAGService:
                     "graph": {"nodes": [center_node], "relationships": []}
                 }
 
-            # 3. 연결된 노드 추출 및 변환
+            # 3. 결과 처리
             result_dict = dict(result[0])
             connected_nodes = result_dict.get("connected_nodes", [])
             relationships = result_dict.get("relationships", [])
@@ -516,77 +543,44 @@ class GraphRAGService:
             logging.info(f"  ├─ 연결된 노드: {len(connected_nodes)}개")
             logging.info(f"  └─ 관계: {len(relationships)}개")
 
-            doc_ids = []
-            all_nodes = []
+            # 4. 노드 변환
+            all_nodes = self._convert_nodes_to_dicts([center_node] + connected_nodes)
 
-            # Center 노드 추가
-            center_labels = center_node.get("labels", [])
-            center_props = center_node.get("properties", {})
-            center_id: str | None = center_props.get("id") or center_props.get("name") or center_node.get("id")
+            logging.info(f"  ├─ 변환된 노드: {len(all_nodes)}개")
+            for node in all_nodes:
+                labels = node.get('labels', [])
+                label = labels[0] if labels else 'Unknown'
+                logging.info(f"      - {label}: id={node.get('id', 'N/A')}, props keys={list(node.get('properties', {}).keys())}")
 
-            all_nodes.append({
-                "id": center_id,
-                "labels": center_labels,
-                "properties": center_props
-            })
+            # 5. Document 목록 수집
+            doc_ids = [
+                n["id"] for n in all_nodes
+                if "Document" in n.get("labels", []) and n["id"]
+            ]
+            documents = self._get_documents_by_ids(doc_ids) if doc_ids else []
 
-            # 연결된 노드들 추가
-            for node in connected_nodes:
-                if not node:
-                    continue
+            # 6. 관계 변환
+            formatted_relationships = [
+                rel for rel in relationships
+                if isinstance(rel, dict) and rel.get("type") and rel.get("start") and rel.get("end")
+            ]
 
-                # Neo4j Node 객체를 dict로 변환
-                if hasattr(node, 'labels'):
-                    labels = list(node.labels)
-                    props = dict(node)
-                    connected_node_id: str | None = props.get("id") or props.get("name")
+            # 7. 그래프 구조 포맷팅
+            formatted_graph_nodes = self._format_nodes(all_nodes)
 
-                    node_dict = {
-                        "id": connected_node_id,
-                        "labels": labels,
-                        "properties": props
-                    }
-                else:
-                    # 이미 dict인 경우
-                    node_dict = node
-                    labels = node_dict.get("labels", [])
-                    connected_node_id: str | None = node_dict.get("properties", {}).get("id") or node_dict.get("properties", {}).get("name")
+            logging.info(f"  ├─ 포맷팅된 노드: {len(formatted_graph_nodes)}개")
+            for node in formatted_graph_nodes:
+                labels = node.get('labels', [])
+                label = labels[0] if labels else 'Unknown'
+                logging.info(f"      - {label}: id={node.get('id', 'N/A')}, has name={('name' in node.get('properties', {}))}")
 
-                all_nodes.append(node_dict)
-
-                # Document 노드인 경우 doc_id 수집
-                if "Document" in labels:
-                    if connected_node_id:
-                        doc_ids.append(connected_node_id)
-
-            # 4. Document 상세 정보 조회
-            documents = []
-            if doc_ids:
-                documents = self._get_documents_by_ids(doc_ids)
-
-            # 5. 관계 변환 (이미 dict로 변환됨)
-            formatted_relationships = []
-            for rel in relationships:
-                if not rel:
-                    continue
-
-                # 쿼리에서 이미 dict로 변환했으므로 그대로 사용
-                if isinstance(rel, dict):
-                    # null 값 필터링
-                    if rel.get("type") and rel.get("start") and rel.get("end"):
-                        formatted_relationships.append(rel)
-                        logging.debug(f"    관계: {rel.get('start')} -[{rel.get('type')}]-> {rel.get('end')}")
-                else:
-                    logging.warning(f"    dict가 아닌 관계: {type(rel)}")
-
-            # 6. 그래프 구조 포맷팅
             graph_structure = {
-                "nodes": self._format_nodes(all_nodes),
+                "nodes": formatted_graph_nodes,
                 "relationships": self._format_relationships(formatted_relationships)
             }
 
             logging.info(
-                f"✓ Explore: {len(all_nodes)}개 노드, {len(formatted_relationships)}개 관계"
+                f"✓ Explore: {len(formatted_graph_nodes)}개 노드, {len(formatted_relationships)}개 관계 반환"
             )
 
             return {
@@ -603,6 +597,174 @@ class GraphRAGService:
                 "graph": {"nodes": [], "relationships": []},
                 "error": str(e)
             }
+
+    @staticmethod
+    def _build_document_explore_query() -> str:
+        """Document 노드 탐색 쿼리: Document <- Value <- Key"""
+        return """
+        MATCH (center:Document)
+        WHERE elementId(center) = $node_id OR center.id = $node_id
+
+        OPTIONAL MATCH (value:Value)-[r1:EXTRACTED_FROM]->(center)
+        OPTIONAL MATCH (key:Key)-[r2:HAS_VALUE]->(value)
+
+        WITH center,
+             collect(DISTINCT value) + collect(DISTINCT key) as connected_nodes,
+             collect(DISTINCT r1) + collect(DISTINCT r2) as rels
+
+        RETURN center,
+               [node IN connected_nodes WHERE node IS NOT NULL | {
+                   id: COALESCE(node.id, node.name),
+                   labels: labels(node),
+                   properties: properties(node)
+               }] as connected_nodes,
+               [rel IN rels WHERE rel IS NOT NULL | {
+                   type: type(rel),
+                   start: COALESCE(startNode(rel).id, startNode(rel).name),
+                   end: COALESCE(endNode(rel).id, endNode(rel).name),
+                   properties: properties(rel)
+               }] as relationships
+        """
+
+    @staticmethod
+    def _build_value_explore_query() -> str:
+        """Value 노드 탐색 쿼리: Value <- Key, Value -> NormalizedValue"""
+        return """
+        MATCH (center:Value)
+        WHERE elementId(center) = $node_id OR center.id = $node_id OR center.name = $node_id
+
+        OPTIONAL MATCH (key:Key)-[r1:HAS_VALUE]->(center)
+        OPTIONAL MATCH (center)-[r2:SAME_AS]->(nv:NormalizedValue)
+
+        WITH center,
+             collect(DISTINCT key) + collect(DISTINCT nv) as connected_nodes,
+             collect(DISTINCT r1) + collect(DISTINCT r2) as rels
+
+        RETURN center,
+               [node IN connected_nodes WHERE node IS NOT NULL | {
+                   id: COALESCE(node.id, node.name),
+                   labels: labels(node),
+                   properties: properties(node)
+               }] as connected_nodes,
+               [rel IN rels WHERE rel IS NOT NULL | {
+                   type: type(rel),
+                   start: COALESCE(startNode(rel).id, startNode(rel).name),
+                   end: COALESCE(endNode(rel).id, endNode(rel).name),
+                   properties: properties(rel)
+               }] as relationships
+        """
+
+    @staticmethod
+    def _build_key_explore_query() -> str:
+        """Key 노드 탐색 쿼리: Key -> Value만 (Centrality 관계 없음)"""
+        return """
+        MATCH (center:Key)
+        WHERE elementId(center) = $node_id OR center.name = $node_id
+
+        OPTIONAL MATCH (center)-[r:HAS_VALUE]->(value:Value)
+
+        WITH center,
+             collect(DISTINCT value) as connected_nodes,
+             collect(DISTINCT r) as rels
+
+        RETURN center,
+               [node IN connected_nodes WHERE node IS NOT NULL | {
+                   id: COALESCE(node.id, node.name),
+                   labels: labels(node),
+                   properties: properties(node)
+               }] as connected_nodes,
+               [rel IN rels WHERE rel IS NOT NULL | {
+                   type: type(rel),
+                   start: COALESCE(startNode(rel).id, startNode(rel).name),
+                   end: COALESCE(endNode(rel).id, endNode(rel).name),
+                   properties: properties(rel)
+               }] as relationships
+        """
+
+    @staticmethod
+    def _build_normalizedvalue_explore_query() -> str:
+        """NormalizedValue 노드 탐색 쿼리: NormalizedValue <- Value <- Document"""
+        return """
+        MATCH (center:NormalizedValue)
+        WHERE elementId(center) = $node_id OR center.name = $node_id
+
+        OPTIONAL MATCH (value:Value)-[r1:SAME_AS]->(center)
+        OPTIONAL MATCH (value)-[r2:EXTRACTED_FROM]->(doc:Document)
+
+        WITH center,
+             collect(DISTINCT value) + collect(DISTINCT doc) as connected_nodes,
+             collect(DISTINCT r1) + collect(DISTINCT r2) as rels
+
+        RETURN center,
+               [node IN connected_nodes WHERE node IS NOT NULL | {
+                   id: COALESCE(node.id, node.name),
+                   labels: labels(node),
+                   properties: properties(node)
+               }] as connected_nodes,
+               [rel IN rels WHERE rel IS NOT NULL | {
+                   type: type(rel),
+                   start: COALESCE(startNode(rel).id, startNode(rel).name),
+                   end: COALESCE(endNode(rel).id, endNode(rel).name),
+                   properties: properties(rel)
+               }] as relationships
+        """
+
+    @staticmethod
+    def _build_default_explore_query() -> str:
+        """기본 탐색 쿼리: 모든 1-hop 연결"""
+        return """
+        MATCH (center)
+        WHERE elementId(center) = $node_id OR center.id = $node_id OR center.name = $node_id
+
+        OPTIONAL MATCH (center)-[r]-(connected)
+
+        WITH center,
+             collect(DISTINCT connected) as connected_nodes,
+             collect(DISTINCT {
+                 type: type(r),
+                 start: COALESCE(startNode(r).id, startNode(r).name),
+                 end: COALESCE(endNode(r).id, endNode(r).name),
+                 properties: properties(r)
+             }) as relationships
+
+        RETURN center,
+               connected_nodes,
+               relationships
+        """
+
+    def _convert_nodes_to_dicts(self, nodes: List[Any]) -> List[Dict[str, Any]]:
+        """Neo4j Node 객체들을 dict로 변환"""
+        result = []
+        for node in nodes:
+            if not node:
+                continue
+
+            if hasattr(node, 'labels'):
+                # Neo4j Node 객체
+                labels = list(node.labels)
+                props = dict(node)
+                node_id = props.get("id") or props.get("name")
+
+                result.append({
+                    "id": node_id,
+                    "labels": labels,
+                    "properties": props
+                })
+                logging.debug(f"  [Neo4j Node] {labels[0] if labels else 'Unknown'}: id={node_id}")
+            elif isinstance(node, dict):
+                # 이미 dict인 경우
+                labels = node.get("labels", [])
+                props = node.get("properties", {})
+                node_id = props.get("id") or props.get("name") or node.get("id")
+
+                result.append({
+                    "id": node_id,
+                    "labels": labels,
+                    "properties": props
+                })
+                logging.debug(f"  [Dict Node] {labels[0] if labels else 'Unknown'}: id={node_id}")
+
+        return result
 
     def _format_relationships(
             self,

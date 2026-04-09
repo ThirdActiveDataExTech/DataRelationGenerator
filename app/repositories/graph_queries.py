@@ -104,7 +104,7 @@ RETURN [node IN all_nodes WHERE node IS NOT NULL | {
 
 GET_NODE_BY_ID = """
 MATCH (n)
-WHERE n.id = $node_id OR elementId(n) = $node_id
+WHERE n.id = $node_id OR n.name = $node_id OR elementId(n) = $node_id
 RETURN elementId(n) as id, labels(n) as labels, properties(n) as properties
 LIMIT 1
 """
