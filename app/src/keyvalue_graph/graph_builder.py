@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any
 
 import logging
 
@@ -141,7 +141,7 @@ class KeyValueGraphBuilder:
             },
         )
 
-    def _create_key_node(self, key_name: str, raw_data: Dict[str, Any]) -> None:
+    def _create_key_node(self, key_name: str, raw_data: dict[str, Any]) -> None:
         """Key 노드 생성 (MERGE) + name_embedding 추가.
 
         Args:
@@ -337,7 +337,7 @@ class KeyValueGraphBuilder:
             },
         )
 
-    def build_batch(self, records: List[DataRecord], centrality_name: str = "데이터현황") -> Dict[str, Any]:
+    def build_batch(self, records: list[DataRecord], centrality_name: str = "데이터현황") -> dict[str, Any]:
         """배치로 여러 레코드 처리.
 
         Args:

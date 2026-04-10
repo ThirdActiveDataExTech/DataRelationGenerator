@@ -1,4 +1,4 @@
-from typing import Dict, List, Any
+from typing import Any
 
 import logging
 import numpy as np
@@ -30,7 +30,7 @@ class ClusteringNormalizer:
             self,
             similarity_threshold: float = 0.85,
             min_cluster_size: int = 2
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """모든 Key의 Value들을 클러스터링하여 정규화
 
         Args:
@@ -85,7 +85,7 @@ class ClusteringNormalizer:
             key_name: str,
             similarity_threshold: float = 0.80,
             min_cluster_size: int = 2
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """특정 Key의 Value들을 클러스터링하여 정규화
 
         Args:
@@ -162,7 +162,7 @@ class ClusteringNormalizer:
             "normalized_count": normalized_count
         }
 
-    def _get_all_keys(self) -> List[str]:
+    def _get_all_keys(self) -> list[str]:
         """모든 Key명 조회
 
         Returns:
@@ -176,7 +176,7 @@ class ClusteringNormalizer:
         results = self.graph_repo.execute_query(query)
         return [r["key_name"] for r in results]
 
-    def _get_values_for_key(self, key_name: str) -> List[str]:
+    def _get_values_for_key(self, key_name: str) -> list[str]:
         """특정 Key의 모든 Value 조회 (이미 정규화된 Value 제외)
 
         Args:
@@ -194,7 +194,7 @@ class ClusteringNormalizer:
         results = self.graph_repo.execute_query(query, {"key_name": key_name})
         return [r["value"] for r in results]
 
-    def _calculate_similarity_matrix(self, values: List[str]) -> np.ndarray:
+    def _calculate_similarity_matrix(self, values: list[str]) -> np.ndarray:
         """Value 간 유사도 행렬 계산
 
         Args:
@@ -220,10 +220,10 @@ class ClusteringNormalizer:
 
     def _group_by_cluster(
             self,
-            values: List[str],
+            values: list[str],
             labels: np.ndarray,
             min_cluster_size: int
-    ) -> Dict[int, List[str]]:
+    ) -> dict[int, list[str]]:
         """클러스터별로 Value 그룹화
 
         Args:
@@ -253,7 +253,7 @@ class ClusteringNormalizer:
 
         return clusters
 
-    def _select_representative(self, key_name: str, cluster_values: List[str]) -> str:
+    def _select_representative(self, key_name: str, cluster_values: list[str]) -> str:
         """클러스터 대표값 선정 (LLM 기반)
 
         LLM에게 클러스터 내 값들을 보내서 적절한 정규화 값을 생성하도록 함.
@@ -293,7 +293,7 @@ class ClusteringNormalizer:
     def _create_normalized_relations(
             self,
             key_name: str,
-            cluster_values: List[str],
+            cluster_values: list[str],
             representative: str
     ) -> int:
         """NormalizedValue 생성 및 SAME_AS 관계 생성
@@ -357,7 +357,7 @@ class ClusteringNormalizer:
 
         return count
 
-    def _try_parse_numeric(self, values: List[str]) -> tuple[List[float], bool]:
+    def _try_parse_numeric(self, values: list[str]) -> tuple[list[float], bool]:
         """값들이 모두 숫자로 변환 가능한지 체크
 
         Args:
@@ -379,10 +379,10 @@ class ClusteringNormalizer:
 
     def _numeric_gap_clustering(
         self,
-        original_values: List[str],
-        numeric_values: List[float],
+        original_values: list[str],
+        numeric_values: list[float],
         min_cluster_size: int
-    ) -> Dict[int, List[str]]:
+    ) -> dict[int, list[str]]:
         """숫자 데이터의 Gap-based 클러스터링
 
         전체 분포를 고려하여 Gap이 큰 지점을 기준으로 클러스터 분리
