@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
+
+from pydantic import BaseModel, Field
 
 from app.schemas.keyvalue_graph import ValueType
 from app.src.keyvalue_graph.field_mappings import (
@@ -9,26 +11,16 @@ from app.src.keyvalue_graph.field_mappings import (
 )
 
 
-class DataRecord:
+class DataRecord(BaseModel):
     """데이터 레코드 (하나의 JSON 객체)."""
 
-    def __init__(
-            self,
-            source_file: str,
-            record_index: int,
-            raw_data: Dict[str, Any],
-    ):
-        """레코드 초기화.
-
-        Args:
-            source_file: 원본 파일명
-            record_index: 파일 내 인덱스
-            raw_data: 원본 JSON 데이터
-        """
-        self.source_file = source_file
-        self.record_index = record_index
-        self.raw_data = raw_data
-        self.key_values: Dict[str, List[str]] = {}
+    source_file: str = Field(description="원본 파일명", examples=["data.json"])
+    record_index: int = Field(description="파일 내 인덱스", examples=[0, 1, 2])
+    raw_data: dict[str, Any] = Field(description="원본 JSON 데이터")
+    key_values: dict[str, list[str]] = Field(
+        default_factory=dict,
+        description="추출된 Key-Value 쌍 (한글 필드명: 값 목록)"
+    )
 
     def extract_key_values(self) -> None:
         """원본 데이터에서 Key-Value 쌍 추출."""
@@ -98,7 +90,7 @@ class DataLoader:
         self.file_path = file_path
         self.file_name = Path(file_path).name
 
-    def load(self) -> List[DataRecord]:
+    def load(self) -> list[DataRecord]:
         """데이터 로딩.
 
         Returns:
@@ -122,7 +114,7 @@ class DataLoader:
 
         return records
 
-    def get_all_keys(self, records: List[DataRecord]) -> List[str]:
+    def get_all_keys(self, records: list[DataRecord]) -> list[str]:
         """모든 레코드에서 사용된 Key 목록 추출.
 
         Args:
