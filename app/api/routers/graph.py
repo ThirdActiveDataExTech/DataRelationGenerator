@@ -1,3 +1,4 @@
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Body
@@ -135,7 +136,8 @@ async def search_graph_rag(request: GraphRAGSearchRequest):
             }
         }
     """
-    result = graph_service.graphrag_service.search_graph(
+    result = await asyncio.to_thread(
+        graph_service.graphrag_service.search_graph,
         query=request.query,
         top_k=request.top_k
     )
@@ -165,7 +167,10 @@ async def explore_node(
         - 클릭한 노드를 중심으로 직접 연결된 노드와 관계만 반환
         - 그래프 시각화에서 노드 클릭 시 사용
     """
-    result = graph_service.graphrag_service.explore_node_onehop(node_id)
+    result = await asyncio.to_thread(
+        graph_service.graphrag_service.explore_node_onehop,
+        node_id=node_id
+    )
     return result
 
 
