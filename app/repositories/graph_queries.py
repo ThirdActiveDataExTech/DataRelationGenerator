@@ -74,9 +74,37 @@ RETURN [node IN nodes | {
 }] as relationships
 """
 
+EXTRACT_GRAPH_FROM_VALUES = """
+// 1. 검색된 Value 노드들과 연결된 Key, Document만 찾기
+MATCH (v:Value)
+WHERE v.id IN $value_ids
+
+// 2. Value -> Document (EXTRACTED_FROM)
+OPTIONAL MATCH (v)-[r1:EXTRACTED_FROM]->(d:Document)
+
+// 3. Key -> Value (HAS_VALUE)
+OPTIONAL MATCH (k:Key)-[r2:HAS_VALUE]->(v)
+
+// 4. 검색 조건의 Key, Value, Document만 수집 (다른 노드들은 제외)
+WITH collect(DISTINCT v) + collect(DISTINCT d) + collect(DISTINCT k) as all_nodes,
+     collect(DISTINCT r1) + collect(DISTINCT r2) as all_rels
+
+RETURN [node IN all_nodes WHERE node IS NOT NULL | {
+    id: COALESCE(node.id, node.name, elementId(node)),
+    labels: labels(node),
+    properties: properties(node)
+}] as nodes,
+[rel IN all_rels WHERE rel IS NOT NULL | {
+    type: type(rel),
+    start: COALESCE(startNode(rel).id, startNode(rel).name, elementId(startNode(rel))),
+    end: COALESCE(endNode(rel).id, endNode(rel).name, elementId(endNode(rel))),
+    properties: properties(rel)
+}] as relationships
+"""
+
 GET_NODE_BY_ID = """
 MATCH (n)
-WHERE n.id = $node_id OR elementId(n) = $node_id
+WHERE n.id = $node_id OR n.name = $node_id OR elementId(n) = $node_id
 RETURN elementId(n) as id, labels(n) as labels, properties(n) as properties
 LIMIT 1
 """
