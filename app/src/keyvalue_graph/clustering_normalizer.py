@@ -6,6 +6,7 @@ from rapidfuzz import fuzz
 from sklearn.cluster import DBSCAN
 
 from app.repositories.graph_repository import GraphRepository
+from app.src.keyvalue_graph.graph_builder import KeyValueGraphBuilder
 from app.src.meta_extract.llm_response import LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ class ClusteringNormalizer:
             graph_repo: Neo4j 리포지토리
         """
         self.graph_repo = graph_repo or GraphRepository()
+        self.graph_builder = KeyValueGraphBuilder(graph_repo=self.graph_repo)
 
     def normalize_all_keys(
             self,
@@ -306,56 +308,52 @@ class ClusteringNormalizer:
         Returns:
             생성된 관계 수
         """
-        # 1. NormalizedValue 노드 생성
-        norm_id = f"{key_name}:normalized:{representative}"
-        create_norm_query = """
-        MERGE (nv:NormalizedValue {id: $norm_id})
-        ON CREATE SET
-            nv.name = $normalized_value,
-            nv.key_name = $key_name,
-            nv.count = 0,
-            nv.created_at = datetime()
-        """
-        self.graph_repo.execute_query(
-            create_norm_query,
-            {
-                "norm_id": norm_id,
-                "normalized_value": representative,
-                "key_name": key_name
-            }
-        )
+        # 1. NormalizedValue 노드 생성 (KeyValueGraphBuilder 재사용)
+        self.graph_builder.create_normalized_value_node(key_name, representative)
 
         # 2. 각 Value에서 NormalizedValue로 SAME_AS 관계 생성
-        # 동시에 Value가 연결된 Document와 NormalizedValue도 연결
-        create_relation_query = """
-        MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
-        WHERE v.name = $value
-        MATCH (nv:NormalizedValue {id: $norm_id})
-        MERGE (v)-[r:SAME_AS]->(nv)
-        ON CREATE SET r.created_at = datetime()
-        ON MATCH SET
-            nv.count = nv.count + 1,
-            r.updated_at = datetime()
-
-        WITH v, nv
-        MATCH (v)-[:EXTRACTED_FROM]->(d:Document)
-        MERGE (d)-[r2:HAS_NORMALIZED_VALUE]->(nv)
-        ON CREATE SET r2.created_at = datetime()
-        """
-
         count = 0
         for value in cluster_values:
+            value_id = f"{key_name}:{value}"
+            self.graph_builder.create_same_as_relation(value_id, key_name, representative)
+            count += 1
+
+        # 3. Document와 NormalizedValue 연결 (추가 쿼리)
+        self._create_document_normalized_relations(key_name, cluster_values, representative)
+
+        return count
+
+    def _create_document_normalized_relations(
+            self,
+            key_name: str,
+            cluster_values: list[str],
+            representative: str
+    ) -> None:
+        """Document -[HAS_NORMALIZED_VALUE]-> NormalizedValue 관계 생성
+
+        Args:
+            key_name: Key명
+            cluster_values: 클러스터 내 모든 Value
+            representative: 대표값
+        """
+        norm_id = f"{key_name}:normalized:{representative}"
+
+        for value in cluster_values:
+            query = """
+            MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value {name: $value})
+            MATCH (v)-[:EXTRACTED_FROM]->(d:Document)
+            MATCH (nv:NormalizedValue {id: $norm_id})
+            MERGE (d)-[r:HAS_NORMALIZED_VALUE]->(nv)
+            ON CREATE SET r.created_at = datetime()
+            """
             self.graph_repo.execute_query(
-                create_relation_query,
+                query,
                 {
                     "key_name": key_name,
                     "value": value,
                     "norm_id": norm_id
                 }
             )
-            count += 1
-
-        return count
 
     def _try_parse_numeric(self, values: list[str]) -> tuple[list[float], bool]:
         """값들이 모두 숫자로 변환 가능한지 체크

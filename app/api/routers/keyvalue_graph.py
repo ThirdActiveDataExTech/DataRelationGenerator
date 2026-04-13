@@ -1,19 +1,45 @@
 import json
 import logging
+from datetime import datetime
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, Body, UploadFile, File
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from app.schemas.response import APIResponseModel
 from app.src.keyvalue_graph.clustering_normalizer import ClusteringNormalizer
 from app.src.keyvalue_graph.data_loader import DataRecord
+from app.src.keyvalue_graph.graph_builder import KeyValueGraphBuilder
 from app.src.keyvalue_graph.llm_based_loader import LLMBasedKeyValueLoader
 from app.src.keyvalue_graph.rdf_graph_builder import RdfGraphBuilder
 from app.src.keyvalue_graph.schema_analyzer import SchemaAnalyzer
 
 router = APIRouter(prefix="/keyvalue", tags=["keyvalue-graph"])
 logger = logging.getLogger(__name__)
+
+
+# ===== 온디맨드 관계 워크플로우 =====
+
+
+class RelationProposal(BaseModel):
+    """관계 제안 모델"""
+
+    proposal_id: str = Field(description="제안 ID (UUID)")
+    source_doc_id: str = Field(description="출발 문서 ID")
+    target_doc_id: str = Field(description="도착 문서 ID")
+    relation_type: str = Field(description="관계 타입")
+    confidence: float = Field(ge=0.0, le=1.0, description="신뢰도 (0~1)")
+    reason: str = Field(description="관계 추론 근거")
+    approved: bool = Field(default=False, description="승인 여부")
+
+
+# ===== [TMP] 임시 승인 저장소 (테스트용) =====
+# NOTE: 승인 워크플로우는 별도 시스템에서 개발 예정
+# 현재 구현은 API 테스트 목적으로만 사용
+# TODO: 실제 승인 시스템과 연동 시 이 부분 제거
+pending_proposals: dict[str, RelationProposal] = {}
 
 
 @router.post("/extract", tags=["keyvalue-graph"], response_model=APIResponseModel, response_class=JSONResponse)
@@ -413,4 +439,180 @@ async def batch_extract_as_rdf(
             f"RDF 배치 변환 완료 (Centrality: {centrality_name}): "
             f"{batch_result['success']}건 성공, {batch_result['failed']}건 실패"
         ),
+    )
+
+
+# ===== 온디맨드 관계 워크플로우 엔드포인트 =====
+
+
+@router.post(
+    "/propose_relation",
+    tags=["keyvalue-graph"],
+    summary="두 데이터 간 관계 제안",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+)
+async def propose_relation(
+    source_doc_id: Annotated[str, Body(embed=True, description="출발 문서 ID")],
+    target_doc_id: Annotated[str, Body(embed=True, description="도착 문서 ID")],
+):
+    """두 Document 간 관계 분석 및 제안
+
+    사용자가 특정 데이터 ID를 입력하면 해당 쌍에 대해서만 관계를 분석하고 제안합니다.
+
+    Args:
+        source_doc_id: 출발 문서 ID (예: "data_0001")
+        target_doc_id: 도착 문서 ID (예: "data_0002")
+
+    Returns:
+        RelationProposal (사용자 검토용)
+    """
+    from app.repositories.graph_repository import GraphRepository
+
+    # 1. 두 문서 조회
+    graph_repo = GraphRepository()
+    query = """
+    MATCH (d:Document {id: $doc_id})
+    RETURN d.id as id, d.raw_text as raw_text
+    """
+
+    source_result = graph_repo.execute_query(query, {"doc_id": source_doc_id})
+    target_result = graph_repo.execute_query(query, {"doc_id": target_doc_id})
+
+    if not source_result or not target_result:
+        return APIResponseModel(
+            result={"error": "문서를 찾을 수 없습니다"},
+            description=f"관계 제안 실패: 문서 ID '{source_doc_id}' 또는 '{target_doc_id}'를 찾을 수 없습니다",
+        )
+
+    source_text = source_result[0]["raw_text"]
+    target_text = target_result[0]["raw_text"]
+
+    # 2. LLM으로 관계 분석 (간단한 구현 - 실제로는 더 정교한 프롬프트 필요)
+    # TODO: 실제로는 두 문서의 메타데이터, 토픽, 엔티티 등을 비교하여 관계 추론
+
+    # 임시: 간단한 텍스트 유사도 기반 관계 제안
+    proposal_id = str(uuid4())
+
+    # 기본 관계 제안 (실제로는 LLM 기반 분석 필요)
+    relation_type = "RELATED"
+    confidence = 0.7
+    reason = f"문서 '{source_doc_id}'와 '{target_doc_id}' 간 관계 분석 필요 (LLM 분석 미구현)"
+
+    proposal = RelationProposal(
+        proposal_id=proposal_id,
+        source_doc_id=source_doc_id,
+        target_doc_id=target_doc_id,
+        relation_type=relation_type,
+        confidence=confidence,
+        reason=reason,
+        approved=False,
+    )
+
+    # 4. 임시 저장소에 저장
+    pending_proposals[proposal_id] = proposal
+
+    logger.info(f"관계 제안 생성: {source_doc_id} -> {target_doc_id} (ID: {proposal_id})")
+
+    return APIResponseModel(
+        result=proposal.model_dump(),
+        description=f"관계 제안 완료 (ID: {proposal_id}): {proposal.relation_type}",
+    )
+
+
+@router.post(
+    "/approve_relation",
+    tags=["keyvalue-graph"],
+    summary="[TMP] 관계 승인 및 저장 (테스트용)",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+)
+async def approve_relation(
+    proposal_id: Annotated[str, Body(embed=True, description="제안 ID")],
+    approved: Annotated[bool, Body(embed=True, description="승인 여부")],
+):
+    """[TMP] 관계 제안 승인 및 그래프DB 저장 (테스트용)
+
+    NOTE: 승인 워크플로우는 별도 시스템에서 개발 예정
+    현재 구현은 온디맨드 관계 저장 기능을 테스트하기 위한 임시 엔드포인트
+
+    Args:
+        proposal_id: 제안 ID (propose_relation에서 반환)
+        approved: 승인 여부 (True: 저장, False: 거부)
+
+    Returns:
+        저장 결과
+
+    TODO: 실제 승인 시스템과 연동 시 이 엔드포인트 제거 또는 통합
+    """
+    # 1. 임시 저장소에서 제안 조회
+    if proposal_id not in pending_proposals:
+        return APIResponseModel(
+            result={"error": "제안을 찾을 수 없습니다"},
+            description=f"승인 실패: 제안 ID '{proposal_id}'를 찾을 수 없습니다",
+        )
+
+    proposal = pending_proposals[proposal_id]
+
+    # 2. 승인 여부 확인
+    if not approved:
+        # 거부: 임시 저장소에서 제거
+        del pending_proposals[proposal_id]
+        logger.info(f"관계 제안 거부: {proposal.source_doc_id} -> {proposal.target_doc_id}")
+        return APIResponseModel(
+            result={"approved": False, "proposal_id": proposal_id},
+            description="관계 제안이 거부되었습니다",
+        )
+
+    # 3. 승인: 그래프DB에 저장
+    proposal.approved = True
+    graph_builder = KeyValueGraphBuilder()
+
+    result = graph_builder.create_relation(
+        source_doc_id=proposal.source_doc_id,
+        target_doc_id=proposal.target_doc_id,
+        relation_type=proposal.relation_type,
+        confidence=proposal.confidence,
+        reason=proposal.reason,
+        approved_at=datetime.now().isoformat(),
+    )
+
+    if result["success"]:
+        # 임시 저장소에서 제거
+        del pending_proposals[proposal_id]
+        logger.info(f"관계 저장 완료: {proposal.source_doc_id} -> {proposal.target_doc_id}")
+        return APIResponseModel(
+            result=result,
+            description=f"관계 저장 완료 (ID: {result['relation_id']}): {proposal.relation_type}",
+        )
+    else:
+        return APIResponseModel(
+            result=result,
+            description=f"관계 저장 실패: {result.get('error', 'Unknown error')}",
+        )
+
+
+@router.get(
+    "/pending_proposals",
+    tags=["keyvalue-graph"],
+    summary="[TMP] 승인 대기 중인 관계 목록 (테스트용)",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+)
+async def get_pending_proposals():
+    """[TMP] 승인 대기 중인 관계 제안 목록 조회 (테스트용)
+
+    NOTE: 승인 워크플로우는 별도 시스템에서 개발 예정
+    현재 구현은 테스트 목적으로만 사용
+
+    Returns:
+        RelationProposal 리스트
+
+    TODO: 실제 승인 시스템과 연동 시 이 엔드포인트 제거
+    """
+    proposals_list = [p.model_dump() for p in pending_proposals.values()]
+
+    return APIResponseModel(
+        result={"proposals": proposals_list, "count": len(proposals_list)},
+        description=f"승인 대기 중인 관계 {len(proposals_list)}건",
     )
