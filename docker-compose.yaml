@@ -51,6 +51,10 @@ services:
 
 volumes:
   neo4j_data:
+    external: true
   neo4j_logs:
+    external: true
   neo4j_import:
+    external: true
   neo4j_plugins:
+    external: true
