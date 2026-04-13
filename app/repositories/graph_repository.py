@@ -123,23 +123,6 @@ class GraphRepository:
         """
         self.execute_query(query)
 
-    def create_fulltext_index_entity(self) -> None:
-        """Entity 노드의 name property에 대한 Full-Text Index 생성 (CJK 분석기)"""
-        query = """
-        CREATE FULLTEXT INDEX entity_fulltext IF NOT EXISTS
-        FOR (n:Entity) ON EACH [n.name]
-        OPTIONS {indexConfig: {`fulltext.analyzer`: 'cjk'}}
-        """
-        self.execute_query(query)
-
-    def create_fulltext_index_topic(self) -> None:
-        """Topic 노드의 name property에 대한 Full-Text Index 생성 (CJK 분석기)"""
-        query = """
-        CREATE FULLTEXT INDEX topic_fulltext IF NOT EXISTS
-        FOR (n:Topic) ON EACH [n.name]
-        OPTIONS {indexConfig: {`fulltext.analyzer`: 'cjk'}}
-        """
-        self.execute_query(query)
 
     def create_document_relations(
             self,
@@ -246,41 +229,3 @@ class GraphRepository:
 
         return count
 
-    def create_entity_relations(
-            self,
-            new_entity: str,
-            candidates: List[Dict[str, Any]]
-    ) -> int:
-        """Entity 간 RELATED_TO 관계 생성"""
-        if not candidates:
-            return 0
-
-        count = 0
-
-        for candidate in candidates:
-            query = """
-            MATCH (new:Entity {name: $new_entity})
-            MATCH (existing:Entity {name: $existing_entity})
-            MERGE (new)-[r:RELATED_TO]-(existing)
-            SET r.score = $score,
-                r.created_at = datetime(),
-                r.source = $source,
-                r.wikidata_type = $wikidata_type
-            RETURN r
-            """
-
-            parameters = {
-                "new_entity": new_entity,
-                "existing_entity": candidate["name"],
-                "score": candidate["score"],
-                "source": candidate.get("source", "vector"),
-                "wikidata_type": candidate.get("wikidata_type")
-            }
-
-            try:
-                self.execute_query(query, parameters)
-                count += 1
-            except Exception as e:
-                logging.error(f"Entity 관계 생성 실패: {e}")
-
-        return count

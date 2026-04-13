@@ -33,13 +33,13 @@ class DocumentResult(BaseModel):
 class GraphNode(BaseModel):
     """그래프 노드"""
     id: str = Field(..., description="노드 ID")
-    labels: List[str] = Field(default_factory=list, description="노드 레이블 (예: Document, Topic, Tag)")
+    labels: List[str] = Field(default_factory=list, description="노드 레이블 (예: Document, Key, Value)")
     properties: Dict[str, Any] = Field(default_factory=dict, description="노드 속성")
 
 
 class GraphRelationship(BaseModel):
     """그래프 관계"""
-    type: str = Field(..., description="관계 타입 (예: HAS_TOPIC, EXTENDS)")
+    type: str = Field(..., description="관계 타입 (예: HAS_KEY, HAS_VALUE, EXTENDS)")
     start: str = Field(..., description="시작 노드 ID")
     end: str = Field(..., description="종료 노드 ID")
     properties: Dict[str, Any] = Field(default_factory=dict, description="관계 속성")
@@ -53,13 +53,13 @@ class GraphStructure(BaseModel):
 
 class CommonMetadata(BaseModel):
     """검색 결과의 공통 메타데이터"""
-    categories: List[Dict[str, Any]] = Field(
+    common_keys: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="공통 Category (name, doc_count, coverage)"
+        description="공통 Key (name, doc_count, coverage)"
     )
-    common_tags: List[Dict[str, Any]] = Field(
+    common_values: List[Dict[str, Any]] = Field(
         default_factory=list,
-        description="공통 Tag (name, doc_count, coverage)"
+        description="공통 Value (name, doc_count, coverage)"
     )
 
 
@@ -69,11 +69,11 @@ class GraphRAGSearchResponse(BaseModel):
     documents: List[DocumentResult] = Field(default_factory=list, description="검색된 Document 목록")
     common_metadata: CommonMetadata = Field(
         default_factory=CommonMetadata,
-        description="검색된 Document들의 공통 Category/Tag 집계"
+        description="검색된 Document들의 공통 Key/Value 집계"
     )
     graph: GraphStructure = Field(
         default_factory=GraphStructure,
-        description="간단한 그래프 구조 (Document + 공통 Category/Tag만)"
+        description="간단한 그래프 구조 (Document + 공통 Key/Value만)"
     )
     error: str | None = None
 
