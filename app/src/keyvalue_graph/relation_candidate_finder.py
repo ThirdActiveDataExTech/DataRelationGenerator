@@ -21,6 +21,7 @@ class RelationCandidate:
         matched_keys: list[str],
         matched_values: dict[str, str],
     ):
+        """RelationCandidate 초기화"""
         self.doc_id = doc_id
         self.aligned_attribute_score = aligned_attribute_score  # Key 정렬 (의미적 스키마 매칭)
         self.typed_value_match_score = typed_value_match_score  # 타입별 값 비교 (numeric/set/text)
@@ -47,6 +48,7 @@ class RelationCandidate:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """후보 정보를 딕셔너리로 변환"""
         return {
             "doc_id": self.doc_id,
             "score": round(self.final_score, 3),
@@ -72,6 +74,7 @@ class RelationCandidateFinder:
     """
 
     def __init__(self, graph_repo: GraphRepository | None = None):
+        """RelationCandidateFinder 초기화"""
         self.graph_repo = graph_repo or GraphRepository()
 
     def find_candidates(
@@ -199,7 +202,6 @@ class RelationCandidateFinder:
                 ...
             }
         """
-
         query = """
         // 1. 기준 Document의 Key들 조회
         MATCH (d:Document {id: $source_doc_id})-[:EXTRACTED_FROM]-(v:Value)-[:HAS_VALUE]-(k:Key)
