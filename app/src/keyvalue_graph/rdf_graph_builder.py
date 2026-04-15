@@ -5,10 +5,10 @@ JSON-LD 형태의 딕셔너리로 반환한다.
 """
 
 import json
-import logging
-from typing import Any, Dict, List
+from typing import Any
 from urllib.parse import quote
 
+import logging
 from rdflib import RDF, XSD, Graph, Literal, Namespace
 
 from app.config import settings
@@ -27,9 +27,9 @@ class RdfGraphBuilder:
     """
 
     def __init__(
-        self,
-        namespace: str = settings.RDF_NAMESPACE,
-        namespace_prefix: str = settings.RDF_NAMESPACE_PREFIX,
+            self,
+            namespace: str = settings.RDF_NAMESPACE,
+            namespace_prefix: str = settings.RDF_NAMESPACE_PREFIX,
     ):
         """RDF 그래프 빌더를 초기화한다."""
         self.namespace = Namespace(namespace)
@@ -60,7 +60,7 @@ class RdfGraphBuilder:
         }
 
     def build_from_record(
-        self, record: DataRecord, centrality_name: str = "데이터현황", create_document: bool = True
+            self, record: DataRecord, centrality_name: str = "데이터현황", create_document: bool = True
     ) -> RdfGraphBuildResult:
         """단일 레코드로부터 RDF 그래프 생성 (JSON-LD dict 반환).
 
@@ -104,7 +104,7 @@ class RdfGraphBuilder:
             )
 
     def _add_record_to_graph(
-        self, g: Graph, record: DataRecord, centrality_name: str, create_document: bool = True
+            self, g: Graph, record: DataRecord, centrality_name: str, create_document: bool = True
     ) -> tuple[int, int]:
         """단일 레코드의 트리플을 기존 Graph에 추가한다.
 
@@ -166,7 +166,7 @@ class RdfGraphBuilder:
 
         return keys_count, values_count
 
-    def build_batch(self, records: List[DataRecord], centrality_name: str = "데이터현황") -> Dict[str, Any]:
+    def build_batch(self, records: list[DataRecord], centrality_name: str = "데이터현황") -> dict[str, Any]:
         """배치로 여러 레코드를 하나의 통합 RDF 그래프로 변환.
 
         모든 레코드를 단일 rdflib.Graph에 축적한다.

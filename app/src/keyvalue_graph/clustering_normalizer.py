@@ -1,4 +1,4 @@
-from typing import Dict, List, Any
+from typing import Any
 
 import logging
 import numpy as np
@@ -6,6 +6,7 @@ from rapidfuzz import fuzz
 from sklearn.cluster import DBSCAN
 
 from app.repositories.graph_repository import GraphRepository
+from app.src.keyvalue_graph.graph_builder import KeyValueGraphBuilder
 from app.src.meta_extract.llm_response import LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -25,12 +26,13 @@ class ClusteringNormalizer:
             graph_repo: Neo4j 리포지토리
         """
         self.graph_repo = graph_repo or GraphRepository()
+        self.graph_builder = KeyValueGraphBuilder(graph_repo=self.graph_repo)
 
     def normalize_all_keys(
             self,
             similarity_threshold: float = 0.85,
             min_cluster_size: int = 2
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """모든 Key의 Value들을 클러스터링하여 정규화
 
         Args:
@@ -85,7 +87,7 @@ class ClusteringNormalizer:
             key_name: str,
             similarity_threshold: float = 0.80,
             min_cluster_size: int = 2
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """특정 Key의 Value들을 클러스터링하여 정규화
 
         Args:
@@ -162,7 +164,7 @@ class ClusteringNormalizer:
             "normalized_count": normalized_count
         }
 
-    def _get_all_keys(self) -> List[str]:
+    def _get_all_keys(self) -> list[str]:
         """모든 Key명 조회
 
         Returns:
@@ -176,7 +178,7 @@ class ClusteringNormalizer:
         results = self.graph_repo.execute_query(query)
         return [r["key_name"] for r in results]
 
-    def _get_values_for_key(self, key_name: str) -> List[str]:
+    def _get_values_for_key(self, key_name: str) -> list[str]:
         """특정 Key의 모든 Value 조회 (이미 정규화된 Value 제외)
 
         Args:
@@ -194,7 +196,7 @@ class ClusteringNormalizer:
         results = self.graph_repo.execute_query(query, {"key_name": key_name})
         return [r["value"] for r in results]
 
-    def _calculate_similarity_matrix(self, values: List[str]) -> np.ndarray:
+    def _calculate_similarity_matrix(self, values: list[str]) -> np.ndarray:
         """Value 간 유사도 행렬 계산
 
         Args:
@@ -220,10 +222,10 @@ class ClusteringNormalizer:
 
     def _group_by_cluster(
             self,
-            values: List[str],
+            values: list[str],
             labels: np.ndarray,
             min_cluster_size: int
-    ) -> Dict[int, List[str]]:
+    ) -> dict[int, list[str]]:
         """클러스터별로 Value 그룹화
 
         Args:
@@ -253,7 +255,7 @@ class ClusteringNormalizer:
 
         return clusters
 
-    def _select_representative(self, key_name: str, cluster_values: List[str]) -> str:
+    def _select_representative(self, key_name: str, cluster_values: list[str]) -> str:
         """클러스터 대표값 선정 (LLM 기반)
 
         LLM에게 클러스터 내 값들을 보내서 적절한 정규화 값을 생성하도록 함.
@@ -293,7 +295,7 @@ class ClusteringNormalizer:
     def _create_normalized_relations(
             self,
             key_name: str,
-            cluster_values: List[str],
+            cluster_values: list[str],
             representative: str
     ) -> int:
         """NormalizedValue 생성 및 SAME_AS 관계 생성
@@ -306,58 +308,54 @@ class ClusteringNormalizer:
         Returns:
             생성된 관계 수
         """
-        # 1. NormalizedValue 노드 생성
-        norm_id = f"{key_name}:normalized:{representative}"
-        create_norm_query = """
-        MERGE (nv:NormalizedValue {id: $norm_id})
-        ON CREATE SET
-            nv.name = $normalized_value,
-            nv.key_name = $key_name,
-            nv.count = 0,
-            nv.created_at = datetime()
-        """
-        self.graph_repo.execute_query(
-            create_norm_query,
-            {
-                "norm_id": norm_id,
-                "normalized_value": representative,
-                "key_name": key_name
-            }
-        )
+        # 1. NormalizedValue 노드 생성 (KeyValueGraphBuilder 재사용)
+        self.graph_builder.create_normalized_value_node(key_name, representative)
 
         # 2. 각 Value에서 NormalizedValue로 SAME_AS 관계 생성
-        # 동시에 Value가 연결된 Document와 NormalizedValue도 연결
-        create_relation_query = """
-        MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
-        WHERE v.name = $value
-        MATCH (nv:NormalizedValue {id: $norm_id})
-        MERGE (v)-[r:SAME_AS]->(nv)
-        ON CREATE SET r.created_at = datetime()
-        ON MATCH SET
-            nv.count = nv.count + 1,
-            r.updated_at = datetime()
-
-        WITH v, nv
-        MATCH (v)-[:EXTRACTED_FROM]->(d:Document)
-        MERGE (d)-[r2:HAS_NORMALIZED_VALUE]->(nv)
-        ON CREATE SET r2.created_at = datetime()
-        """
-
         count = 0
         for value in cluster_values:
+            value_id = f"{key_name}:{value}"
+            self.graph_builder.create_same_as_relation(value_id, key_name, representative)
+            count += 1
+
+        # 3. Document와 NormalizedValue 연결 (추가 쿼리)
+        self._create_document_normalized_relations(key_name, cluster_values, representative)
+
+        return count
+
+    def _create_document_normalized_relations(
+            self,
+            key_name: str,
+            cluster_values: list[str],
+            representative: str
+    ) -> None:
+        """Document -[HAS_NORMALIZED_VALUE]-> NormalizedValue 관계 생성
+
+        Args:
+            key_name: Key명
+            cluster_values: 클러스터 내 모든 Value
+            representative: 대표값
+        """
+        norm_id = f"{key_name}:normalized:{representative}"
+
+        for value in cluster_values:
+            query = """
+            MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value {name: $value})
+            MATCH (v)-[:EXTRACTED_FROM]->(d:Document)
+            MATCH (nv:NormalizedValue {id: $norm_id})
+            MERGE (d)-[r:HAS_NORMALIZED_VALUE]->(nv)
+            ON CREATE SET r.created_at = datetime()
+            """
             self.graph_repo.execute_query(
-                create_relation_query,
+                query,
                 {
                     "key_name": key_name,
                     "value": value,
                     "norm_id": norm_id
                 }
             )
-            count += 1
 
-        return count
-
-    def _try_parse_numeric(self, values: List[str]) -> tuple[List[float], bool]:
+    def _try_parse_numeric(self, values: list[str]) -> tuple[list[float], bool]:
         """값들이 모두 숫자로 변환 가능한지 체크
 
         Args:
@@ -379,10 +377,10 @@ class ClusteringNormalizer:
 
     def _numeric_gap_clustering(
         self,
-        original_values: List[str],
-        numeric_values: List[float],
+        original_values: list[str],
+        numeric_values: list[float],
         min_cluster_size: int
-    ) -> Dict[int, List[str]]:
+    ) -> dict[int, list[str]]:
         """숫자 데이터의 Gap-based 클러스터링
 
         전체 분포를 고려하여 Gap이 큰 지점을 기준으로 클러스터 분리

@@ -7,25 +7,19 @@ from openai import APIError
 
 from app.config import langfuse_handler
 from app.constants import (
-    GENERATE_METADATA_PROMPT_NAME,
-    GENERATE_METADATA_PROMPT_LABEL,
-    GENERATE_CYPHER_PROMPT_NAME,
-    GENERATE_CYPHER_PROMPT_LABEL,
     DOCUMENT_RELATION_INFERENCE_PROMPT_NAME,
     DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL
 )
 from app.dependencies import chatopenai_client, get_langfuse_prompt
 from app.exceptions.base import ApplicationError
 from app.schemas.meta import (
-    metadata_tool,
-    cypher_tool,
-    category_generation_tool,
     document_relation_tool,
     document_relevance_tool,
     key_value_extraction_tool,
     cluster_normalization_tool,
     query_key_inference_tool
 )
+from app.schemas.relation_discovery import relation_search_condition_tool
 from app.schemas.schema_analysis import schema_analysis_tool
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 
@@ -34,25 +28,23 @@ class LLMResponse:
     """LLM 응답 처리 클래스 - 메타데이터 추출 및 Neo4j 쿼리 생성용"""
 
     PROMPT_CONFIG = {
-        "meta_extract": (GENERATE_METADATA_PROMPT_NAME, GENERATE_METADATA_PROMPT_LABEL),
-        "category_generate": ("generate_category", "production"),
         "document_relation_inference": (
-        DOCUMENT_RELATION_INFERENCE_PROMPT_NAME, DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL),
-        "cypher_generate": (GENERATE_CYPHER_PROMPT_NAME, GENERATE_CYPHER_PROMPT_LABEL),
+            DOCUMENT_RELATION_INFERENCE_PROMPT_NAME, DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL),
         "document_relevance_verification": ("document_relevance_verification", "production"),
         "key_value_extract": ("key_value_extract", "production"),
         "cluster_normalize": ("cluster_normalize", "production"),
         "schema_analysis": ("schema_analysis", "production"),
         "query_key_inference": ("query_key_inference", "production"),
+        "relation_key_analysis": ("relation_key_analysis", "production"),
     }
 
     def __init__(self, task: str):
         """Init 매서드"""
         self.task = task
-        self.prompt_name, self.prompt_label = self.PROMPT_CONFIG.get(
-            task,
-            (GENERATE_CYPHER_PROMPT_NAME, GENERATE_CYPHER_PROMPT_LABEL)
-        )
+        config = self.PROMPT_CONFIG.get(task)
+        if config is None:
+            raise ValueError(f"Unknown task: {task}")
+        self.prompt_name, self.prompt_label = config
 
     def generate_llm_response(self, variables: Any) -> Dict[str, Any] | str:
         """통합 LLM 응답 처리"""
@@ -77,8 +69,6 @@ class LLMResponse:
             tool_call = response.tool_calls[0]
             return self._extract_message_from_tool_call(tool_call)
         except (IndexError, AttributeError, KeyError) as e:
-            if self.task == "cypher_generate":
-                raise e
             raise ApplicationError(code=400, message=f"No tool calls in llm_response: {str(e)}",
                                    result={"exception": f"llm response: {response.content}"})
 
@@ -99,13 +89,7 @@ class LLMResponse:
 
     def _invoke_llm_unified(self, compiled_prompt: str) -> Any:
         """통합 LLM 호출"""
-        if self.task == "meta_extract":
-            tools = [metadata_tool]
-        elif self.task == "cypher_generate":
-            tools = [cypher_tool]
-        elif self.task == "category_generate":
-            tools = [category_generation_tool]
-        elif self.task == "document_relation_inference":
+        if self.task == "document_relation_inference":
             tools = [document_relation_tool]
         elif self.task == "document_relevance_verification":
             tools = [document_relevance_tool]
@@ -117,6 +101,8 @@ class LLMResponse:
             tools = [schema_analysis_tool]
         elif self.task == "query_key_inference":
             tools = [query_key_inference_tool]
+        elif self.task == "relation_key_analysis":
+            tools = [relation_search_condition_tool]
         else:
             tools = []
 
