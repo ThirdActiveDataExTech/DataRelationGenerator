@@ -19,6 +19,7 @@ from app.schemas.meta import (
     cluster_normalization_tool,
     query_key_inference_tool
 )
+from app.schemas.relation_discovery import relation_search_condition_tool
 from app.schemas.schema_analysis import schema_analysis_tool
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 
@@ -34,6 +35,7 @@ class LLMResponse:
         "cluster_normalize": ("cluster_normalize", "production"),
         "schema_analysis": ("schema_analysis", "production"),
         "query_key_inference": ("query_key_inference", "production"),
+        "relation_key_analysis": ("relation_key_analysis", "production"),
     }
 
     def __init__(self, task: str):
@@ -99,6 +101,8 @@ class LLMResponse:
             tools = [schema_analysis_tool]
         elif self.task == "query_key_inference":
             tools = [query_key_inference_tool]
+        elif self.task == "relation_key_analysis":
+            tools = [relation_search_condition_tool]
         else:
             tools = []
 

@@ -2,6 +2,7 @@ import { Routes, Route, Link, useLocation } from 'react-router-dom'
 import './App.css'
 import SearchPage from './pages/SearchPage'
 import WorkflowUpload from './components/WorkflowUpload'
+import RelationDiscoveryPage from './pages/RelationDiscoveryPage'
 
 function App() {
   const location = useLocation()
@@ -17,6 +18,9 @@ function App() {
           <Link to="/pipeline" className={location.pathname === '/pipeline' ? 'active' : ''}>
             Pipeline
           </Link>
+          <Link to="/relation-discovery" className={location.pathname === '/relation-discovery' ? 'active' : ''}>
+            Relation Discovery
+          </Link>
           <a href="http://localhost:8000/docs" target="_blank" rel="noopener noreferrer">
             Documentation
           </a>
@@ -26,6 +30,7 @@ function App() {
         <Routes>
           <Route path="/" element={<SearchPage />} />
           <Route path="/pipeline" element={<WorkflowUpload />} />
+          <Route path="/relation-discovery" element={<RelationDiscoveryPage />} />
         </Routes>
       </main>
     </div>
