@@ -137,7 +137,7 @@ class GraphRAGService:
             response = GraphRAGSearchResponse(
                 query=query,
                 documents=documents,
-                common_metadata=CommonMetadata(categories=[], common_tags=[]),
+                common_metadata=CommonMetadata(),
                 graph=GraphStructure(**graph)
             )
             return response.model_dump()

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any
 
 import logging
 
@@ -37,11 +37,11 @@ class KeyValueGraphBuilder:
 
         try:
             # 1. Centrality 노드 생성
-            self._create_centrality_node(centrality_name)
+            self.create_centrality_node(centrality_name)
 
             # 2. Document 노드 생성
             if create_document:
-                self._create_document_node(record)
+                self.create_document_node(record)
 
             # 3. Key-Value 노드 및 관계 생성
             keys_count = len(record.key_values)
@@ -49,23 +49,23 @@ class KeyValueGraphBuilder:
 
             for key_name, values in record.key_values.items():
                 # Key 노드 생성 (MERGE)
-                self._create_key_node(key_name, record.raw_data)
+                self.create_key_node(key_name, record.raw_data)
 
                 # Centrality -HAS_KEY-> Key
-                self._create_centrality_to_key_relation(centrality_name, key_name)
+                self.create_centrality_to_key_relation(centrality_name, key_name)
 
                 for value in values:
                     # Value 노드 생성
-                    value_id = self._create_value_node(
+                    value_id = self.create_value_node(
                         key_name, value, record.infer_value_type(key_name, value)
                     )
                     values_count += 1
 
                     # Key -HAS_VALUE-> Value
-                    self._create_has_value_relation(key_name, value_id)
+                    self.create_has_value_relation(key_name, value_id)
 
                     # Value -EXTRACTED_FROM-> Document
-                    self._create_extracted_from_relation(value_id, doc_id)
+                    self.create_extracted_from_relation(value_id, doc_id)
 
             return GraphBuildResult(
                 document_id=doc_id,
@@ -86,7 +86,7 @@ class KeyValueGraphBuilder:
                 message=str(e),
             )
 
-    def _create_centrality_node(self, centrality_name: str) -> None:
+    def create_centrality_node(self, centrality_name: str) -> None:
         """Centrality 노드 생성 (중심 노드).
 
         Args:
@@ -103,7 +103,7 @@ class KeyValueGraphBuilder:
         )
         logger.info(f"Centrality 노드 생성: {centrality_name}")
 
-    def _create_document_node(self, record: DataRecord) -> None:
+    def create_document_node(self, record: DataRecord) -> None:
         """Document 노드 생성 + binary_text_embedding 추가.
 
         Args:
@@ -141,7 +141,7 @@ class KeyValueGraphBuilder:
             },
         )
 
-    def _create_key_node(self, key_name: str, raw_data: Dict[str, Any]) -> None:
+    def create_key_node(self, key_name: str, raw_data: dict[str, Any]) -> None:
         """Key 노드 생성 (MERGE) + name_embedding 추가.
 
         Args:
@@ -181,7 +181,7 @@ class KeyValueGraphBuilder:
             },
         )
 
-    def _create_value_node(self, key_name: str, value: str, value_type: str) -> str:
+    def create_value_node(self, key_name: str, value: str, value_type: str) -> str:
         """Value 노드 생성 + value_embedding 추가.
 
         Args:
@@ -225,7 +225,7 @@ class KeyValueGraphBuilder:
 
         return value_id
 
-    def _create_normalized_value_node(self, key_name: str, normalized_value: str) -> None:
+    def create_normalized_value_node(self, key_name: str, normalized_value: str) -> None:
         """NormalizedValue 노드 생성.
 
         Args:
@@ -252,7 +252,7 @@ class KeyValueGraphBuilder:
             },
         )
 
-    def _create_centrality_to_key_relation(self, centrality_name: str, key_name: str) -> None:
+    def create_centrality_to_key_relation(self, centrality_name: str, key_name: str) -> None:
         """Centrality -[HAS_KEY]-> Key 관계 생성.
 
         Args:
@@ -272,7 +272,7 @@ class KeyValueGraphBuilder:
             },
         )
 
-    def _create_has_value_relation(self, key_name: str, value_id: str) -> None:
+    def create_has_value_relation(self, key_name: str, value_id: str) -> None:
         """HAS_VALUE 관계 생성.
 
         Args:
@@ -292,7 +292,7 @@ class KeyValueGraphBuilder:
             },
         )
 
-    def _create_extracted_from_relation(self, value_id: str, doc_id: str) -> None:
+    def create_extracted_from_relation(self, value_id: str, doc_id: str) -> None:
         """EXTRACTED_FROM 관계 생성.
 
         Args:
@@ -312,7 +312,7 @@ class KeyValueGraphBuilder:
             },
         )
 
-    def _create_same_as_relation(
+    def create_same_as_relation(
             self, value_id: str, key_name: str, normalized_value: str
     ) -> None:
         """SAME_AS 관계 생성.
@@ -337,7 +337,7 @@ class KeyValueGraphBuilder:
             },
         )
 
-    def build_batch(self, records: List[DataRecord], centrality_name: str = "데이터현황") -> Dict[str, Any]:
+    def build_batch(self, records: list[DataRecord], centrality_name: str = "데이터현황") -> dict[str, Any]:
         """배치로 여러 레코드 처리.
 
         Args:
@@ -375,3 +375,74 @@ class KeyValueGraphBuilder:
                 total_normalized / total_values if total_values > 0 else 0.0
             ),
         }
+
+    def create_relation(
+        self,
+        source_doc_id: str,
+        target_doc_id: str,
+        confidence: float,
+        reason: str,
+        approved_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Document 간 관계 생성 (온디맨드 워크플로우용)
+
+        NOTE: 실제 승인 시스템에서 승인 완료 후 이 메서드를 호출하여 관계 저장
+        관계 타입은 RELATED_TO로 고정
+
+        Args:
+            source_doc_id: 출발 문서 ID
+            target_doc_id: 도착 문서 ID
+            confidence: 신뢰도 (0~1)
+            reason: 관계 추론 근거
+            approved_at: 승인 시각 (ISO format)
+
+        Returns:
+            {
+                "success": True,
+                "relation_id": "xxx_0001->yyy_0002"
+            }
+        """
+        try:
+            from datetime import datetime
+
+            relation_id = f"{source_doc_id}->{target_doc_id}"
+
+            query = """
+            MATCH (source:Document {id: $source_doc_id})
+            MATCH (target:Document {id: $target_doc_id})
+            MERGE (source)-[r:RELATED_TO]->(target)
+            ON CREATE SET
+                r.confidence = $confidence,
+                r.reason = $reason,
+                r.approved_at = datetime($approved_at),
+                r.created_at = datetime()
+            ON MATCH SET
+                r.confidence = $confidence,
+                r.reason = $reason,
+                r.approved_at = datetime($approved_at)
+            """
+
+            self.graph_repo.execute_query(
+                query,
+                {
+                    "source_doc_id": source_doc_id,
+                    "target_doc_id": target_doc_id,
+                    "confidence": confidence,
+                    "reason": reason,
+                    "approved_at": approved_at or datetime.now().isoformat(),
+                },
+            )
+
+            logger.info(f"관계 '{relation_id}' 생성 완료 (RELATED_TO)")
+
+            return {
+                "success": True,
+                "relation_id": relation_id,
+            }
+
+        except Exception as e:
+            logger.error(f"관계 '{source_doc_id}->{target_doc_id}' 생성 실패: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+            }
