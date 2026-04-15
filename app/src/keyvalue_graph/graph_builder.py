@@ -380,7 +380,6 @@ class KeyValueGraphBuilder:
         self,
         source_doc_id: str,
         target_doc_id: str,
-        relation_type: str,
         confidence: float,
         reason: str,
         approved_at: str | None = None,
@@ -388,11 +387,11 @@ class KeyValueGraphBuilder:
         """Document 간 관계 생성 (온디맨드 워크플로우용)
 
         NOTE: 실제 승인 시스템에서 승인 완료 후 이 메서드를 호출하여 관계 저장
+        관계 타입은 RELATED_TO로 고정
 
         Args:
             source_doc_id: 출발 문서 ID
             target_doc_id: 도착 문서 ID
-            relation_type: 관계 타입 (예: SIMILAR_CASE, REFERENCES)
             confidence: 신뢰도 (0~1)
             reason: 관계 추론 근거
             approved_at: 승인 시각 (ISO format)
@@ -411,9 +410,7 @@ class KeyValueGraphBuilder:
             query = """
             MATCH (source:Document {id: $source_doc_id})
             MATCH (target:Document {id: $target_doc_id})
-            MERGE (source)-[r:RELATED_TO {
-                relation_type: $relation_type
-            }]->(target)
+            MERGE (source)-[r:RELATED_TO]->(target)
             ON CREATE SET
                 r.confidence = $confidence,
                 r.reason = $reason,
@@ -430,19 +427,17 @@ class KeyValueGraphBuilder:
                 {
                     "source_doc_id": source_doc_id,
                     "target_doc_id": target_doc_id,
-                    "relation_type": relation_type,
                     "confidence": confidence,
                     "reason": reason,
                     "approved_at": approved_at or datetime.now().isoformat(),
                 },
             )
 
-            logger.info(f"관계 '{relation_id}' 생성 완료 (타입: {relation_type})")
+            logger.info(f"관계 '{relation_id}' 생성 완료 (RELATED_TO)")
 
             return {
                 "success": True,
                 "relation_id": relation_id,
-                "relation_type": relation_type,
             }
 
         except Exception as e:
