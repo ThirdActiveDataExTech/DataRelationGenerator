@@ -19,7 +19,7 @@ class LLMBasedKeyValueLoader:
         """초기화.
 
         Args:
-            graph_repo: Neo4j 리포지토리
+            graph_repo: Neptune 리포지토리
             field_mapping: 필드명 매핑 (원본 → 한글). None이면 기본 매핑 사용
         """
         self.graph_repo = graph_repo or GraphRepository()
