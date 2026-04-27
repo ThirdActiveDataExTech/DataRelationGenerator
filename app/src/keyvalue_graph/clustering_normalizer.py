@@ -23,7 +23,7 @@ class ClusteringNormalizer:
         """초기화
 
         Args:
-            graph_repo: Neo4j 리포지토리
+            graph_repo: Neptune 리포지토리
         """
         self.graph_repo = graph_repo or GraphRepository()
         self.graph_builder = KeyValueGraphBuilder(graph_repo=self.graph_repo)
