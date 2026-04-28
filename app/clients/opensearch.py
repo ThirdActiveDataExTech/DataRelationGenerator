@@ -63,7 +63,7 @@ class OpenSearchClient:
                 index=index,
                 id=doc_id,
                 body=body,
-                refresh=True
+                params={'refresh': 'true'}
             )
             return response
         except Exception as e:
@@ -164,7 +164,7 @@ class OpenSearchClient:
             response = self.client.delete(
                 index=index,
                 id=doc_id,
-                refresh=True
+                params={'refresh': 'true'}
             )
             return response
         except Exception as e:
