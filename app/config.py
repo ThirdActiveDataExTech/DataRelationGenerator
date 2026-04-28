@@ -126,6 +126,21 @@ class Settings(BaseSettings):
     RDF_NAMESPACE: str = "http://example.org/keyvalue#"
     RDF_NAMESPACE_PREFIX: str = "kv"
 
+    # Neptune Config
+    NEPTUNE_ENDPOINT: str = ""
+    NEPTUNE_REGION: str = "us-east-1"
+    NEPTUNE_DIRECT_ENDPOINT: str = ""
+    NEPTUNE_USE_IAM: bool = True
+
+    # OpenSearch Config
+    OPENSEARCH_HOST: str = "localhost"
+    OPENSEARCH_PORT: int = 9200
+    OPENSEARCH_USE_SSL: bool = False
+    OPENSEARCH_VERIFY_CERTS: bool = False
+    OPENSEARCH_DOCUMENTS_INDEX: str = "documents"
+    OPENSEARCH_KEYS_INDEX: str = "keys"
+    OPENSEARCH_VALUES_INDEX: str = "values"
+
     # Embedding Config
     EMBEDDING_MODEL_NAME: str = "jhgan/ko-sroberta-multitask"
     SIMILARITY_THRESHOLD: float = 0.75
