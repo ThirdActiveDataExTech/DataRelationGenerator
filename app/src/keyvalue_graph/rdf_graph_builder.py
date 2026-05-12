@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class RdfGraphBuilder:
     """RDF(JSON-LD) 기반 Key-Value 그래프 빌더.
 
-    Neo4j 없이 rdflib를 사용하여 RDF 트리플을 생성하고
+    rdflib를 사용하여 RDF 트리플을 생성하고
     JSON-LD 딕셔너리로 반환한다.
     """
 

@@ -38,7 +38,7 @@ class GraphRAGService:
     def __init__(self, graph_repo: GraphRepository):
         """GraphRAGService 초기화"""
         self.graph_repo = graph_repo
-        self.driver = graph_repo.driver
+        self.driver = getattr(graph_repo, 'driver', None)  # Neptune에서는 driver가 없음
         self.embedder = SentenceTransformerEmbeddings(model=settings.EMBEDDING_MODEL_NAME)
         self._reranker = None  # Lazy initialization
         self.pattern_matcher = GraphPatternMatcher(graph_repo)
