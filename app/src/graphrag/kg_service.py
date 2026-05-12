@@ -20,7 +20,7 @@ class KnowledgeGraphService:
     def __init__(self, graph_repo: GraphRepository):
         """KnowledgeGraphService 초기화"""
         self.graph_repo = graph_repo
-        self.driver = graph_repo.driver
+        self.driver = getattr(graph_repo, 'driver', None)  # Neptune에서는 driver가 없음
         self.embedder = SentenceTransformerEmbeddings(model=settings.EMBEDDING_MODEL_NAME)
 
     def find_related_documents_hybrid(
