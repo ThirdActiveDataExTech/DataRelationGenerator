@@ -262,8 +262,8 @@ extractable_metadata:
 반드시 analyze_schema tool 호출:
 ```
 {{
-    "domain": "도메인명 (예: 의료연구, 법률, 제조업)",
-    "centrality_name": "중심노드명 (예: 논문정보, 판례정보, 공장현황)",
+    "domain": "도메인명 (예: 의료, 법률, ... )",
+    "centrality_name": "거시적 도메인명 (예: 의료, 법률, 방송 등) - domain과 동일하거나 더 포괄적으로",
     "fields": {{
         "원본필드명": {{
             "korean_name": "의미있는 한글명",
