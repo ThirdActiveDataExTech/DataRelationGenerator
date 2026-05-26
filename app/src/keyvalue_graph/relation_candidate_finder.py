@@ -297,9 +297,9 @@ class RelationCandidateFinder:
         """Typed Value Comparison: 타입별 값 비교
 
         Key 타입에 따라 적합한 비교 방식 적용:
-        - numeric: proximity score (예: 병상수 1500 vs 1400)
-        - categorical (set): Jaccard overlap (예: 진료과목)
-        - text: embedding similarity (예: 자유 서술형)
+        - semantic: embedding similarity (의미적 유사도)
+        - numeric_date: range-based proximity (시간/수치 근접성)
+        - proper_noun: embedding + taxonomy (고유명사 범주)
 
         Returns:
             {
@@ -309,11 +309,11 @@ class RelationCandidateFinder:
         """
         candidates = {}
 
-        # 1. 기준 Document의 Key-Value 조회
+        # 1. 기준 Document의 Key-Value 조회 (key_type 포함)
         query_source = """
         MATCH (d:Document {id: $source_doc_id})-[:EXTRACTED_FROM]-(v:Value)-[:HAS_VALUE]-(k:Key)
         WHERE k.name IN $important_keys
-        RETURN k.name as key_name, v.name as value_name, v.value_type as value_type
+        RETURN k.name as key_name, k.key_type as key_type, v.name as value_name, v.numeric_value as numeric_value
         """
         source_results = self.graph_repo.execute_query(
             query_source, {"source_doc_id": source_doc_id, "important_keys": important_keys}
@@ -327,29 +327,39 @@ class RelationCandidateFinder:
         for r in source_results:
             key = r["key_name"]
             if key not in source_kv_map:
-                source_kv_map[key] = {"values": [], "type": r["value_type"]}
+                source_kv_map[key] = {"values": [], "key_type": r["key_type"], "numeric_values": []}
             source_kv_map[key]["values"].append(r["value_name"])
+            if r["numeric_value"] is not None:
+                source_kv_map[key]["numeric_values"].append(r["numeric_value"])
 
-        # 2. 각 Key별로 유사한 값을 가진 Document 찾기
+        # 2. 각 Key별로 타입에 맞는 방식으로 검색
         for key_name, kv_info in source_kv_map.items():
-            value_type = kv_info["type"]
+            key_type = kv_info["key_type"]
             source_values = kv_info["values"]
 
-            if value_type == "numeric":
-                # Numeric: 범위 기반 검색
-                self._find_by_numeric_proximity(
-                    key_name, source_values, candidates
-                )
-            elif value_type == "set" or len(source_values) > 1:
-                # Set/Categorical: Jaccard overlap
-                self._find_by_set_overlap(
+            if key_type == "numeric_date":
+                # Numeric/Date: 범위 기반 검색
+                if kv_info["numeric_values"]:
+                    self._find_by_numeric_proximity(
+                        key_name, kv_info["numeric_values"], candidates
+                    )
+            elif key_type == "proper_noun":
+                # Proper Noun: Taxonomy 필터링 + 임베딩 유사도
+                self._find_by_taxonomy(
                     source_doc_id, key_name, source_values, candidates
                 )
-            else:
-                # Text: 임베딩 유사도
-                self._find_by_text_similarity(
-                    source_doc_id, key_name, source_values[0], candidates
-                )
+            else:  # semantic
+                # Semantic: 임베딩 유사도
+                if len(source_values) > 1:
+                    # 다중 값: Jaccard overlap
+                    self._find_by_set_overlap(
+                        source_doc_id, key_name, source_values, candidates
+                    )
+                else:
+                    # 단일 값: 임베딩 유사도
+                    self._find_by_text_similarity(
+                        source_doc_id, key_name, source_values[0], candidates
+                    )
 
         # 3. 점수 정규화 (여러 Key 종합)
         for doc_id in candidates:
@@ -358,37 +368,34 @@ class RelationCandidateFinder:
         return candidates
 
     def _find_by_numeric_proximity(
-        self, key_name: str, source_values: list[str], candidates: dict
+        self, key_name: str, source_numeric_values: list[float], candidates: dict
     ):
-        """숫자형 값 근접도로 후보 찾기"""
-        try:
-            source_num = float(source_values[0])
-        except (ValueError, IndexError):
+        """숫자형 값 근접도로 후보 찾기 (numeric_value 필드 사용)"""
+        if not source_numeric_values:
             return
+
+        source_num = source_numeric_values[0]
 
         # 숫자 scale 추정 (동적 설정)
         scale = max(source_num * 0.5, 100)  # 값의 50% 또는 최소 100
 
         query = """
         MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)-[:EXTRACTED_FROM]->(d:Document)
-        WHERE v.value_type = 'numeric'
-        RETURN d.id as doc_id, v.name as value_name
+        WHERE v.numeric_value IS NOT NULL
+        RETURN d.id as doc_id, v.name as value_name, v.numeric_value as numeric_value
         """
         results = self.graph_repo.execute_query(query, {"key_name": key_name})
 
         for r in results:
-            try:
-                target_num = float(r["value_name"])
-                proximity = self._numeric_proximity(source_num, target_num, scale)
+            target_num = r["numeric_value"]
+            proximity = self._numeric_proximity(source_num, target_num, scale)
 
-                if proximity > 0.5:  # 최소 유사도 threshold
-                    doc_id = r["doc_id"]
-                    if doc_id not in candidates:
-                        candidates[doc_id] = {"score": 0.0, "matched_values": {}}
-                    candidates[doc_id]["score"] += proximity
-                    candidates[doc_id]["matched_values"][key_name] = r["value_name"]
-            except ValueError:
-                continue
+            if proximity > 0.5:  # 최소 유사도 threshold
+                doc_id = r["doc_id"]
+                if doc_id not in candidates:
+                    candidates[doc_id] = {"score": 0.0, "matched_values": {}}
+                candidates[doc_id]["score"] += proximity
+                candidates[doc_id]["matched_values"][key_name] = r["value_name"]
 
     def _find_by_set_overlap(
         self, source_doc_id: str, key_name: str, source_values: list[str], candidates: dict
@@ -452,6 +459,84 @@ class RelationCandidateFinder:
             # 벡터 임베딩이 없거나 유효하지 않으면 조용히 건너뛰기
             logger.warning(f"Text similarity 검색 실패 (key={key_name}): {e}")
             pass
+
+    def _find_by_taxonomy(
+        self, source_doc_id: str, key_name: str, source_values: list[str], candidates: dict
+    ):
+        """Proper Noun: Taxonomy 레이블 기반 가중치 + 임베딩 유사도
+
+        - 같은 taxonomy_label: 높은 가중치 (1.5x)
+        - 다른 taxonomy_label: 낮은 가중치 (0.3x)
+        """
+        # 1. 기준 Document의 taxonomy_label 조회
+        query_source = """
+        MATCH (d:Document {id: $source_doc_id})-[:EXTRACTED_FROM]-(v:Value)-[:HAS_VALUE]-(k:Key {name: $key_name})
+        WHERE v.name IN $source_values
+        RETURN v.name as value_name, v.taxonomy_label as taxonomy_label
+        """
+        source_results = self.graph_repo.execute_query(
+            query_source, {"source_doc_id": source_doc_id, "key_name": key_name, "source_values": source_values}
+        )
+
+        if not source_results:
+            # taxonomy_label이 없으면 일반 임베딩 유사도로 fallback
+            for value in source_values:
+                self._find_by_text_similarity(source_doc_id, key_name, value, candidates)
+            return
+
+        # 2. 각 source value별로 검색
+        for source_row in source_results:
+            source_value = source_row["value_name"]
+            source_label = source_row["taxonomy_label"]
+
+            # 모든 proper_noun 값 검색 (taxonomy_label 제한 없음)
+            query = """
+            MATCH (d1:Document {id: $source_doc_id})-[:EXTRACTED_FROM]-(v1:Value)-[:HAS_VALUE]-(k:Key {name: $key_name})
+            WHERE v1.name = $source_value AND v1.value_embedding IS NOT NULL
+
+            MATCH (k)-[:HAS_VALUE]->(v2:Value)-[:EXTRACTED_FROM]->(d2:Document)
+            WHERE d2.id <> $source_doc_id
+              AND v2.value_embedding IS NOT NULL
+              AND v2.name <> v1.name
+
+            WITH d2, v2,
+                 vector.similarity.cosine(v1.value_embedding, v2.value_embedding) as raw_similarity,
+                 v2.taxonomy_label as target_label
+            WHERE raw_similarity > 0.5
+
+            RETURN d2.id as doc_id, v2.name as value_name, raw_similarity, target_label
+            """
+
+            try:
+                results = self.graph_repo.execute_query(
+                    query,
+                    {
+                        "source_doc_id": source_doc_id,
+                        "key_name": key_name,
+                        "source_value": source_value,
+                    },
+                )
+
+                for r in results:
+                    doc_id = r["doc_id"]
+                    raw_similarity = r["raw_similarity"]
+                    target_label = r["target_label"]
+
+                    # Taxonomy 가중치 적용
+                    if source_label and target_label and source_label == target_label:
+                        # 같은 레이블: 높은 가중치
+                        weighted_score = raw_similarity * 1.5
+                    else:
+                        # 다른 레이블 또는 레이블 없음: 낮은 가중치
+                        weighted_score = raw_similarity * 0.3
+
+                    if doc_id not in candidates:
+                        candidates[doc_id] = {"score": 0.0, "matched_values": {}}
+                    candidates[doc_id]["score"] += weighted_score
+                    candidates[doc_id]["matched_values"][key_name] = r["value_name"]
+
+            except Exception as e:
+                logger.warning(f"Taxonomy 검색 실패 (key={key_name}, value={source_value}): {e}")
 
     def _get_graph_structure_similarity(self, _source_doc_id: str, _target_doc_id: str) -> float:
         """GraphSAGE 기반 구조적 유사도 계산
