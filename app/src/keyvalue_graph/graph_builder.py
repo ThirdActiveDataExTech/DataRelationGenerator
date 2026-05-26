@@ -164,6 +164,13 @@ class KeyValueGraphBuilder:
             key_name: Key명 (한글)
             sample_values: 샘플 값 목록 (타입 분류용)
         """
+        # Key 존재 여부 체크 (이미 있으면 LLM 호출 스킵)
+        check_query = "MATCH (k:Key {name: $key_name}) RETURN k.key_type"
+        existing = self.graph_repo.execute_query(check_query, {"key_name": key_name})
+
+        if existing:
+            return  # 이미 존재하면 스킵
+
         from app.src.keyvalue_graph.field_mappings import FIELD_NAME_MAPPING
         from app.src.embedding.embedding_service import embedding_service
         from app.src.keyvalue_graph.field_type_classifier import field_type_classifier
@@ -175,7 +182,7 @@ class KeyValueGraphBuilder:
                 original_field = orig
                 break
 
-        # LLM으로 필드 타입 분류
+        # LLM으로 필드 타입 분류 (Key가 없을 때만 실행)
         type_result = field_type_classifier.classify(
             key_name=key_name,
             sample_values=[str(v) for v in sample_values[:5]]
