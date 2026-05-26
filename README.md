@@ -22,6 +22,8 @@
 
 ## 주요 기능
 
+![High-level Design](./docs/images/HighLevelDesign.png)
+
 ### 1. 도메인 독립적 그래프 모델
 - 특정 도메인 전용 노드 타입 없이 **Key-Value 구조**로 모든 데이터 표현
 - 새로운 데이터 유입 시 구조 수정 없이 자동 처리
