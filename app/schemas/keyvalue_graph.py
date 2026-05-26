@@ -159,3 +159,49 @@ class SearchResult(BaseModel):
     )
     score: float = Field(default=0.0, description="매칭 점수")
     connection_path: Optional[str] = Field(None, description="연결 경로 (설명용)")
+
+
+# ===== 필드 타입 분류 =====
+
+
+class FieldTypeClassification(BaseModel):
+    """필드 타입 분류 결과."""
+
+    field_type: Literal["semantic", "numeric_date", "proper_noun"] = Field(
+        ..., description="필드 타입 (semantic: 의미적 유사도, numeric_date: 숫자/날짜 범위, proper_noun: 고유명사 클러스터링)"
+    )
+    confidence: float = Field(..., ge=0.0, le=1.0, description="분류 신뢰도 (0.0~1.0)")
+
+
+from openai import pydantic_function_tool
+
+field_type_classification_tool = pydantic_function_tool(
+    FieldTypeClassification,
+    name="classify_field_type",
+    description="메타데이터 필드의 타입을 분류하여 적합한 매칭 전략을 결정합니다."
+)
+
+
+# ===== 고유명사 레이블링 =====
+
+
+class ProperNounLabel(BaseModel):
+    """고유명사 레이블 매핑."""
+
+    value: str = Field(..., description="원본 값")
+    label: str = Field(..., description="분류된 Taxonomy 레이블")
+
+
+class ProperNounLabelingResult(BaseModel):
+    """고유명사 레이블링 결과."""
+
+    labels: List[ProperNounLabel] = Field(
+        ..., description="값별 Taxonomy 레이블 매핑"
+    )
+
+
+proper_noun_labeling_tool = pydantic_function_tool(
+    ProperNounLabelingResult,
+    name="label_proper_nouns",
+    description="고유명사 값들을 의미적 범주(Taxonomy)로 분류합니다."
+)
