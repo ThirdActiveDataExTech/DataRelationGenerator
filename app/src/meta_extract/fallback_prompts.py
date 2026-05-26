@@ -307,7 +307,7 @@ extractable_metadata:
    - 예: "지역" → 실제 그래프의 "SIGUN_NM" Key 노드와 매칭
 
 2. **Value 검색**: 매칭된 Key 내에서 당신이 제공한 search_terms(예: "강남구")와 유사한 Value를 **벡터 검색**으로 찾습니다
-   - 예: "강남구" → "서울특별시 강남구", "강남구청", "강남" 등의 유사 Value 검색
+   - 예: "강남구" → "서울특별시 강남구", "  강남구청", "강남" 등의 유사 Value 검색
 
 3. **Document 반환**: 찾은 Value들과 연결된 Document를 사용자에게 반환합니다
 
@@ -705,6 +705,61 @@ Key-Value 메타데이터:
 반드시 analyze_relation_search_condition function tool을 호출하세요.
 """
 
+    FIELD_TYPE_CLASSIFICATION: str = """**반드시 classify_field_type tool을 사용하여 응답할 것.**
+
+메타데이터 필드 타입을 분류하세요.
+
+## 필드 정보
+- 필드명: {key_name}
+- 샘플 값:
+{sample_values}
+
+## 타입 선택 기준
+
+### semantic (의미적 유사도 매칭)
+- 자연어로 된 텍스트 필드
+- 의미적 유사도 비교가 유효함
+- 예시: 타이틀, 장르, 내용물 설명, 주제어, 권한
+
+### numeric_date (숫자/날짜 범위 매칭)
+- 날짜, 연도, 숫자 등 정량적 값
+- 시간적/수치적 근접성으로 비교해야 함
+- 예시: 발행일자, 등록연도, 병상수, 면적, 좌표
+
+### proper_noun (고유명사 클러스터링)
+- 기관명, 인명, 지명 등 고유명사
+- 텍스트 구조 유사도가 아닌 의미적 범주로 분류해야 함
+- 예시: 발행기관명, 제작자, 저작권자, 병원명, 시군명
+
+## 주의사항
+- 숫자처럼 보여도 의미적 비교가 필요하면 semantic (예: 전화번호)
+- 날짜 형식(YYYY-MM-DD)이면 numeric_date
+- 지명도 고유명사이므로 proper_noun
+"""
+
+    PROPER_NOUN_LABELING: str = """**반드시 label_proper_nouns tool을 사용하여 응답할 것.**
+
+고유명사 값들을 범주별로 분류하세요.
+
+## 필드명: {key_name}
+
+## 값 목록:
+{values_list}
+
+## 선택 가능한 범주 (Taxonomy):
+{taxonomy}
+
+## 작업
+각 값을 위 범주 중 하나로 분류하세요. 범주에 맞는 것이 없으면 "기타"를 선택하세요.
+
+## 예시
+- 필드: "발행기관명"
+- 범주: ["정부기관", "문화기관", "항공사", "기타"]
+- 한국문화진흥원 → 문화기관
+- 한국항공 → 항공사
+- KBS → 방송사 (없으면 기타)
+"""
+
     @classmethod
     def get_prompt(cls, task: str) -> str:
         """Get fallback prompt by task name."""
@@ -716,6 +771,8 @@ Key-Value 메타데이터:
             "schema_analysis": cls.SCHEMA_ANALYSIS,
             "query_key_inference": cls.QUERY_KEY_INFERENCE,
             "relation_key_analysis": cls.RELATION_KEY_ANALYSIS,
+            "field_type_classification": cls.FIELD_TYPE_CLASSIFICATION,
+            "proper_noun_labeling": cls.PROPER_NOUN_LABELING,
         }
 
         if task not in prompt_map:
