@@ -43,21 +43,37 @@ class KeyValueGraphBuilder:
             if create_document:
                 self.create_document_node(record)
 
-            # 3. Key-Value 노드 및 관계 생성
+            # 3. proper_noun 필드는 미리 레이블링
+            from app.src.keyvalue_graph.proper_noun_labeler import proper_noun_labeler
+
+            proper_noun_labels = {}
+            for key_name, values in record.key_values.items():
+                # Key 노드 생성 (타입 분류)
+                self.create_key_node(key_name, values)
+
+                # proper_noun이면 Taxonomy 레이블링
+                key_type = self._get_key_type(key_name)
+                if key_type == "proper_noun":
+                    labels = proper_noun_labeler.label_values(key_name, values)
+                    proper_noun_labels[key_name] = labels
+
+            # 4. Key-Value 노드 및 관계 생성
             keys_count = len(record.key_values)
             values_count = 0
 
             for key_name, values in record.key_values.items():
-                # Key 노드 생성 (MERGE)
-                self.create_key_node(key_name, record.raw_data)
-
                 # Centrality -HAS_KEY-> Key
                 self.create_centrality_to_key_relation(centrality_name, key_name)
 
                 for value in values:
+                    # taxonomy_label 조회
+                    taxonomy_label = None
+                    if key_name in proper_noun_labels:
+                        taxonomy_label = proper_noun_labels[key_name].get(value)
+
                     # Value 노드 생성
                     value_id = self.create_value_node(
-                        key_name, value, record.infer_value_type(key_name, value)
+                        key_name, value, record.infer_value_type(key_name, value), taxonomy_label
                     )
                     values_count += 1
 
@@ -141,34 +157,47 @@ class KeyValueGraphBuilder:
             },
         )
 
-    def create_key_node(self, key_name: str, raw_data: dict[str, Any]) -> None:
-        """Key 노드 생성 (MERGE) + name_embedding 추가.
+    def create_key_node(self, key_name: str, sample_values: list[str]) -> None:
+        """Key 노드 생성 (MERGE) + name_embedding + key_type 추가.
 
         Args:
             key_name: Key명 (한글)
-            raw_data: 원본 데이터 (필드명 추출용)
+            sample_values: 샘플 값 목록 (타입 분류용)
         """
-        # 원본 필드명 찾기
         from app.src.keyvalue_graph.field_mappings import FIELD_NAME_MAPPING
         from app.src.embedding.embedding_service import embedding_service
+        from app.src.keyvalue_graph.field_type_classifier import field_type_classifier
 
+        # 원본 필드명 찾기
         original_field = None
         for orig, korean in FIELD_NAME_MAPPING.items():
             if korean == key_name:
                 original_field = orig
                 break
 
-        # Key 이름으로 임베딩 생성
-        try:
-            name_embedding = embedding_service.generate_embedding(key_name, show_progress_bar=False)
-        except Exception as e:
-            logger.warning(f"Key '{key_name}' 임베딩 생성 실패: {e}, 0벡터로 대체")
-            name_embedding = [0.0] * 384  # 기본 차원
+        # LLM으로 필드 타입 분류
+        type_result = field_type_classifier.classify(
+            key_name=key_name,
+            sample_values=[str(v) for v in sample_values[:5]]
+        )
+        key_type = type_result["field_type"]
+        key_type_confidence = type_result["confidence"]
+
+        # 임베딩 생성 (semantic/proper_noun만)
+        name_embedding = None
+        if key_type in ["semantic", "proper_noun"]:
+            try:
+                name_embedding = embedding_service.generate_embedding(key_name, show_progress_bar=False)
+            except Exception as e:
+                logger.warning(f"Key '{key_name}' 임베딩 생성 실패: {e}, 0벡터로 대체")
+                name_embedding = [0.0] * 384
 
         query = """
         MERGE (k:Key {name: $key_name})
         ON CREATE SET
             k.original_field = $original_field,
+            k.key_type = $key_type,
+            k.key_type_confidence = $key_type_confidence,
             k.name_embedding = $name_embedding,
             k.created_at = datetime()
         """
@@ -177,17 +206,22 @@ class KeyValueGraphBuilder:
             {
                 "key_name": key_name,
                 "original_field": original_field or key_name,
+                "key_type": key_type,
+                "key_type_confidence": key_type_confidence,
                 "name_embedding": name_embedding,
             },
         )
 
-    def create_value_node(self, key_name: str, value: str, value_type: str) -> str:
-        """Value 노드 생성 + value_embedding 추가.
+    def create_value_node(
+            self, key_name: str, value: str, value_type: str, taxonomy_label: str = None
+    ) -> str:
+        """Value 노드 생성 + key_type 기반 처리 + taxonomy_label.
 
         Args:
             key_name: Key명
             value: 값
             value_type: 값 타입
+            taxonomy_label: Taxonomy 레이블 (proper_noun만)
 
         Returns:
             Value ID (key_name:value 형식)
@@ -196,12 +230,27 @@ class KeyValueGraphBuilder:
 
         value_id = f"{key_name}:{value}"
 
-        # Value로 임베딩 생성
-        try:
-            value_embedding = embedding_service.generate_embedding(value, show_progress_bar=False)
-        except Exception as e:
-            logger.warning(f"Value '{value}' 임베딩 생성 실패: {e}, 0벡터로 대체")
-            value_embedding = [0.0] * 384
+        # Key 타입 조회
+        key_type = self._get_key_type(key_name)
+
+        # 타입별 처리
+        value_embedding = None
+        numeric_value = None
+
+        if key_type in ["semantic", "proper_noun"]:
+            # 임베딩 생성
+            try:
+                value_embedding = embedding_service.generate_embedding(value, show_progress_bar=False)
+            except Exception as e:
+                logger.warning(f"Value '{value}' 임베딩 생성 실패: {e}, 0벡터로 대체")
+                value_embedding = [0.0] * 384
+
+        elif key_type == "numeric_date":
+            # 숫자 값 추출
+            try:
+                numeric_value = float(value)
+            except ValueError:
+                logger.warning(f"numeric_date 타입이지만 숫자 변환 실패: {value}")
 
         query = """
         MERGE (v:Value {id: $value_id})
@@ -209,7 +258,10 @@ class KeyValueGraphBuilder:
             v.name = $value,
             v.value_type = $value_type,
             v.key_name = $key_name,
+            v.key_type = $key_type,
             v.value_embedding = $value_embedding,
+            v.numeric_value = $numeric_value,
+            v.taxonomy_label = $taxonomy_label,
             v.created_at = datetime()
         """
         self.graph_repo.execute_query(
@@ -219,11 +271,27 @@ class KeyValueGraphBuilder:
                 "value": value,
                 "value_type": value_type,
                 "key_name": key_name,
+                "key_type": key_type,
                 "value_embedding": value_embedding,
+                "numeric_value": numeric_value,
+                "taxonomy_label": taxonomy_label,
             },
         )
 
         return value_id
+
+    def _get_key_type(self, key_name: str) -> str:
+        """Key 타입 조회 헬퍼 메서드
+
+        Args:
+            key_name: Key명
+
+        Returns:
+            key_type (semantic/numeric_date/proper_noun)
+        """
+        query = "MATCH (k:Key {name: $key_name}) RETURN k.key_type as key_type"
+        result = self.graph_repo.execute_query(query, {"key_name": key_name})
+        return result[0]["key_type"] if result else "semantic"
 
     def create_normalized_value_node(self, key_name: str, normalized_value: str) -> None:
         """NormalizedValue 노드 생성.
@@ -377,12 +445,12 @@ class KeyValueGraphBuilder:
         }
 
     def create_relation(
-        self,
-        source_doc_id: str,
-        target_doc_id: str,
-        confidence: float,
-        reason: str,
-        approved_at: str | None = None,
+            self,
+            source_doc_id: str,
+            target_doc_id: str,
+            confidence: float,
+            reason: str,
+            approved_at: str | None = None,
     ) -> dict[str, Any]:
         """Document 간 관계 생성 (온디맨드 워크플로우용)
 
