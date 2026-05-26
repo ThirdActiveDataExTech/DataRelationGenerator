@@ -1,12 +1,11 @@
-"""고유명사 필드 Taxonomy 레이블링 파이프라인"""
+from typing import Optional
 
 import logging
-from typing import Optional
 import numpy as np
 from sklearn.cluster import HDBSCAN
 
-from app.src.meta_extract.llm_response import LLMResponse
 from app.src.embedding.embedding_service import embedding_service
+from app.src.meta_extract.llm_response import LLMResponse
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +20,10 @@ class ProperNounLabeler:
         self.taxonomy_cache: dict[str, list[str]] = {}
 
     def label_values(
-        self,
-        key_name: str,
-        values: list[str],
-        force_rebuild_taxonomy: bool = False
+            self,
+            key_name: str,
+            values: list[str],
+            force_rebuild_taxonomy: bool = False
     ) -> dict[str, str]:
         """고유명사 값들에 Taxonomy 레이블 부여
 
@@ -60,10 +59,10 @@ class ProperNounLabeler:
         return self._batch_labeling(key_name, values, taxonomy)
 
     def _apply_standard_taxonomy(
-        self,
-        key_name: str,
-        values: list[str],
-        standard_taxonomy: list[str]
+            self,
+            key_name: str,
+            values: list[str],
+            standard_taxonomy: list[str]
     ) -> dict[str, str]:
         """표준 Taxonomy 적용 (키워드 기반 + LLM fallback)"""
         from app.src.keyvalue_graph.field_mappings import TAXONOMY_KEYWORD_RULES
@@ -146,10 +145,10 @@ class ProperNounLabeler:
             return labels
 
     def _batch_labeling(
-        self,
-        key_name: str,
-        values: list[str],
-        taxonomy: list[str]
+            self,
+            key_name: str,
+            values: list[str],
+            taxonomy: list[str]
     ) -> dict[str, str]:
         """LLM으로 일괄 레이블링 (Constrained)"""
         values_str = "\n".join([f"  - {v}" for v in values])
