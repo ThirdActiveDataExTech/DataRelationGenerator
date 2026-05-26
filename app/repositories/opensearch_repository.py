@@ -1,7 +1,6 @@
-"""OpenSearch Repository 모듈."""
+from typing import List, Optional, Dict, Any
 
 import logging
-from typing import List, Optional, Dict, Any
 
 from app.clients.opensearch import OpenSearchClient, get_opensearch_client
 from app.config import settings
@@ -24,11 +23,11 @@ class OpenSearchRepository:
         self.values_index = settings.OPENSEARCH_VALUES_INDEX
 
     def index_document(
-        self,
-        doc_id: str,
-        content: str,
-        embedding: List[float],
-        metadata: Optional[Dict[str, Any]] = None
+            self,
+            doc_id: str,
+            content: str,
+            embedding: List[float],
+            metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Document 노드 인덱싱.
 
@@ -50,17 +49,21 @@ class OpenSearchRepository:
         return self.client.index_document(self.documents_index, doc_id, body)
 
     def index_key(
-        self,
-        key_id: str,
-        key_name: str,
-        embedding: List[float]
+            self,
+            key_id: str,
+            key_name: str,
+            key_type: str,
+            key_type_confidence: float,
+            embedding: Optional[List[float]] = None
     ) -> Dict[str, Any]:
         """Key 노드 인덱싱.
 
         Args:
             key_id: Key ID
             key_name: Key 이름
-            embedding: Key 임베딩 벡터 (768차원)
+            key_type: 필드 타입 (semantic, numeric_date, proper_noun)
+            key_type_confidence: 타입 분류 신뢰도
+            embedding: Key 임베딩 벡터 (semantic/proper_noun만)
 
         Returns:
             인덱싱 결과
@@ -68,17 +71,22 @@ class OpenSearchRepository:
         body = {
             "key_id": key_id,
             "key_name": key_name,
-            "embedding": embedding
+            "key_type": key_type,
+            "key_type_confidence": key_type_confidence
         }
+        if embedding is not None:
+            body["embedding"] = embedding
         return self.client.index_document(self.keys_index, key_id, body)
 
     def index_value(
-        self,
-        value_id: str,
-        value_content: str,
-        parent_key_id: str,
-        embedding: List[float],
-        value_type: str = "text"
+            self,
+            value_id: str,
+            value_content: str,
+            parent_key_id: str,
+            parent_key_type: str,
+            embedding: Optional[List[float]] = None,
+            value_type: str = "text",
+            numeric_value: Optional[float] = None
     ) -> Dict[str, Any]:
         """Value 노드 인덱싱.
 
@@ -86,8 +94,10 @@ class OpenSearchRepository:
             value_id: Value ID
             value_content: Value 내용
             parent_key_id: 부모 Key ID
-            embedding: Value 임베딩 벡터 (768차원)
-            value_type: Value 타입 (text, number 등)
+            parent_key_type: 부모 Key 타입 (semantic, numeric_date, proper_noun)
+            embedding: Value 임베딩 벡터 (semantic/proper_noun만)
+            value_type: Value 데이터 타입 (text, number 등)
+            numeric_value: 숫자 값 (numeric_date 타입만)
 
         Returns:
             인덱싱 결과
@@ -96,9 +106,13 @@ class OpenSearchRepository:
             "value_id": value_id,
             "value_content": value_content,
             "parent_key_id": parent_key_id,
-            "embedding": embedding,
+            "parent_key_type": parent_key_type,
             "value_type": value_type
         }
+        if embedding is not None:
+            body["embedding"] = embedding
+        if numeric_value is not None:
+            body["numeric_value"] = numeric_value
         return self.client.index_document(self.values_index, value_id, body)
 
     def bulk_index_documents(self, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -138,10 +152,10 @@ class OpenSearchRepository:
         return self.client.bulk_index(self.values_index, values)
 
     def search_documents(
-        self,
-        query_vector: List[float],
-        top_k: int = 5,
-        filter_doc_ids: Optional[List[str]] = None
+            self,
+            query_vector: List[float],
+            top_k: int = 5,
+            filter_doc_ids: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """Document 벡터 검색.
 
@@ -188,9 +202,9 @@ class OpenSearchRepository:
         return results
 
     def search_keys(
-        self,
-        query_vector: List[float],
-        top_k: int = 3
+            self,
+            query_vector: List[float],
+            top_k: int = 3
     ) -> List[Dict[str, Any]]:
         """Key 벡터 검색.
 
@@ -226,10 +240,10 @@ class OpenSearchRepository:
         return results
 
     def search_values(
-        self,
-        query_vector: List[float],
-        parent_key_ids: List[str],
-        top_k: int = 10
+            self,
+            query_vector: List[float],
+            parent_key_ids: List[str],
+            top_k: int = 10
     ) -> List[Dict[str, Any]]:
         """Value 벡터 검색 (특정 Key들에 속한 Value만).
 
