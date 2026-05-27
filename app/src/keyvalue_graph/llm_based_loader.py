@@ -2,10 +2,9 @@ from typing import Any, Dict
 
 import logging
 
-from app.repositories.graph_repository import GraphRepository
 from app.src.keyvalue_graph.data_loader import DataRecord
 from app.src.keyvalue_graph.field_mappings import FIELD_NAME_MAPPING
-from app.src.keyvalue_graph.graph_builder import KeyValueGraphBuilder
+from app.src.keyvalue_graph.neptune_graph_builder import NeptuneGraphBuilder
 from app.src.keyvalue_graph.text_utils import truncate_single_record
 from app.src.meta_extract.llm_response import LLMResponse
 
@@ -13,17 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 class LLMBasedKeyValueLoader:
-    """LLM을 사용하여 데이터로부터 Key-Value를 추출하고 그래프를 생성하는 서비스."""
+    """LLM을 사용하여 데이터로부터 Key-Value를 추출하고 Neptune에 저장하는 서비스."""
 
-    def __init__(self, graph_repo: GraphRepository = None, field_mapping: Dict[str, str] = None):
+    def __init__(self, field_mapping: Dict[str, str] = None):
         """초기화.
 
         Args:
-            graph_repo: Neptune 리포지토리
             field_mapping: 필드명 매핑 (원본 → 한글). None이면 기본 매핑 사용
         """
-        self.graph_repo = graph_repo or GraphRepository()
-        self.graph_builder = KeyValueGraphBuilder(graph_repo=self.graph_repo)
+        self.graph_builder = NeptuneGraphBuilder()
         self.field_mapping = field_mapping or FIELD_NAME_MAPPING
 
     def extract_and_build_graph(
@@ -119,22 +116,21 @@ class LLMBasedKeyValueLoader:
             # LLM이 추출한 Key-Value를 직접 설정
             record.key_values = korean_key_values
 
-            # 4. 그래프 생성
+            # 4. 그래프 생성 (Neptune + OpenSearch)
             result = self.graph_builder.build_from_record(record, centrality_name=centrality_name)
 
             logger.info(
-                f"그래프 생성 완료: Centrality={centrality_name}, Document={result.document_id}, "
-                f"Keys={result.keys_count}, Values={result.values_count}, "
-                f"Normalized={result.normalized_count}"
+                f"그래프 생성 완료: Centrality={centrality_name}, Document={result['document_id']}, "
+                f"Keys={result['keys_count']}, Values={result['values_count']}"
             )
 
             return {
-                "success": result.success,
+                "success": result["success"],
                 "centrality_name": centrality_name,
-                "document_id": result.document_id,
-                "keys_count": result.keys_count,
-                "values_count": result.values_count,
-                "normalized_count": result.normalized_count,
+                "document_id": result["document_id"],
+                "keys_count": result["keys_count"],
+                "values_count": result["values_count"],
+                "normalized_count": 0,
                 "extraction": {
                     "raw_keys": list(raw_key_values.keys()),
                     "korean_keys": list(korean_key_values.keys()),
