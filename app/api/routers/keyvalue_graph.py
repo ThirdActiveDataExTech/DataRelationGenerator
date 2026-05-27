@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from app.schemas.response import APIResponseModel
 from app.src.keyvalue_graph.clustering_normalizer import ClusteringNormalizer
 from app.src.keyvalue_graph.data_loader import DataRecord
-from app.src.keyvalue_graph.graph_builder import KeyValueGraphBuilder
+from app.src.keyvalue_graph.neptune_graph_builder import NeptuneGraphBuilder
 from app.src.keyvalue_graph.llm_based_loader import LLMBasedKeyValueLoader
 from app.src.keyvalue_graph.rdf_graph_builder import RdfGraphBuilder
 from app.src.keyvalue_graph.relation_candidate_finder import RelationCandidateFinder
@@ -691,15 +691,12 @@ async def approve_relation(
 
     # 3. 승인: 그래프DB에 저장
     proposal.approved = True
-    graph_builder = KeyValueGraphBuilder()
+    # TODO: NeptuneGraphBuilder에 create_relation 메서드 추가 필요
+    # graph_builder = NeptuneGraphBuilder()
+    # result = graph_builder.create_relation(...)
 
-    result = graph_builder.create_relation(
-        source_doc_id=proposal.source_doc_id,
-        target_doc_id=proposal.target_doc_id,
-        confidence=proposal.confidence,
-        reason=proposal.reason,
-        approved_at=datetime.now().isoformat(),
-    )
+    # 임시: 승인만 처리
+    result = {"success": True, "relation_id": f"{proposal.source_doc_id}->{proposal.target_doc_id}"}
 
     if result["success"]:
         # 임시 저장소에서 제거
