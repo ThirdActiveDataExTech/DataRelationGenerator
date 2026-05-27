@@ -31,6 +31,7 @@ class NeptuneGraphBuilder:
         self.opensearch_repo = opensearch_repo or get_opensearch_repository()
         self.namespace = Namespace(namespace)
         self.namespace_prefix = namespace_prefix
+        self._processed_keys = set()  # 이미 처리한 Key 추적 (배치 내 중복 방지)
 
     def build_from_record(
         self,
@@ -160,30 +161,86 @@ INSERT DATA {{
             }
         )
 
-        # 2. Key 인덱싱
-        for key_name in record.key_values.keys():
-            key_embedding = embedding_service.generate_embedding(key_name)
+        # 2. Key 인덱싱 (중복 방지 + field_type_classifier)
+        for key_name, values in record.key_values.items():
+            # 이미 처리한 Key면 스킵
+            if key_name in self._processed_keys:
+                continue
+
+            # field_type 분류
+            from app.src.keyvalue_graph.field_type_classifier import field_type_classifier
+            type_result = field_type_classifier.classify(
+                key_name=key_name,
+                sample_values=[str(v) for v in values[:5]]
+            )
+            key_type = type_result["field_type"]
+            key_type_confidence = type_result["confidence"]
+
+            # 임베딩 생성 (semantic/proper_noun만)
+            key_embedding = None
+            if key_type in ["semantic", "proper_noun"]:
+                key_embedding = embedding_service.generate_embedding(key_name)
 
             self.opensearch_repo.index_key(
                 key_id=key_name,
                 key_name=key_name,
+                key_type=key_type,
+                key_type_confidence=key_type_confidence,
                 embedding=key_embedding
             )
 
-        # 3. Value 인덱싱
+            self._processed_keys.add(key_name)
+
+        # 3. Value 인덱싱 (key_type 기반 처리)
         for key_name, values in record.key_values.items():
+            # Key 타입 조회 (_processed_keys에 있거나 OpenSearch에서 조회)
+            key_type = self._get_key_type(key_name)
+
             for value in values:
                 value_id = f"{doc_id}_{key_name}_{value}"
                 value_content = str(value)
-                value_embedding = embedding_service.generate_embedding(value_content)
+
+                # 타입별 처리
+                value_embedding = None
+                numeric_value = None
+
+                if key_type in ["semantic", "proper_noun"]:
+                    value_embedding = embedding_service.generate_embedding(value_content)
+                elif key_type == "numeric_date":
+                    try:
+                        numeric_value = float(value_content)
+                    except ValueError:
+                        logger.warning(f"numeric_date 타입이지만 숫자 변환 실패: {value_content}")
 
                 self.opensearch_repo.index_value(
                     value_id=value_id,
                     value_content=value_content,
                     parent_key_id=key_name,
+                    parent_key_type=key_type,
                     embedding=value_embedding,
-                    value_type=record.infer_value_type(key_name, value).value
+                    value_type=record.infer_value_type(key_name, value).value,
+                    numeric_value=numeric_value
                 )
+
+    def _get_key_type(self, key_name: str) -> str:
+        """Key 타입 조회 헬퍼 메서드 (OpenSearch에서 조회)
+
+        Args:
+            key_name: Key명
+
+        Returns:
+            key_type (semantic/numeric_date/proper_noun)
+        """
+        try:
+            # OpenSearch에서 Key 정보 조회
+            result = self.opensearch_repo.client.client.get(
+                index=self.opensearch_repo.keys_index,
+                id=key_name
+            )
+            return result.get("_source", {}).get("key_type", "semantic")
+        except Exception:
+            # 조회 실패 시 기본값 반환
+            return "semantic"
 
     def build_batch(
         self,
