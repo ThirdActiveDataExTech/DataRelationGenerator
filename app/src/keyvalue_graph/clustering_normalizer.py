@@ -6,7 +6,6 @@ from rapidfuzz import fuzz
 from sklearn.cluster import DBSCAN
 
 from app.repositories.graph_repository import GraphRepository
-from app.src.keyvalue_graph.graph_builder import KeyValueGraphBuilder
 from app.src.meta_extract.llm_response import LLMResponse
 
 logger = logging.getLogger(__name__)
@@ -14,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 class ClusteringNormalizer:
     """클러스터링 기반 Value 정규화 서비스
+
+    TODO: Neptune SPARQL 기반으로 재작성 필요 (현재 Neo4j Cypher 기반)
 
     각 Key별로 Value들을 유사도 기반 클러스터링하고,
     각 클러스터의 대표값을 NormalizedValue로 지정
@@ -309,13 +310,15 @@ class ClusteringNormalizer:
             생성된 관계 수
         """
         # 1. NormalizedValue 노드 생성 (KeyValueGraphBuilder 재사용)
-        self.graph_builder.create_normalized_value_node(key_name, representative)
+        # TODO: Neptune SPARQL로 구현 필요
+        # self.graph_builder.create_normalized_value_node(key_name, representative)
 
         # 2. 각 Value에서 NormalizedValue로 SAME_AS 관계 생성
         count = 0
         for value in cluster_values:
             value_id = f"{key_name}:{value}"
-            self.graph_builder.create_same_as_relation(value_id, key_name, representative)
+            # TODO: Neptune SPARQL로 구현 필요
+            # self.graph_builder.create_same_as_relation(value_id, key_name, representative)
             count += 1
 
         # 3. Document와 NormalizedValue 연결 (추가 쿼리)
