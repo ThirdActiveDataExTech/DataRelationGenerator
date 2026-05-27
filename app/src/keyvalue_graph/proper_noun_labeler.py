@@ -17,6 +17,7 @@ class ProperNounLabeler:
     """
 
     def __init__(self):
+        """Init - Taxonomy 캐시"""
         self.taxonomy_cache: dict[str, list[str]] = {}
 
     def label_values(
