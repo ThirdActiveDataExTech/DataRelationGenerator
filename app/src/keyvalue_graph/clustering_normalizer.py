@@ -27,7 +27,7 @@ class ClusteringNormalizer:
             graph_repo: Neptune 리포지토리
         """
         self.graph_repo = graph_repo or GraphRepository()
-        self.graph_builder = KeyValueGraphBuilder(graph_repo=self.graph_repo)
+        # TODO: Neptune용 정규화 메서드 구현 필요
 
     def normalize_all_keys(
             self,
