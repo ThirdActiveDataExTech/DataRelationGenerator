@@ -40,6 +40,11 @@ class FieldTypeClassifier:
                 variables={"key_name": key_name, "sample_values": samples_str}
             )
 
+            # 타입 검증
+            if not isinstance(result, dict):
+                logger.warning(f"LLM 응답이 dict가 아님: {type(result)}, 기본값 반환")
+                return {"field_type": "semantic", "confidence": 0.5}
+
             logger.info(
                 f"필드 타입 분류 완료: {key_name} → {result['field_type']} (신뢰도: {result['confidence']})"
             )
