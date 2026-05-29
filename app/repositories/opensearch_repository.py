@@ -24,66 +24,83 @@ class OpenSearchRepository:
 
     def index_document(
             self,
-            doc_id: str,
             content: str,
             embedding: List[float],
+            domain: str = "",
             metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Document 노드 인덱싱.
 
         Args:
-            doc_id: 문서 ID
             content: 문서 내용
             embedding: 문서 임베딩 벡터 (768차원)
+            domain: 데이터 도메인 (예: 의료, 법률, 방송)
             metadata: 메타데이터
 
         Returns:
-            인덱싱 결과
+            인덱싱 결과 {"doc_id": UUID, ...}
         """
         body = {
-            "doc_id": doc_id,
             "content": content,
             "embedding": embedding,
+            "domain": domain,
             "metadata": metadata or {}
         }
-        return self.client.index_document(self.documents_index, doc_id, body)
+        doc_uuid, response = self.client.index_document(self.documents_index, body)
+        return {"doc_id": doc_uuid, **response}
 
     def index_key(
             self,
-            key_id: str,
             key_name: str,
             key_type: str,
             key_type_confidence: float,
+            domain: str = "",
+            original_key_name: Optional[str] = None,
             embedding: Optional[List[float]] = None
     ) -> Dict[str, Any]:
         """Key 노드 인덱싱.
 
         Args:
-            key_id: Key ID
-            key_name: Key 이름
+            key_name: Key 이름 (한글)
             key_type: 필드 타입 (semantic, numeric_date, proper_noun)
             key_type_confidence: 타입 분류 신뢰도
+            domain: 데이터 도메인 (예: 의료, 법률, 방송)
+            original_key_name: 원본 필드명 (예: BIZPLC_NM)
             embedding: Key 임베딩 벡터 (semantic/proper_noun만)
 
         Returns:
-            인덱싱 결과
+            인덱싱 결과 {"key_id": UUID, ...}
         """
         body = {
-            "key_id": key_id,
             "key_name": key_name,
             "key_type": key_type,
-            "key_type_confidence": key_type_confidence
+            "key_type_confidence": key_type_confidence,
+            "domain": domain
         }
+        if original_key_name:
+            body["original_key_name"] = original_key_name
         if embedding is not None:
             body["embedding"] = embedding
-        return self.client.index_document(self.keys_index, key_id, body)
+
+        # UUID 자동 생성, key_id 필드에도 UUID 저장
+        key_uuid, response = self.client.index_document(self.keys_index, body, add_id_to_body=False)
+
+        # key_id 필드 업데이트
+        self.client.client.update(
+            index=self.keys_index,
+            id=key_uuid,
+            body={"doc": {"key_id": key_uuid}}
+        )
+
+        return {"key_id": key_uuid, **response}
 
     def index_value(
             self,
-            value_id: str,
             value_content: str,
             parent_key_id: str,
+            parent_key_name: str,
             parent_key_type: str,
+            document_ids: List[str],
             embedding: Optional[List[float]] = None,
             value_type: str = "text",
             numeric_value: Optional[float] = None
@@ -91,29 +108,42 @@ class OpenSearchRepository:
         """Value 노드 인덱싱.
 
         Args:
-            value_id: Value ID
             value_content: Value 내용
-            parent_key_id: 부모 Key ID
+            parent_key_id: 부모 Key ID (UUID)
+            parent_key_name: 부모 Key 이름 (한글)
             parent_key_type: 부모 Key 타입 (semantic, numeric_date, proper_noun)
+            document_ids: 이 Value가 추출된 Document ID 리스트 (UUID)
             embedding: Value 임베딩 벡터 (semantic/proper_noun만)
             value_type: Value 데이터 타입 (text, number 등)
             numeric_value: 숫자 값 (numeric_date 타입만)
 
         Returns:
-            인덱싱 결과
+            인덱싱 결과 {"value_id": UUID, ...}
         """
         body = {
-            "value_id": value_id,
             "value_content": value_content,
             "parent_key_id": parent_key_id,
+            "parent_key_name": parent_key_name,
             "parent_key_type": parent_key_type,
+            "document_ids": document_ids,
             "value_type": value_type
         }
         if embedding is not None:
             body["embedding"] = embedding
         if numeric_value is not None:
             body["numeric_value"] = numeric_value
-        return self.client.index_document(self.values_index, value_id, body)
+
+        # Value는 doc_id 필드를 body에 추가하지 않음
+        value_uuid, response = self.client.index_document(self.values_index, body, add_id_to_body=False)
+
+        # value_id 필드 업데이트
+        self.client.client.update(
+            index=self.values_index,
+            id=value_uuid,
+            body={"doc": {"value_id": value_uuid}}
+        )
+
+        return {"value_id": value_uuid, **response}
 
     def bulk_index_documents(self, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Document 노드 대량 인덱싱.
@@ -292,7 +322,7 @@ class OpenSearchRepository:
         """Document 삭제.
 
         Args:
-            doc_id: 문서 ID
+            doc_id: 문서 ID (UUID)
 
         Returns:
             삭제 결과
@@ -303,7 +333,7 @@ class OpenSearchRepository:
         """Key 삭제.
 
         Args:
-            key_id: Key ID
+            key_id: Key ID (UUID)
 
         Returns:
             삭제 결과
@@ -314,7 +344,7 @@ class OpenSearchRepository:
         """Value 삭제.
 
         Args:
-            value_id: Value ID
+            value_id: Value ID (UUID)
 
         Returns:
             삭제 결과
