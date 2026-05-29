@@ -38,6 +38,7 @@ class NeptuneGraphBuilder:
         self,
         record: DataRecord,
         centrality_name: str = "데이터현황",
+        domain: str = None,
         create_document: bool = True
     ) -> Dict[str, Any]:
         """단일 레코드로부터 Neptune + OpenSearch에 저장.
@@ -45,11 +46,15 @@ class NeptuneGraphBuilder:
         Args:
             record: 데이터 레코드
             centrality_name: 중심 노드 이름
+            domain: 데이터 도메인 (예: "의료", "법률"). None이면 centrality_name 사용
             create_document: Document 노드 생성 여부
 
         Returns:
             저장 결과
         """
+        # domain이 명시되지 않으면 centrality_name 사용 (하위 호환)
+        if domain is None:
+            domain = centrality_name
         doc_id = record.get_document_id()
 
         # 1. Neptune에 RDF 트리플 저장
@@ -58,7 +63,7 @@ class NeptuneGraphBuilder:
         self.neptune_client.execute_update(sparql_insert)
 
         # 2. OpenSearch에 임베딩 저장
-        self._index_to_opensearch(record, centrality_name)
+        self._index_to_opensearch(record, domain)
 
         return {
             "success": True,
@@ -134,8 +139,13 @@ INSERT DATA {{
 }}
 """
 
-    def _index_to_opensearch(self, record: DataRecord, centrality_name: str):
-        """OpenSearch에 임베딩 인덱싱."""
+    def _index_to_opensearch(self, record: DataRecord, domain: str):
+        """OpenSearch에 임베딩 인덱싱.
+
+        Args:
+            record: 데이터 레코드
+            domain: 데이터 도메인 (예: "의료", "법률")
+        """
         doc_id = record.get_document_id()
 
         # 1. Document 인덱싱
@@ -145,7 +155,7 @@ INSERT DATA {{
         doc_result = self.opensearch_repo.index_document(
             content=doc_content,
             embedding=doc_embedding,
-            domain=centrality_name,
+            domain=domain,
             metadata={
                 "source_file": record.source_file,
                 "record_index": record.record_index
@@ -182,7 +192,7 @@ INSERT DATA {{
                 key_name=key_name,
                 key_type=key_type,
                 key_type_confidence=key_type_confidence,
-                domain=centrality_name,
+                domain=domain,
                 original_key_name=original_key_name,
                 embedding=key_embedding
             )
