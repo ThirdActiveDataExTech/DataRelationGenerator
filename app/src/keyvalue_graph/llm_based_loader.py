@@ -28,6 +28,7 @@ class LLMBasedKeyValueLoader:
             self,
             data_text: str,
             centrality_name: str = "병원현황",
+            domain: str = None,
             source_file: str = "llm_extract",
             record_index: int = 0,
             extractable_metadata: Dict[str, Any] = None
@@ -37,6 +38,7 @@ class LLMBasedKeyValueLoader:
         Args:
             data_text: 원본 데이터 (JSON 문자열)
             centrality_name: 중심 노드 이름 (예: "병원현황", "판례정보")
+            domain: 데이터 도메인 (예: "의료", "법률", "방송"). None이면 centrality_name 사용
             source_file: 소스 파일명
             record_index: 레코드 인덱스
             extractable_metadata: 추출 가능한 메타데이터 정의
@@ -44,6 +46,9 @@ class LLMBasedKeyValueLoader:
         Returns:
             그래프 생성 결과
         """
+        # domain이 명시되지 않으면 centrality_name 사용 (하위 호환)
+        if domain is None:
+            domain = centrality_name
         # 0. 데이터 전처리: JSON 파싱 + Truncate
         try:
             raw_data = json.loads(data_text)
@@ -115,7 +120,11 @@ class LLMBasedKeyValueLoader:
         record.original_key_mapping = original_key_mapping
 
         # 4. 그래프 생성 (Neptune + OpenSearch) - 에러 발생 시 예외 전파
-        result = self.graph_builder.build_from_record(record, centrality_name=centrality_name)
+        result = self.graph_builder.build_from_record(
+            record,
+            centrality_name=centrality_name,
+            domain=domain
+        )
 
         logger.info(
             f"그래프 생성 완료: Centrality={centrality_name}, Document={result['document_id']}, "

@@ -135,9 +135,13 @@ async def batch_extract_key_value_from_json(
         for meta_key, meta_info in detected_schema.extractable_metadata.items():
             field_mapping[meta_key] = meta_info.korean_name
 
-        # 감지된 centrality_name 사용
+        # 감지된 domain과 centrality_name 사용
+        domain = detected_schema.domain
         centrality_name = detected_schema.centrality_name
 
+        logger.info(
+            f"스키마 분석 결과: domain={domain}, centrality_name={centrality_name}"
+        )
         logger.info(
             f"통합 필드 매핑: 원본 {len(detected_schema.fields)}개 + "
             f"메타데이터 {len(detected_schema.extractable_metadata)}개 = "
@@ -155,6 +159,7 @@ async def batch_extract_key_value_from_json(
             result = loader.extract_and_build_graph(
                 data_text,
                 centrality_name=centrality_name,
+                domain=domain if auto_detect_schema else centrality_name,
                 source_file=file.filename or "batch_upload",
                 record_index=idx,
                 extractable_metadata=detected_schema.extractable_metadata if detected_schema else None
