@@ -1,3 +1,4 @@
+import json
 from typing import Any, Dict
 
 import logging
@@ -43,119 +44,110 @@ class LLMBasedKeyValueLoader:
         Returns:
             그래프 생성 결과
         """
+        # 0. 데이터 전처리: JSON 파싱 + Truncate
         try:
-            import json
+            raw_data = json.loads(data_text)
+        except json.JSONDecodeError:
+            raw_data = {}
+            logger.warning("JSON 파싱 실패, 빈 데이터 사용")
 
-            # 0. 데이터 전처리: JSON 파싱 + Truncate
-            try:
-                raw_data = json.loads(data_text)
-            except json.JSONDecodeError:
-                raw_data = {}
-                logger.warning("JSON 파싱 실패, 빈 데이터 사용")
+        # 긴 텍스트 필드 truncate (key_value_extract 컨텍스트: 더 긴 임계값 사용)
+        truncated_data = truncate_single_record(raw_data, context="key_value_extract")
+        truncated_data_text = json.dumps(truncated_data, ensure_ascii=False)
 
-            # 긴 텍스트 필드 truncate (key_value_extract 컨텍스트: 더 긴 임계값 사용)
-            truncated_data = truncate_single_record(raw_data, context="key_value_extract")
-            truncated_data_text = json.dumps(truncated_data, ensure_ascii=False)
+        logger.info(
+            f"데이터 전처리 완료: 원본 {len(data_text)}자 → {len(truncated_data_text)}자"
+        )
 
-            logger.info(
-                f"데이터 전처리 완료: 원본 {len(data_text)}자 → {len(truncated_data_text)}자"
+        # 1. LLM으로 Key-Value 추출
+        logger.info("LLM으로 Key-Value 추출 시작")
+
+        # field_mapping이 있으면 추출할 필드 목록 힌트 추가
+        if self.field_mapping:
+            field_hints_lines = []
+
+            # 원본 필드 + extractable_metadata 필드 구분
+            for key, korean_name in self.field_mapping.items():
+                # extractable_metadata에 있는 필드면 description 추가
+                if extractable_metadata and key in extractable_metadata:
+                    meta_info = extractable_metadata[key]
+                    field_hints_lines.append(
+                        f"- {key} ({korean_name}): {meta_info.description} "
+                        f"[source: {meta_info.source_field}]"
+                    )
+                else:
+                    # 원본 필드
+                    field_hints_lines.append(f"- {key} ({korean_name})")
+
+            field_hints = "\n".join(field_hints_lines)
+            data_with_hints = (
+                f"# 추출할 필드 목록:\n{field_hints}\n\n"
+                f"# 데이터:\n{truncated_data_text}"
+            )
+            logger.info(f"필드 힌트 추가: {len(field_hints_lines)}개 필드")
+        else:
+            data_with_hints = truncated_data_text
+
+        llm_response = LLMResponse("key_value_extract")
+        extraction_result = llm_response.generate_llm_response(
+            variables={"data_text": data_with_hints}
+        )
+
+        if not isinstance(extraction_result, dict):
+            raise ValueError(
+                f"LLM 응답이 dict가 아닙니다: {type(extraction_result)}"
             )
 
-            # 1. LLM으로 Key-Value 추출
-            logger.info("LLM으로 Key-Value 추출 시작")
+        raw_key_values = extraction_result.get("key_values", {})
+        logger.info(f"추출된 Key 개수: {len(raw_key_values)}")
 
-            # field_mapping이 있으면 추출할 필드 목록 힌트 추가
-            if self.field_mapping:
-                field_hints_lines = []
+        # 2. Key를 한글로 매핑 (역매핑 정보도 저장)
+        korean_key_values, original_key_mapping = self._map_keys_to_korean(raw_key_values)
 
-                # 원본 필드 + extractable_metadata 필드 구분
-                for key, korean_name in self.field_mapping.items():
-                    # extractable_metadata에 있는 필드면 description 추가
-                    if extractable_metadata and key in extractable_metadata:
-                        meta_info = extractable_metadata[key]
-                        field_hints_lines.append(
-                            f"- {key} ({korean_name}): {meta_info.description} "
-                            f"[source: {meta_info.source_field}]"
-                        )
-                    else:
-                        # 원본 필드
-                        field_hints_lines.append(f"- {key} ({korean_name})")
+        # 3. DataRecord 생성 (원본 데이터 사용)
+        record = DataRecord(
+            source_file=source_file,
+            record_index=record_index,
+            raw_data=raw_data,
+        )
+        # LLM이 추출한 Key-Value를 직접 설정
+        record.key_values = korean_key_values
+        record.original_key_mapping = original_key_mapping
 
-                field_hints = "\n".join(field_hints_lines)
-                data_with_hints = (
-                    f"# 추출할 필드 목록:\n{field_hints}\n\n"
-                    f"# 데이터:\n{truncated_data_text}"
-                )
-                logger.info(f"필드 힌트 추가: {len(field_hints_lines)}개 필드")
-            else:
-                data_with_hints = truncated_data_text
+        # 4. 그래프 생성 (Neptune + OpenSearch) - 에러 발생 시 예외 전파
+        result = self.graph_builder.build_from_record(record, centrality_name=centrality_name)
 
-            llm_response = LLMResponse("key_value_extract")
-            extraction_result = llm_response.generate_llm_response(
-                variables={"data_text": data_with_hints}
-            )
+        logger.info(
+            f"그래프 생성 완료: Centrality={centrality_name}, Document={result['document_id']}, "
+            f"Keys={result['keys_count']}, Values={result['values_count']}"
+        )
 
-            if not isinstance(extraction_result, dict):
-                raise ValueError(
-                    f"LLM 응답이 dict가 아닙니다: {type(extraction_result)}"
-                )
-
-            raw_key_values = extraction_result.get("key_values", {})
-            logger.info(f"추출된 Key 개수: {len(raw_key_values)}")
-
-            # 2. Key를 한글로 매핑
-            korean_key_values = self._map_keys_to_korean(raw_key_values)
-
-            # 3. DataRecord 생성 (원본 데이터 사용)
-
-            record = DataRecord(
-                source_file=source_file,
-                record_index=record_index,
-                raw_data=raw_data,
-            )
-            # LLM이 추출한 Key-Value를 직접 설정
-            record.key_values = korean_key_values
-
-            # 4. 그래프 생성 (Neptune + OpenSearch)
-            result = self.graph_builder.build_from_record(record, centrality_name=centrality_name)
-
-            logger.info(
-                f"그래프 생성 완료: Centrality={centrality_name}, Document={result['document_id']}, "
-                f"Keys={result['keys_count']}, Values={result['values_count']}"
-            )
-
-            return {
-                "success": result["success"],
-                "centrality_name": centrality_name,
-                "document_id": result["document_id"],
-                "keys_count": result["keys_count"],
-                "values_count": result["values_count"],
-                "normalized_count": 0,
-                "extraction": {
-                    "raw_keys": list(raw_key_values.keys()),
-                    "korean_keys": list(korean_key_values.keys()),
-                },
-            }
-
-        except Exception as e:
-            logger.exception(f"LLM 기반 그래프 생성 실패: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-            }
+        return {
+            "success": True,
+            "centrality_name": centrality_name,
+            "document_id": result["document_id"],
+            "keys_count": result["keys_count"],
+            "values_count": result["values_count"],
+            "normalized_count": 0,
+            "extraction": {
+                "raw_keys": list(raw_key_values.keys()),
+                "korean_keys": list(korean_key_values.keys()),
+            },
+        }
 
     def _map_keys_to_korean(
             self, raw_key_values: Dict[str, list[str]]
-    ) -> Dict[str, list[str]]:
+    ) -> tuple[Dict[str, list[str]], Dict[str, str]]:
         """원본 필드명을 한글로 매핑.
 
         Args:
             raw_key_values: 원본 Key-Value (예: {"BIZPLC_NM": ["병원명"], ...})
 
         Returns:
-            한글 매핑된 Key-Value (예: {"병원명": ["노체리안드리자애병원"], ...})
+            (한글 매핑된 Key-Value, 한글→원본 매핑)
         """
         korean_key_values = {}
+        original_key_mapping = {}
 
         for raw_key, values in raw_key_values.items():
             # 한글 매핑 조회 (인스턴스 field_mapping 사용)
@@ -166,8 +158,9 @@ class LLMBasedKeyValueLoader:
                 continue
 
             korean_key_values[korean_key] = values
+            original_key_mapping[korean_key] = raw_key
 
         logger.info(
             f"Key 매핑 완료: {len(raw_key_values)} → {len(korean_key_values)}"
         )
-        return korean_key_values
+        return korean_key_values, original_key_mapping
