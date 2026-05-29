@@ -180,29 +180,34 @@ class NeptuneClient:
 
         param_name = 'query' if is_query else 'update'
 
-        # SSH 키 경로
-        ssh_key = os.path.expanduser('~/Downloads/neptune-bastion-key.pem')
+        # SSH 키 경로 (config에서 읽기)
+        ssh_key = os.path.expanduser(settings.NEPTUNE_BASTION_SSH_KEY)
 
-        # Neptune 직접 엔드포인트 (localhost가 아닌 실제 Neptune URL)
-        neptune_url = settings.NEPTUNE_DIRECT_ENDPOINT if hasattr(settings, 'NEPTUNE_DIRECT_ENDPOINT') else self.signing_endpoint
-        if 'localhost' in neptune_url:
-            neptune_url = 'https://db-neptune-3rd-instance-1.clm86ii8i1rt.ap-northeast-1.neptune.amazonaws.com:8182'
+        # Neptune 직접 엔드포인트 (config에서 읽기)
+        neptune_url = settings.NEPTUNE_DIRECT_ENDPOINT
 
         # URL 인코딩된 데이터 생성
         encoded_data = f'{param_name}={urllib.parse.quote(query_or_update)}'
 
-        # awscurl 명령 생성
+        # awscurl 명령 생성 (stdin으로 데이터 전달)
+        bastion_host = f"{settings.NEPTUNE_BASTION_USER}@{settings.NEPTUNE_BASTION_HOST}"
         cmd = [
             'ssh', '-i', ssh_key,
-            'ec2-user@18.183.135.79',
+            bastion_host,
             f"awscurl --service neptune-db --region {self.region} "
             f"'{neptune_url}/sparql' -X POST "
             f"-H 'Content-Type: application/x-www-form-urlencoded' "
-            f"-d '{encoded_data}'"
+            f"--data @-"
         ]
 
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(
+                cmd,
+                input=encoded_data,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
 
             if result.returncode != 0:
                 logger.error(f"bastion 실행 실패: {result.stderr}")
