@@ -147,44 +147,64 @@ async def batch_extract_key_value_from_json(
     loader = LLMBasedKeyValueLoader(field_mapping=field_mapping)
 
     success_count = 0
-    failed_count = 0
     results = []
 
     for idx, data_item in enumerate(data_list):
-        data_text = json.dumps(data_item, ensure_ascii=False)
-        result = loader.extract_and_build_graph(
-            data_text,
-            centrality_name=centrality_name,
-            source_file=file.filename or "batch_upload",
-            record_index=idx,
-            extractable_metadata=detected_schema.extractable_metadata if detected_schema else None
-        )
+        try:
+            data_text = json.dumps(data_item, ensure_ascii=False)
+            result = loader.extract_and_build_graph(
+                data_text,
+                centrality_name=centrality_name,
+                source_file=file.filename or "batch_upload",
+                record_index=idx,
+                extractable_metadata=detected_schema.extractable_metadata if detected_schema else None
+            )
 
-        if result["success"]:
             success_count += 1
-        else:
-            failed_count += 1
+            results.append({
+                "index": idx,
+                "document_id": result["document_id"],
+                "success": True,
+                "keys_count": result["keys_count"],
+                "values_count": result["values_count"]
+            })
 
-        results.append({
-            "index": idx,
-            "document_id": result.get("document_id"),
-            "success": result["success"],
-            "error": result.get("error")
-        })
+        except Exception as e:
+            # 에러 발생 시 즉시 중단하고 상세 정보 반환
+            error_message = str(e)
+            logger.error(f"배치 처리 중단: {idx+1}/{len(data_list)} 레코드에서 에러 발생 - {error_message}")
 
-    # 결과 메시지 구성
+            error_detail = {
+                "index": idx,
+                "success": False,
+                "error": error_message,
+                "error_type": type(e).__name__,
+                "centrality_name": centrality_name,
+                "processed_count": success_count,
+                "failed_at": idx,
+                "total_count": len(data_list),
+                "previous_results": results
+            }
+
+            return APIResponseModel(
+                result=error_detail,
+                description=f"배치 처리 실패: {idx+1}번째 레코드에서 {type(e).__name__} 에러 발생 (전체 {len(data_list)}개 중 {success_count}개 성공)",
+                code=500
+            )
+
+    # 모든 레코드 성공 시 결과 반환
     if auto_detect_schema and detected_schema:
         description = (
             f"배치 처리 완료 [자동 스키마 감지]\n"
             f"- 도메인: {detected_schema.domain}\n"
             f"- Centrality: {centrality_name}\n"
             f"- 감지된 필드: {len(field_mapping)}개\n"
-            f"- 처리 결과: {success_count}건 성공, {failed_count}건 실패"
+            f"- 처리 결과: {success_count}건 성공"
         )
         result_data = {
             "total": len(data_list),
             "success": success_count,
-            "failed": failed_count,
+            "failed": 0,
             "centrality_name": centrality_name,
             "auto_detected": True,
             "detected_schema": {
@@ -203,11 +223,11 @@ async def batch_extract_key_value_from_json(
             "details": results
         }
     else:
-        description = f"배치 처리 완료 (Centrality: {centrality_name}): {success_count}건 성공, {failed_count}건 실패"
+        description = f"배치 처리 완료 (Centrality: {centrality_name}): {success_count}건 성공"
         result_data = {
             "total": len(data_list),
             "success": success_count,
-            "failed": failed_count,
+            "failed": 0,
             "centrality_name": centrality_name,
             "auto_detected": False,
             "details": results
