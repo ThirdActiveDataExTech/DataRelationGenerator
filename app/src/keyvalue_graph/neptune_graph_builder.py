@@ -31,11 +31,14 @@ class NeptuneGraphBuilder:
         self.opensearch_repo = opensearch_repo or get_opensearch_repository()
         self.namespace = Namespace(namespace)
         self.namespace_prefix = namespace_prefix
+        self._processed_keys = set()  # 이미 처리한 Key 추적 (배치 내 중복 방지)
+        self._key_uuid_map = {}  # Key 이름 -> UUID 매핑 (Value 인덱싱 시 사용)
 
     def build_from_record(
         self,
         record: DataRecord,
         centrality_name: str = "데이터현황",
+        domain: str = None,
         create_document: bool = True
     ) -> Dict[str, Any]:
         """단일 레코드로부터 Neptune + OpenSearch에 저장.
@@ -43,37 +46,32 @@ class NeptuneGraphBuilder:
         Args:
             record: 데이터 레코드
             centrality_name: 중심 노드 이름
+            domain: 데이터 도메인 (예: "의료", "법률"). None이면 centrality_name 사용
             create_document: Document 노드 생성 여부
 
         Returns:
             저장 결과
         """
+        # domain이 명시되지 않으면 centrality_name 사용 (하위 호환)
+        if domain is None:
+            domain = centrality_name
         doc_id = record.get_document_id()
 
-        try:
-            # 1. Neptune에 RDF 트리플 저장
-            sparql_insert = self._generate_insert_query(record, centrality_name, create_document)
-            logger.info(f"생성된 SPARQL 쿼리:\n{sparql_insert}")
-            self.neptune_client.execute_update(sparql_insert)
+        # 1. Neptune에 RDF 트리플 저장
+        sparql_insert = self._generate_insert_query(record, centrality_name, create_document)
+        logger.debug(f"생성된 SPARQL 쿼리:\n{sparql_insert}")
+        self.neptune_client.execute_update(sparql_insert)
 
-            # 2. OpenSearch에 임베딩 저장
-            self._index_to_opensearch(record, centrality_name)
+        # 2. OpenSearch에 임베딩 저장
+        self._index_to_opensearch(record, domain)
 
-            return {
-                "success": True,
-                "document_id": doc_id,
-                "keys_count": len(record.key_values),
-                "values_count": sum(len(values) for values in record.key_values.values()),
-                "message": "Neptune + OpenSearch 저장 완료"
-            }
-
-        except Exception as e:
-            logger.error(f"그래프 생성 실패 {doc_id}: {e}")
-            return {
-                "success": False,
-                "document_id": doc_id,
-                "error": str(e)
-            }
+        return {
+            "success": True,
+            "document_id": doc_id,
+            "keys_count": len(record.key_values),
+            "values_count": sum(len(values) for values in record.key_values.values()),
+            "message": "Neptune + OpenSearch 저장 완료"
+        }
 
     def _escape_sparql_literal(self, s: str) -> str:
         """SPARQL 리터럴 문자열 이스케이핑."""
@@ -141,49 +139,170 @@ INSERT DATA {{
 }}
 """
 
-    def _index_to_opensearch(self, record: DataRecord, centrality_name: str):
-        """OpenSearch에 임베딩 인덱싱."""
+    def _index_to_opensearch(self, record: DataRecord, domain: str):
+        """OpenSearch에 임베딩 인덱싱.
+
+        Args:
+            record: 데이터 레코드
+            domain: 데이터 도메인 (예: "의료", "법률")
+        """
         doc_id = record.get_document_id()
 
         # 1. Document 인덱싱
         doc_content = json.dumps(record.raw_data, ensure_ascii=False)
         doc_embedding = embedding_service.generate_embedding(doc_content)
 
-        self.opensearch_repo.index_document(
-            doc_id=doc_id,
+        doc_result = self.opensearch_repo.index_document(
             content=doc_content,
             embedding=doc_embedding,
+            domain=domain,
             metadata={
                 "source_file": record.source_file,
-                "record_index": record.record_index,
-                "centrality": centrality_name
+                "record_index": record.record_index
             }
         )
 
-        # 2. Key 인덱싱
-        for key_name in record.key_values.keys():
-            key_embedding = embedding_service.generate_embedding(key_name)
+        # Document UUID 저장 (Value 인덱싱 시 사용)
+        doc_uuid = doc_result["doc_id"]
 
-            self.opensearch_repo.index_key(
-                key_id=key_name,
+        # 2. Key 인덱싱 (중복 방지 + field_type_classifier)
+        for key_name, values in record.key_values.items():
+            # 이미 처리한 Key면 스킵
+            if key_name in self._processed_keys:
+                continue
+
+            # field_type 분류
+            from app.src.keyvalue_graph.field_type_classifier import field_type_classifier
+            type_result = field_type_classifier.classify(
                 key_name=key_name,
+                sample_values=[str(v) for v in values[:5]]
+            )
+            key_type = type_result["field_type"]
+            key_type_confidence = type_result["confidence"]
+
+            # 임베딩 생성 (semantic/proper_noun만)
+            key_embedding = None
+            if key_type in ["semantic", "proper_noun"]:
+                key_embedding = embedding_service.generate_embedding(key_name)
+
+            # 원본 필드명 조회
+            original_key_name = record.original_key_mapping.get(key_name)
+
+            result = self.opensearch_repo.index_key(
+                key_name=key_name,
+                key_type=key_type,
+                key_type_confidence=key_type_confidence,
+                domain=domain,
+                original_key_name=original_key_name,
                 embedding=key_embedding
             )
 
-        # 3. Value 인덱싱
+            # Key UUID 저장 (Value 인덱싱 시 사용)
+            key_uuid = result["key_id"]
+            self._key_uuid_map[key_name] = key_uuid
+            self._processed_keys.add(key_name)
+
+        # 3. Value 인덱싱 (key_type 기반 처리)
         for key_name, values in record.key_values.items():
+            # Key UUID 조회 (방금 인덱싱했거나 기존에 존재)
+            key_uuid = self._key_uuid_map.get(key_name)
+            if not key_uuid:
+                # 기존 Key인 경우 OpenSearch에서 조회
+                key_uuid = self._get_key_uuid(key_name)
+                if key_uuid:
+                    self._key_uuid_map[key_name] = key_uuid
+
+            if not key_uuid:
+                logger.warning(f"Key UUID를 찾을 수 없습니다: {key_name}, Value 인덱싱 스킵")
+                continue
+
+            # Key 타입 조회
+            key_type = self._get_key_type(key_name)
+
             for value in values:
                 value_id = f"{doc_id}_{key_name}_{value}"
                 value_content = str(value)
-                value_embedding = embedding_service.generate_embedding(value_content)
+
+                # 타입별 처리
+                value_embedding = None
+                numeric_value = None
+
+                if key_type in ["semantic", "proper_noun"]:
+                    value_embedding = embedding_service.generate_embedding(value_content)
+                elif key_type == "numeric_date":
+                    try:
+                        numeric_value = float(value_content)
+                    except ValueError:
+                        logger.warning(f"numeric_date 타입이지만 숫자 변환 실패: {value_content}")
 
                 self.opensearch_repo.index_value(
-                    value_id=value_id,
                     value_content=value_content,
-                    parent_key_id=key_name,
+                    parent_key_id=key_uuid,
+                    parent_key_name=key_name,
+                    parent_key_type=key_type,
+                    document_ids=[doc_uuid],
                     embedding=value_embedding,
-                    value_type=record.infer_value_type(key_name, value).value
+                    value_type=record.infer_value_type(key_name, value).value,
+                    numeric_value=numeric_value
                 )
+
+    def _get_key_uuid(self, key_name: str) -> str | None:
+        """Key UUID 조회 헬퍼 메서드 (OpenSearch에서 key_name으로 검색)
+
+        Args:
+            key_name: Key명 (한글)
+
+        Returns:
+            Key UUID 또는 None
+        """
+        try:
+            # key_name으로 검색
+            query = {
+                "query": {
+                    "term": {"key_name.keyword": key_name}
+                },
+                "size": 1
+            }
+            result = self.opensearch_repo.client.client.search(
+                index=self.opensearch_repo.keys_index,
+                body=query
+            )
+            hits = result.get("hits", {}).get("hits", [])
+            if hits:
+                return hits[0]["_id"]
+            return None
+        except Exception as e:
+            logger.warning(f"Key UUID 조회 실패: {key_name} - {e}")
+            return None
+
+    def _get_key_type(self, key_name: str) -> str:
+        """Key 타입 조회 헬퍼 메서드 (OpenSearch에서 조회)
+
+        Args:
+            key_name: Key명
+
+        Returns:
+            key_type (semantic/numeric_date/proper_noun)
+        """
+        try:
+            # key_name으로 검색
+            query = {
+                "query": {
+                    "term": {"key_name.keyword": key_name}
+                },
+                "size": 1
+            }
+            result = self.opensearch_repo.client.client.search(
+                index=self.opensearch_repo.keys_index,
+                body=query
+            )
+            hits = result.get("hits", {}).get("hits", [])
+            if hits:
+                return hits[0]["_source"].get("key_type", "semantic")
+            return "semantic"
+        except Exception:
+            # 조회 실패 시 기본값 반환
+            return "semantic"
 
     def build_batch(
         self,

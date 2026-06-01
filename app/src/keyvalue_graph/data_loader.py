@@ -21,6 +21,10 @@ class DataRecord(BaseModel):
         default_factory=dict,
         description="추출된 Key-Value 쌍 (한글 필드명: 값 목록)"
     )
+    original_key_mapping: dict[str, str] = Field(
+        default_factory=dict,
+        description="한글 필드명 → 원본 필드명 매핑 (예: {'병원명': 'BIZPLC_NM'})"
+    )
 
     def extract_key_values(self) -> None:
         """원본 데이터에서 Key-Value 쌍 추출."""

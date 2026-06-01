@@ -123,7 +123,7 @@ async def add_request_id(request: Request, call_next):
 
 @app.get('/')
 def index():
-    return RedirectResponse('/static/index.html')
+    return RedirectResponse('/docs')
 
 
 @app.get("/api/config", include_in_schema=False)

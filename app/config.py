@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     NEPTUNE_DIRECT_ENDPOINT: str = ""
     NEPTUNE_USE_IAM: bool = True
 
+    # Neptune Bastion Config
+    NEPTUNE_BASTION_SSH_KEY: str = "neptune-bastion-key.pem"
+    NEPTUNE_BASTION_HOST: str = ""
+    NEPTUNE_BASTION_USER: str = "ec2-user"
+
     # OpenSearch Config
     OPENSEARCH_HOST: str = "localhost"
     OPENSEARCH_PORT: int = 9200

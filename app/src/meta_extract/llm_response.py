@@ -21,6 +21,10 @@ from app.schemas.meta import (
 )
 from app.schemas.relation_discovery import relation_search_condition_tool
 from app.schemas.schema_analysis import schema_analysis_tool
+from app.schemas.keyvalue_graph import (
+    field_type_classification_tool,
+    proper_noun_labeling_tool
+)
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 
 
@@ -36,6 +40,8 @@ class LLMResponse:
         "schema_analysis": ("schema_analysis", "production"),
         "query_key_inference": ("query_key_inference", "production"),
         "relation_key_analysis": ("relation_key_analysis", "production"),
+        "field_type_classification": ("field_type_classification", "production"),
+        "proper_noun_labeling": ("proper_noun_labeling", "production"),
     }
 
     def __init__(self, task: str):
@@ -103,6 +109,10 @@ class LLMResponse:
             tools = [query_key_inference_tool]
         elif self.task == "relation_key_analysis":
             tools = [relation_search_condition_tool]
+        elif self.task == "field_type_classification":
+            tools = [field_type_classification_tool]
+        elif self.task == "proper_noun_labeling":
+            tools = [proper_noun_labeling_tool]
         else:
             tools = []
 
