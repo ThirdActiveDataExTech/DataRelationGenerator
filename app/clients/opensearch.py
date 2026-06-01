@@ -1,6 +1,7 @@
 """OpenSearch 클라이언트 모듈."""
 
 import logging
+import uuid
 from typing import Optional
 from opensearchpy import OpenSearch
 
@@ -44,28 +45,39 @@ class OpenSearchClient:
 
         logger.info(f"OpenSearch 클라이언트 초기화: {self.host}:{self.port}")
 
-    def index_document(self, index: str, doc_id: str, body: dict) -> dict:
+    def index_document(self, index: str, body: dict, doc_id: str = None, add_id_to_body: bool = True) -> tuple[str, dict]:
         """문서 인덱싱.
 
         Args:
             index: 인덱스 이름
-            doc_id: 문서 ID
             body: 문서 내용
+            doc_id: 문서 ID (None이면 UUID 자동 생성)
+            add_id_to_body: body에 doc_id 필드를 추가할지 여부
 
         Returns:
-            인덱싱 결과
+            (사용된 ID, 인덱싱 결과)
 
         Raises:
             ApplicationError: 인덱싱 실패 시
         """
         try:
+            if doc_id is None:
+                doc_uuid = str(uuid.uuid4())
+                if add_id_to_body:
+                    body_with_id = {**body, "doc_id": doc_uuid}
+                else:
+                    body_with_id = body
+            else:
+                doc_uuid = doc_id
+                body_with_id = body
+
             response = self.client.index(
                 index=index,
-                id=doc_id,
-                body=body,
+                id=doc_uuid,
+                body=body_with_id,
                 params={'refresh': 'true'}
             )
-            return response
+            return doc_uuid, response
         except Exception as e:
             logger.error(f"문서 인덱싱 실패: {e}")
             raise ApplicationError(

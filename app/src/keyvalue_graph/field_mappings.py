@@ -168,3 +168,94 @@ NORMALIZATION_RULES = {
 
 # 진료과목처럼 복합 값을 가진 필드 (쉼표로 분리)
 MULTI_VALUE_FIELDS = ["진료과목"]
+
+
+# ===== 표준 Taxonomy 정의 (proper_noun 필드용) =====
+
+# 1. 의료기관 Taxonomy (업태구분 기반)
+MEDICAL_INSTITUTION_TAXONOMY = [
+    "요양병원",
+    "병원",
+    "종합병원",
+    "한방병원",
+    "치과병원",
+    "정신병원",
+    "기타의료기관",
+]
+
+# 2. 지역 Taxonomy (광역시/도 단위)
+REGION_TAXONOMY = [
+    "서울",
+    "부산",
+    "대구",
+    "인천",
+    "광주",
+    "대전",
+    "울산",
+    "세종",
+    "경기",
+    "강원",
+    "충북",
+    "충남",
+    "전북",
+    "전남",
+    "경북",
+    "경남",
+    "제주",
+]
+
+# 3. 범용 조직 유형 Taxonomy
+ORGANIZATION_TYPE_TAXONOMY = [
+    "정부기관",
+    "지방자치단체",
+    "공공기관",
+    "교육기관",
+    "의료기관",
+    "문화기관",
+    "방송사",
+    "항공사",
+    "제작사",
+    "민간기업",
+    "비영리단체",
+    "개인",
+    "기타",
+]
+
+# 4. 필드별 표준 Taxonomy 매핑
+FIELD_TAXONOMY_MAPPING = {
+    "병원명": MEDICAL_INSTITUTION_TAXONOMY,
+    "의료기관분류": MEDICAL_INSTITUTION_TAXONOMY,
+    "업태구분": MEDICAL_INSTITUTION_TAXONOMY,
+    "시군명": REGION_TAXONOMY,
+    # 범용 조직명 필드 (도메인 독립적)
+    "발행기관명": ORGANIZATION_TYPE_TAXONOMY,
+    "제작자": ORGANIZATION_TYPE_TAXONOMY,
+    "저작권자": ORGANIZATION_TYPE_TAXONOMY,
+}
+
+# 5. 키워드 기반 Taxonomy 자동 매칭 규칙
+TAXONOMY_KEYWORD_RULES = {
+    "병원": "요양병원",
+    "요양": "요양병원",
+    "한방": "한방병원",
+    "치과": "치과병원",
+    "정신": "정신병원",
+    "종합": "종합병원",
+    "대학교": "교육기관",
+    "학교": "교육기관",
+    "대학": "교육기관",
+    "방송": "방송사",
+    "KBS": "방송사",
+    "MBC": "방송사",
+    "SBS": "방송사",
+    "항공": "항공사",
+    "에어라인": "항공사",
+    "문화": "문화기관",
+    "센터": "공공기관",
+    "청": "정부기관",
+    "부": "정부기관",
+    "처": "정부기관",
+    "시청": "지방자치단체",
+    "구청": "지방자치단체",
+    "군청": "지방자치단체",
+}
