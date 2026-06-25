@@ -21,7 +21,8 @@ async def workflow_stream(
     auto_detect_schema: bool,
     sample_size: int,
     similarity_threshold: float,
-    min_cluster_size: int
+    min_cluster_size: int,
+    table_name: str = ""
 ) -> AsyncGenerator[str, None]:
     """워크플로우 실행 및 실시간 진행 상태 전송.
 
@@ -45,6 +46,20 @@ async def workflow_stream(
         return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     try:
+        # 데이터셋(테이블) 식별자: 명시 안 하면 파일 stem 사용 → Level 1 게이팅 기준
+        from pathlib import Path
+        effective_table = table_name or Path(filename or "workflow_upload").stem
+
+        # Step 0: 원본 파일 보존 (§3.2, 백엔드는 RAW_STORAGE_BACKEND) — 실패해도 워크플로우 계속
+        try:
+            from app.src.dataset.raw_storage import get_raw_storage
+            storage = get_raw_storage()
+            if storage.enabled:
+                object_name = storage.store_raw_dataset(effective_table, filename or "upload.json", file_content)
+                logger.info(f"[RawStorage] 원본 저장: {object_name}")
+        except Exception as e:
+            logger.warning(f"[RawStorage] 원본 저장 실패 (워크플로우는 계속): {e}")
+
         # Step 1: 파일 수신
         yield send_event(1, "processing", "📥 파일 수신 중...")
         data_list = json.loads(file_content.decode("utf-8"))
@@ -107,7 +122,8 @@ async def workflow_stream(
                 centrality_name=centrality_name,
                 source_file=filename or "workflow_upload",
                 record_index=idx,
-                extractable_metadata=detected_schema.extractable_metadata if detected_schema else None
+                extractable_metadata=detected_schema.extractable_metadata if detected_schema else None,
+                table_name=effective_table
             )
 
             if result["success"]:
@@ -179,7 +195,8 @@ async def execute_workflow(
     auto_detect_schema: Annotated[bool, Form()] = True,
     sample_size: Annotated[int, Form()] = 5,
     similarity_threshold: Annotated[float, Form()] = 0.85,
-    min_cluster_size: Annotated[int, Form()] = 2
+    min_cluster_size: Annotated[int, Form()] = 2,
+    table_name: Annotated[str, Form()] = ""
 ):
     """파일 업로드 → 자동 워크플로우 실행 (SSE 스트리밍).
 
@@ -189,6 +206,8 @@ async def execute_workflow(
         sample_size: 스키마 분석 샘플 크기
         similarity_threshold: 정규화 유사도 임계값
         min_cluster_size: 정규화 최소 클러스터 크기
+        table_name: 데이터셋(테이블)명. Level 1 관계/게이팅과 정합되도록 지정 권장.
+            비우면 업로드 파일명 stem 을 사용.
 
     Returns:
         Server-Sent Events 스트림
@@ -198,7 +217,7 @@ async def execute_workflow(
     filename = file.filename
 
     return StreamingResponse(
-        workflow_stream(file_content, filename, auto_detect_schema, sample_size, similarity_threshold, min_cluster_size),
+        workflow_stream(file_content, filename, auto_detect_schema, sample_size, similarity_threshold, min_cluster_size, table_name),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
