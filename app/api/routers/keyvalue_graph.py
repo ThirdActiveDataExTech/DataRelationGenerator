@@ -96,7 +96,8 @@ async def batch_extract_key_value_from_json(
         file: Annotated[UploadFile, File()],
         centrality_name: str = "병원현황",
         auto_detect_schema: bool = False,
-        sample_size: int = 5
+        sample_size: int = 5,
+        table_name: str = ""
 ):
     """JSON 배열 파일에서 Key-Value를 배치 추출하고 그래프 생성.
 
@@ -116,6 +117,19 @@ async def batch_extract_key_value_from_json(
 
     if not isinstance(data_list, list):
         data_list = [data_list]
+
+    # 데이터셋(테이블) 식별자: 미지정 시 파일 stem 사용 → Level 1 게이팅 기준
+    from pathlib import Path
+    effective_table = table_name or Path(file.filename or "batch_upload").stem
+
+    # 원본 파일 보존 (§3.2, 백엔드는 RAW_STORAGE_BACKEND)
+    try:
+        from app.src.dataset.raw_storage import get_raw_storage
+        storage = get_raw_storage()
+        if storage.enabled:
+            storage.store_raw_dataset(effective_table, file.filename or "batch_upload", content)
+    except Exception as e:
+        logger.warning(f"[RawStorage] 원본 저장 실패 (배치는 계속): {e}")
 
     # 스키마 자동 감지 모드
     field_mapping = None
@@ -162,7 +176,8 @@ async def batch_extract_key_value_from_json(
                 domain=domain if auto_detect_schema else centrality_name,
                 source_file=file.filename or "batch_upload",
                 record_index=idx,
-                extractable_metadata=detected_schema.extractable_metadata if detected_schema else None
+                extractable_metadata=detected_schema.extractable_metadata if detected_schema else None,
+                table_name=effective_table
             )
 
             success_count += 1
@@ -508,90 +523,91 @@ async def discover_relation_candidates(
             "search_strategy": "같은 지역의 대형병원 찾기"
         }
     """
-    from app.repositories.graph_repository import GraphRepository
+    from app.config import settings
+    from app.repositories.opensearch_repository import get_opensearch_repository
+    from app.src.dataset.level1_gating import Level1GatingService
     from app.src.meta_extract.llm_response import LLMResponse
 
-    graph_repo = GraphRepository()
+    os_repo = get_opensearch_repository()
 
-    # 1. Document의 Key-Value 메타데이터 조회
-    query = """
-    MATCH (d:Document {id: $doc_id})-[:EXTRACTED_FROM]-(v:Value)-[:HAS_VALUE]-(k:Key)
-    RETURN k.name as key, collect(DISTINCT v.name) as values
-    """
-    kv_results = graph_repo.execute_query(query, {"doc_id": source_doc_id})
-
-    if not kv_results:
+    # 1. Document의 Key-Value 메타데이터 조회 (OpenSearch values 인덱스)
+    kv_rows = os_repo.get_document_key_values(source_doc_id)
+    if not kv_rows:
         return APIResponseModel(
             result={"error": "Document를 찾을 수 없습니다"},
             description=f"관계 후보 발굴 실패: Document ID '{source_doc_id}'를 찾을 수 없습니다",
         )
 
-    # Key-Value 형식으로 변환
-    key_values = {r["key"]: r["values"] for r in kv_results}
+    key_values: dict[str, list[str]] = {}
+    for r in kv_rows:
+        key = r.get("parent_key_name", "")
+        if key:
+            key_values.setdefault(key, []).append(r.get("value_content", ""))
 
-    # 2. LLM으로 핵심 Key 분석
+    # 2. LLM으로 핵심 Key 분석 (중요 Key + feature_class + 검색 전략)
     llm_response = LLMResponse("relation_key_analysis")
-
-    # key_values를 JSON 포맷으로 변환 (LLM이 읽기 쉽게)
     key_values_json = json.dumps(key_values, ensure_ascii=False, indent=2)
-
-    # 줄바꿈 포맷 (Langfuse가 key_values_formatted 사용할 경우 대비)
     key_values_formatted = "\n".join([f"- {k}: {v}" for k, v in key_values.items()])
 
     analysis_result = llm_response.generate_llm_response(
         variables={
             "document_id": source_doc_id,
-            "key_values": key_values,  # 원본 (fallback)
-            "key_values_json": key_values_json,  # JSON 포맷
-            "key_values_formatted": key_values_formatted,  # 줄바꿈 포맷
+            "key_values": key_values,
+            "key_values_json": key_values_json,
+            "key_values_formatted": key_values_formatted,
         }
     )
 
     important_keys = [ki["key_name"] for ki in analysis_result["important_keys"]]
+    feature_classes = {
+        ki["key_name"]: ki.get("feature_class", "") for ki in analysis_result["important_keys"]
+    }
     search_strategy = analysis_result["search_strategy"]
-
-    # important_values: LLM이 선정한 중요 Key의 실제 값
     important_values = {k: key_values.get(k, []) for k in important_keys}
 
     logger.info(f"LLM 분석 결과: 중요 Key={important_keys}, 전략={search_strategy}")
 
-    # 3. 후보 Document 검색
-    finder = RelationCandidateFinder(graph_repo=graph_repo)
+    # 2-1. Level 1 게이팅 — 기준 레코드 데이터셋과 Level 1으로 연결된 데이터셋으로 후보 제한
+    allowed_tables = None
+    source_table = os_repo.get_document_table(source_doc_id)
+    if settings.LEVEL2_GATE_BY_LEVEL1 and source_table:
+        allowed_tables = Level1GatingService().compute_allowed_tables(source_table)
+        logger.info(f"Level 1 게이팅 적용: source_table={source_table}, 허용={sorted(allowed_tables)}")
+
+    # 3. 후보 Document 검색 (OpenSearch 2단 검색 + 게이팅)
+    finder = RelationCandidateFinder(opensearch_repo=os_repo)
     candidates = finder.find_candidates(
         source_doc_id=source_doc_id,
         important_keys=important_keys,
         important_values=important_values,
+        feature_classes=feature_classes,
+        allowed_table_names=allowed_tables,
         top_k=top_k,
     )
 
+    result_payload = {
+        "source_doc_id": source_doc_id,
+        "source_table": source_table,
+        "allowed_tables": sorted(allowed_tables) if allowed_tables else None,
+        "source_doc_info": {
+            "key_values": key_values,
+            "important_keys": important_keys,
+            "feature_classes": feature_classes,
+            "important_values": important_values,
+        },
+        "candidates": [c.to_dict() for c in candidates],
+        "search_strategy": search_strategy,
+        "important_keys": important_keys,
+    }
+
     if not candidates:
         return APIResponseModel(
-            result={
-                "source_doc_id": source_doc_id,
-                "source_doc_info": {
-                    "key_values": key_values,
-                    "important_keys": important_keys,
-                    "important_values": important_values,
-                },
-                "candidates": [],
-                "search_strategy": search_strategy,
-                "important_keys": important_keys,
-            },
+            result=result_payload,
             description=f"관계 후보를 찾지 못했습니다 (중요 Key: {important_keys})",
         )
 
     return APIResponseModel(
-        result={
-            "source_doc_id": source_doc_id,
-            "source_doc_info": {
-                "key_values": key_values,
-                "important_keys": important_keys,
-                "important_values": important_values,
-            },
-            "candidates": [c.to_dict() for c in candidates],
-            "search_strategy": search_strategy,
-            "important_keys": important_keys,
-        },
+        result=result_payload,
         description=f"관계 후보 {len(candidates)}개 발견 (전략: {search_strategy})",
     )
 
@@ -607,66 +623,53 @@ async def propose_relation(
     source_doc_id: Annotated[str, Body(embed=True, description="출발 문서 ID")],
     target_doc_id: Annotated[str, Body(embed=True, description="도착 문서 ID")],
 ):
-    """두 Document 간 관계 분석 및 제안
+    """두 Document 간 관계 분석 및 제안 (§8.5)
 
-    사용자가 특정 데이터 ID를 입력하면 해당 쌍에 대해서만 관계를 분석하고 제안합니다.
+    두 레코드의 공유 Key를 타입별로 비교하여 종합 점수와 Level 2 관계 유형
+    (SAME_AS / RELATED_TO / REFERENCES)을 산출하고 사용자 검토용 제안을 생성합니다.
+    제안은 승인 전까지 임시 보관되며, approve_relation 으로 수락 시 Neptune에 영구 저장됩니다.
 
     Args:
-        source_doc_id: 출발 문서 ID (예: "data_0001")
-        target_doc_id: 도착 문서 ID (예: "data_0002")
+        source_doc_id: 출발 문서 ID (예: "hospital_info_0001")
+        target_doc_id: 도착 문서 ID (예: "patient_info_0002")
 
     Returns:
         RelationProposal (사용자 검토용)
     """
-    from app.repositories.graph_repository import GraphRepository
+    finder = RelationCandidateFinder()
+    candidate = finder.score_pair(source_doc_id, target_doc_id)
 
-    # 1. 두 문서 조회
-    graph_repo = GraphRepository()
-    query = """
-    MATCH (d:Document {id: $doc_id})
-    RETURN d.id as id, d.raw_text as raw_text
-    """
-
-    source_result = graph_repo.execute_query(query, {"doc_id": source_doc_id})
-    target_result = graph_repo.execute_query(query, {"doc_id": target_doc_id})
-
-    if not source_result or not target_result:
+    if candidate is None:
         return APIResponseModel(
-            result={"error": "문서를 찾을 수 없습니다"},
-            description=f"관계 제안 실패: 문서 ID '{source_doc_id}' 또는 '{target_doc_id}'를 찾을 수 없습니다",
+            result={"error": "두 문서 간 공통 Key가 없어 관계를 산출할 수 없습니다"},
+            description=f"관계 제안 실패: '{source_doc_id}' ↔ '{target_doc_id}' 공통 Key 없음",
         )
 
-    source_text = source_result[0]["raw_text"]
-    target_text = target_result[0]["raw_text"]
-
-    # 2. LLM으로 관계 분석 (간단한 구현 - 실제로는 더 정교한 프롬프트 필요)
-    # TODO: 실제로는 두 문서의 메타데이터, 토픽, 엔티티 등을 비교하여 관계 추론
-
-    # 임시: 간단한 텍스트 유사도 기반 관계 제안
     proposal_id = str(uuid4())
-
-    # 기본 관계 제안 (실제로는 LLM 기반 분석 필요)
-    confidence = 0.7
-    reason = f"문서 '{source_doc_id}'와 '{target_doc_id}' 간 관계 분석 필요 (LLM 분석 미구현)"
-
+    reason = (
+        f"공통 Key {candidate.matched_keys} 기반 비교 — "
+        f"정렬 {candidate.aligned_attribute_score:.2f}, 값 일치 {candidate.typed_value_match_score:.2f}"
+    )
     proposal = RelationProposal(
         proposal_id=proposal_id,
         source_doc_id=source_doc_id,
         target_doc_id=target_doc_id,
-        relation_type="RELATED_TO",
-        confidence=confidence,
+        relation_type=candidate.relation_type,
+        confidence=round(candidate.final_score, 3),
         reason=reason,
         approved=False,
     )
-
-    # 4. 임시 저장소에 저장
     pending_proposals[proposal_id] = proposal
 
-    logger.info(f"관계 제안 생성: {source_doc_id} -> {target_doc_id} (ID: {proposal_id})")
+    logger.info(
+        f"관계 제안 생성: {source_doc_id} -> {target_doc_id} "
+        f"({candidate.relation_type}, score={candidate.final_score:.3f}, ID={proposal_id})"
+    )
 
     return APIResponseModel(
-        result=proposal.model_dump(),
-        description=f"관계 제안 완료 (ID: {proposal_id}): RELATED_TO",
+        result={**proposal.model_dump(), "breakdown": candidate.to_dict()["breakdown"],
+                "matched_values": candidate.matched_values},
+        description=f"관계 제안 완료 (ID: {proposal_id}): {candidate.relation_type} (score={candidate.final_score:.3f})",
     )
 
 
@@ -714,28 +717,34 @@ async def approve_relation(
             description="관계 제안이 거부되었습니다",
         )
 
-    # 3. 승인: 그래프DB에 저장
+    # 3. 승인: Neptune에 Level 2 관계를 RDF Reification 으로 영구 저장 (§8.5)
+    from app.repositories.graph_repository import GraphRepository
+
     proposal.approved = True
-    # TODO: NeptuneGraphBuilder에 create_relation 메서드 추가 필요
-    # graph_builder = NeptuneGraphBuilder()
-    # result = graph_builder.create_relation(...)
-
-    # 임시: 승인만 처리
-    result = {"success": True, "relation_id": f"{proposal.source_doc_id}->{proposal.target_doc_id}"}
-
-    if result["success"]:
-        # 임시 저장소에서 제거
-        del pending_proposals[proposal_id]
-        logger.info(f"관계 저장 완료: {proposal.source_doc_id} -> {proposal.target_doc_id}")
-        return APIResponseModel(
-            result=result,
-            description=f"관계 저장 완료 (ID: {result['relation_id']}): RELATED_TO",
+    try:
+        graph_repo = GraphRepository()
+        rel_id = graph_repo.create_document_relation(
+            source_doc_id=proposal.source_doc_id,
+            target_doc_id=proposal.target_doc_id,
+            relation_type=proposal.relation_type,
+            score=proposal.confidence,
+            method="llm",
+            reason=proposal.reason,
         )
-    else:
+    except Exception as e:
+        logger.error(f"관계 저장 실패: {e}")
         return APIResponseModel(
-            result=result,
-            description=f"관계 저장 실패: {result.get('error', 'Unknown error')}",
+            result={"success": False, "error": str(e)},
+            description=f"관계 저장 실패: {e}",
         )
+
+    # 저장 성공 시 임시 저장소에서 제거
+    del pending_proposals[proposal_id]
+    logger.info(f"관계 저장 완료: {proposal.source_doc_id} -> {proposal.target_doc_id} ({proposal.relation_type})")
+    return APIResponseModel(
+        result={"success": True, "relation_id": rel_id, "relation_type": proposal.relation_type},
+        description=f"관계 저장 완료 (ID: {rel_id}): {proposal.relation_type}",
+    )
 
 
 @router.get(
