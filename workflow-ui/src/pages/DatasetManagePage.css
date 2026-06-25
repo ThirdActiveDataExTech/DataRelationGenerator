@@ -1,0 +1,631 @@
+.dataset-manage-page {
+  max-width: 1100px;
+  margin: 32px auto;
+  padding: 0 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ── 현황 요약 카드 행 ── */
+.dm-stats-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dm-stat-card {
+  flex: 1;
+  min-width: 110px;
+  background: white;
+  border: 1px solid #e1e7ef;
+  border-radius: 10px;
+  padding: 18px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+.dm-stat-value {
+  font-size: 28px;
+  font-weight: 800;
+  color: #2563eb;
+  letter-spacing: -1px;
+  line-height: 1;
+}
+
+.dm-stat-label {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 500;
+  text-align: center;
+}
+
+.dm-stat-domain .dm-stat-value {
+  font-size: 22px;
+  color: #7c3aed;
+}
+
+/* ── 2컬럼 그리드 ── */
+.dm-overview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+@media (max-width: 800px) {
+  .dm-overview-grid { grid-template-columns: 1fr; }
+}
+
+/* ── 관계 목록 ── */
+.dm-relation-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.dm-relation-item {
+  border: 1.5px solid #e1e7ef;
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dm-relation-tables {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dm-relation-table {
+  font-weight: 600;
+  font-size: 13px;
+  color: #1a1d29;
+}
+
+.dm-relation-arrow {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.dm-relation-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.dm-relation-type {
+  font-size: 12px;
+  color: #475569;
+  flex: 1;
+}
+
+.dm-relation-score {
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+/* ── 카드 ── */
+.dm-card {
+  background: white;
+  border: 1px solid #e1e7ef;
+  border-radius: 12px;
+  padding: 28px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dm-section-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #1a1d29;
+  letter-spacing: -0.3px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dm-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dm-section-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.dm-desc {
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.6;
+}
+
+.dm-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #3b82f6;
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 1px 8px;
+  min-width: 22px;
+}
+
+/* ── 업로드 폼 ── */
+.dm-upload-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.dm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dm-field label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.dm-field input[type='text'],
+.dm-field select,
+.dm-field textarea {
+  padding: 10px 12px;
+  border: 1.5px solid #e1e7ef;
+  border-radius: 7px;
+  font-size: 13px;
+  color: #1a1d29;
+  transition: border-color 0.15s;
+  background: white;
+}
+
+.dm-field input[type='text']:focus,
+.dm-field select:focus,
+.dm-field textarea:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.08);
+}
+
+.dm-field textarea {
+  resize: vertical;
+  min-height: 56px;
+}
+
+.dm-field-wide {
+  grid-column: 1 / -1;
+}
+
+.dm-field-file {
+  grid-column: 1 / -1;
+}
+
+/* 파일 드롭존 */
+.dm-file-drop {
+  border: 2px dashed #cbd5e1;
+  border-radius: 8px;
+  padding: 18px 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f8fafc;
+}
+
+.dm-file-drop:hover {
+  border-color: #3b82f6;
+  background: #eff6ff;
+}
+
+.dm-file-drop--has-file {
+  border-color: #22c55e;
+  background: #f0fdf4;
+}
+
+.dm-file-label {
+  font-size: 13px;
+  color: #334155;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dm-file-hint {
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+.dm-hint {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+.dm-hint-inline {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+
+.dm-error {
+  font-size: 13px;
+  color: #ef4444;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+
+/* ── 버튼 ── */
+.dm-btn {
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.dm-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.dm-btn-primary {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: white;
+  align-self: flex-start;
+  box-shadow: 0 2px 4px rgba(59, 130, 246, 0.25);
+}
+
+.dm-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  box-shadow: 0 4px 10px rgba(59, 130, 246, 0.35);
+}
+
+.dm-btn-ghost {
+  background: transparent;
+  color: #475569;
+  border: 1.5px solid #e1e7ef;
+}
+
+.dm-btn-ghost:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+
+.dm-btn-danger-ghost {
+  background: transparent;
+  color: #ef4444;
+  border: 1.5px solid #fecaca;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.dm-btn-danger-ghost:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+/* ── 데이터셋 목록 ── */
+.dm-empty {
+  font-size: 13px;
+  color: #94a3b8;
+  text-align: center;
+  padding: 24px 0;
+}
+
+.dm-dataset-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dm-dataset-item {
+  border: 1.5px solid #e1e7ef;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.dm-dataset-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.dm-dataset-summary:hover {
+  background: #f8fafc;
+}
+
+.dm-dataset-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: #1a1d29;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dm-tag {
+  font-size: 11px;
+  font-weight: 600;
+  background: #eff6ff;
+  color: #2563eb;
+  border-radius: 10px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.dm-meta {
+  font-size: 12px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+/* Neptune 동기화 뱃지 */
+.dm-sync-badge {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 10px;
+  padding: 2px 9px;
+  white-space: nowrap;
+}
+
+.dm-sync-ok {
+  background: #f0fdf4;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+}
+
+.dm-sync-warn {
+  background: #fffbeb;
+  color: #d97706;
+  border: 1px solid #fde68a;
+}
+
+.dm-sync-err {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
+
+.dm-dataset-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.dm-dataset-detail {
+  border-top: 1px solid #f1f5f9;
+  padding: 12px 16px;
+  background: #fafbfc;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dm-detail-desc {
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.dm-columns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.dm-col-chip {
+  font-size: 11px;
+  background: #f1f5f9;
+  color: #475569;
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+.dm-keywords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+
+.dm-keyword-chip {
+  font-size: 11px;
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  padding: 2px 8px;
+}
+
+/* ── 파이프라인 ── */
+.dm-threshold-row {
+  display: flex;
+  gap: 24px;
+}
+
+.dm-threshold-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.dm-threshold-row input[type='number'] {
+  width: 90px;
+  padding: 8px 10px;
+  border: 1.5px solid #e1e7ef;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* Job 상태 바 */
+.dm-job-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.dm-job-running {
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+}
+
+.dm-job-done {
+  background: #f0fdf4;
+  color: #16a34a;
+  border: 1px solid #bbf7d0;
+}
+
+.dm-job-error {
+  background: #fef2f2;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+}
+
+.dm-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 파이프라인 결과 */
+.dm-pipeline-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.dm-pipeline-summary {
+  font-size: 13px;
+  color: #475569;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border-radius: 7px;
+  border: 1px solid #e1e7ef;
+}
+
+.dm-pair-card {
+  border: 1.5px solid #e1e7ef;
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dm-pair-saved {
+  border-color: #22c55e;
+  background: #f0fdf4;
+}
+
+.dm-pair-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dm-pair-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: #1a1d29;
+}
+
+.dm-pair-arrow {
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+.dm-pair-tiers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dm-tier-badge {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 10px;
+  padding: 3px 10px;
+}
+
+.dm-tier1 {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.dm-tier2 {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.dm-tier3 {
+  background: #f3e8ff;
+  color: #6b21a8;
+}
+
+.dm-tier-none {
+  background: #f1f5f9;
+  color: #94a3b8;
+}
+
+.dm-pair-reason {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+/* KV 그래프 처리 상태 배지 + 트리거 (데이터셋 관리 통합) */
+.dm-kv-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; border-radius: 6px; padding: 2px 8px; margin-left: 6px;
+}
+.dm-kv-ok { background: #dcfce7; color: #166534; }
+.dm-kv-none { background: #f1f5f9; color: #64748b; }
+.dm-kv-running { background: #fef9c3; color: #854d0e; }

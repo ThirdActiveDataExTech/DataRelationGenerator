@@ -25,6 +25,7 @@ interface Props {
 }
 
 const COLOR_MAP: Record<string, { background: string; border: string }> = {
+  Dataset: { background: '#e0f2fe', border: '#0284c7' },
   Document: { background: '#eff6ff', border: '#3b82f6' },
   Key: { background: '#f0fdf4', border: '#22c55e' },
   Value: { background: '#fef9c3', border: '#eab308' },
