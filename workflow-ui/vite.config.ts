@@ -11,6 +11,10 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/dataset': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
       '/workflow': {
         target: 'http://localhost:8000',
         changeOrigin: true,
