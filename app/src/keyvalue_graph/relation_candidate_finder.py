@@ -1,15 +1,38 @@
-"""관계 후보 Document 발굴 서비스"""
+"""관계 후보 Document 발굴 서비스 (Level 2, 온디맨드).
+
+설계 문서 §8 구현. 핵심 경로는 "Key 먼저 → 연결된 Value 검색"(§8.2)으로,
+OpenSearch 의 k-NN 인덱스를 사용한다. 후보 탐색 범위는 Level 1에서 연결된
+데이터셋으로 제한(게이팅)된다(§2, §8).
+
+종합 점수(§8.4):
+    final = 0.40·KeyAlignment + 0.30·TypedValueMatch
+            + 0.20·GraphStructure(현재 placeholder 0.0, 4차년도 GNN)
+            + 0.10·DocumentSemantic
+"""
 
 import logging
-from typing import Any
+import math
+from typing import Any, Optional
 
-from app.repositories.graph_repository import GraphRepository
+from app.config import settings
+from app.repositories.opensearch_repository import OpenSearchRepository, get_opensearch_repository
+from app.src.embedding.embedding_service import embedding_service
 
 logger = logging.getLogger(__name__)
 
+# Level 2 관계 유형 (§8.6) — 최소 3종
+RELATION_SAME_AS = "SAME_AS"
+RELATION_RELATED_TO = "RELATED_TO"
+RELATION_REFERENCES = "REFERENCES"
+
+
+def _clamp01(x: float) -> float:
+    """점수를 [0, 1] 범위로 클램프."""
+    return max(0.0, min(1.0, x))
+
 
 class RelationCandidate:
-    """관계 후보 Document 정보"""
+    """관계 후보 Document 정보."""
 
     def __init__(
         self,
@@ -20,37 +43,36 @@ class RelationCandidate:
         document_semantic_score: float,
         matched_keys: list[str],
         matched_values: dict[str, str],
+        relation_type: str = RELATION_RELATED_TO,
+        table_name: str = "",
     ):
-        """RelationCandidate 초기화"""
+        """RelationCandidate 초기화."""
         self.doc_id = doc_id
         self.aligned_attribute_score = aligned_attribute_score  # Key 정렬 (의미적 스키마 매칭)
-        self.typed_value_match_score = typed_value_match_score  # 타입별 값 비교 (numeric/set/text)
-        self.graph_structure_similarity = graph_structure_similarity  # GraphSAGE 구조 유사도
+        self.typed_value_match_score = typed_value_match_score  # 타입별 값 비교
+        self.graph_structure_similarity = graph_structure_similarity  # GraphSAGE 구조 유사도 (placeholder)
         self.document_semantic_score = document_semantic_score  # 문서 전체 의미 유사도
         self.matched_keys = matched_keys
         self.matched_values = matched_values
+        self.relation_type = relation_type
+        self.table_name = table_name
         self.final_score = self._calculate_final_score()
 
     def _calculate_final_score(self) -> float:
-        """최종 점수 계산
-
-        가중치 설계 근거 (NormalizedValue 제외):
-        1. aligned_attribute_score (40%): Key 의미 정렬 - 다른 스키마 간 속성 매칭
-        2. typed_value_match_score (30%): 타입별 값 비교 - numeric/set/text 각각 적합한 방식
-        3. graph_structure_similarity (20%): GraphSAGE - 비슷한 연결 패턴
-        4. document_semantic_score (10%): 문서 전체 유사도 - 보조 지표
-        """
+        """최종 점수 계산 (§8.4 가중치)."""
         return (
-            0.40 * self.aligned_attribute_score +
-            0.30 * self.typed_value_match_score +
-            0.20 * self.graph_structure_similarity +
-            0.10 * self.document_semantic_score
+            0.40 * self.aligned_attribute_score
+            + 0.30 * self.typed_value_match_score
+            + 0.20 * self.graph_structure_similarity
+            + 0.10 * self.document_semantic_score
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """후보 정보를 딕셔너리로 변환"""
+        """후보 정보를 딕셔너리로 변환."""
         return {
             "doc_id": self.doc_id,
+            "table_name": self.table_name,
+            "relation_type": self.relation_type,
             "score": round(self.final_score, 3),
             "breakdown": {
                 "aligned_attribute": round(self.aligned_attribute_score, 3),
@@ -64,564 +86,350 @@ class RelationCandidate:
 
 
 class RelationCandidateFinder:
-    """관계 후보 Document 발굴 서비스
+    """관계 후보 Document 발굴 서비스 (OpenSearch 2단 검색 + Level 1 게이팅)."""
 
-    4가지 전략 조합 (NormalizedValue 제외):
-    1. Key Alignment: 의미적 스키마 매칭
-    2. Typed Value Comparison: 타입별 값 비교 (numeric/set/text)
-    3. GraphSAGE: 구조적 유사도
-    4. Document Semantic: 문서 전체 유사도
-    """
+    def __init__(self, opensearch_repo: OpenSearchRepository | None = None):
+        """RelationCandidateFinder 초기화."""
+        self.os_repo = opensearch_repo or get_opensearch_repository()
 
-    def __init__(self, graph_repo: GraphRepository | None = None):
-        """RelationCandidateFinder 초기화"""
-        self.graph_repo = graph_repo or GraphRepository()
+    # ──────────────────────────────────────────────
+    # Entry point
+    # ──────────────────────────────────────────────
 
     def find_candidates(
         self,
         source_doc_id: str,
         important_keys: list[str],
         important_values: dict[str, list[str]],
+        feature_classes: Optional[dict[str, str]] = None,
+        allowed_table_names: Optional[set[str]] = None,
         top_k: int = 10,
     ) -> list[RelationCandidate]:
-        """관계 후보 Document 검색
+        """관계 후보 Document 검색.
 
         Args:
             source_doc_id: 기준 Document ID
             important_keys: 중요 Key 목록 (LLM이 선정)
             important_values: 중요 Key의 실제 값들 {key_name: [values]}
+            feature_classes: 중요 Key별 feature_class {key_name: identity/location/...}
+                (Level 2 관계 유형 판정에 사용)
+            allowed_table_names: Level 1 게이팅 — 후보가 속할 수 있는 데이터셋 집합.
+                None이면 게이팅하지 않음(전체 탐색).
             top_k: 반환할 후보 개수
 
         Returns:
             RelationCandidate 리스트 (점수 순)
         """
-        logger.info(f"관계 후보 검색 시작: {source_doc_id}, 중요 Key={important_keys}")
+        feature_classes = feature_classes or {}
+        allowed_list = sorted(allowed_table_names) if allowed_table_names else None
 
-        # 1. Key Alignment: 의미적 스키마 매칭
-        aligned_candidates = self._find_by_key_alignment(source_doc_id, important_keys)
-
-        # 2. Typed Value Comparison: 타입별 값 비교
-        typed_value_candidates = self._typed_value_comparison(source_doc_id, important_keys, important_values)
-
-        # 3. 모든 후보 통합 (중복 제거)
-        all_candidate_ids = set(
-            list(aligned_candidates.keys()) + list(typed_value_candidates.keys())
+        logger.info(
+            f"관계 후보 검색 시작: {source_doc_id}, 중요 Key={important_keys}, "
+            f"게이팅={'없음' if allowed_list is None else allowed_list}"
         )
 
-        # 4. 각 후보에 대해 종합 점수 계산
-        candidates = []
-        for candidate_id in all_candidate_ids:
-            aligned = aligned_candidates.get(candidate_id, {"score": 0.0, "matched_keys": []})
-            typed_val = typed_value_candidates.get(candidate_id, {"score": 0.0, "matched_values": {}})
+        # 기준 레코드의 Key-Value 메타데이터 (key_type, numeric_value) 조회
+        source_kv = self._load_source_kv(source_doc_id)
 
-            # GraphSAGE 구조 유사도 (추후 구현)
-            graph_sim = self._get_graph_structure_similarity(source_doc_id, candidate_id)
+        # 후보 집계: doc_id -> {aligned, typed, matched_keys, matched_values, table_name}
+        candidates: dict[str, dict[str, Any]] = {}
 
-            # 문서 의미 유사도 (보조 지표)
-            doc_semantic = self._get_document_semantic_similarity(source_doc_id, candidate_id)
+        for key_name in important_keys:
+            kv_info = source_kv.get(key_name)
+            key_type = kv_info["key_type"] if kv_info else "semantic"
+            source_values = important_values.get(key_name) or (kv_info["values"] if kv_info else [])
+            if not source_values:
+                continue
+
+            # ── §8.2 1단: Key 먼저 검색 (이형 동의어 흡수) ──
+            key_vec = embedding_service.generate_embedding(key_name)
+            similar_keys = self.os_repo.search_keys(key_vec, top_k=settings.LEVEL2_KEY_SEARCH_K)
+            if not similar_keys:
+                continue
+            parent_key_ids = [k["key_id"] for k in similar_keys]
+            key_alignment = self._aggregate_key_alignment(similar_keys)
+            matched_key_names = [k["key_name"] for k in similar_keys]
+
+            # ── §8.2 2단: 연결된 Value 검색 (게이팅 범위 내) ──
+            for source_value in source_values:
+                value_vec = embedding_service.generate_embedding(str(source_value))
+                value_hits = self.os_repo.search_values(
+                    value_vec,
+                    parent_key_ids=parent_key_ids,
+                    top_k=settings.LEVEL2_VALUE_SEARCH_K,
+                    allowed_table_names=allowed_list,
+                )
+                self._accumulate(
+                    candidates,
+                    key_name,
+                    key_type,
+                    str(source_value),
+                    kv_info,
+                    key_alignment,
+                    matched_key_names,
+                    value_hits,
+                    source_doc_id,
+                )
+
+        if not candidates:
+            return []
+
+        # 정규화: 누적 점수를 중요 Key 수로 평균
+        n_keys = max(len(important_keys), 1)
+
+        results: list[RelationCandidate] = []
+        for doc_id, agg in candidates.items():
+            aligned = _clamp01(agg["aligned"] / n_keys)
+            typed = _clamp01(agg["typed"] / n_keys)
+            doc_sem = self._document_semantic(source_doc_id, doc_id)
+            graph_sim = self._graph_structure_similarity(source_doc_id, doc_id)
 
             candidate = RelationCandidate(
-                doc_id=candidate_id,
-                aligned_attribute_score=aligned["score"],
-                typed_value_match_score=typed_val["score"],
+                doc_id=doc_id,
+                aligned_attribute_score=aligned,
+                typed_value_match_score=typed,
                 graph_structure_similarity=graph_sim,
-                document_semantic_score=doc_semantic,
-                matched_keys=aligned["matched_keys"],
-                matched_values=typed_val["matched_values"],
+                document_semantic_score=doc_sem,
+                matched_keys=sorted(agg["matched_keys"]),
+                matched_values=agg["matched_values"],
+                table_name=agg["table_name"],
             )
-            candidates.append(candidate)
+            candidate.relation_type = self._classify_relation_type(
+                candidate, agg, important_values, feature_classes
+            )
+            results.append(candidate)
 
-        # 5. 최종 점수로 정렬
-        candidates.sort(key=lambda x: x.final_score, reverse=True)
+        results.sort(key=lambda c: c.final_score, reverse=True)
+        logger.info(f"관계 후보 {len(results)}개 발견, 상위 {top_k}개 반환")
+        return results[:top_k]
 
-        logger.info(f"관계 후보 {len(candidates)}개 발견, 상위 {top_k}개 반환")
-        return candidates[:top_k]
-
-    @staticmethod
-    def _numeric_proximity(val1: float, val2: float, scale: float) -> float:
-        """숫자 값 근접도 계산
-
-        Args:
-            val1, val2: 비교할 숫자
-            scale: 의미 있는 차이 기준 (예: 병상수=1000, 연도=10)
-
-        Returns:
-            0~1 점수 (가까울수록 1)
-        """
-        return max(0.0, 1.0 - abs(val1 - val2) / scale)
-
-    @staticmethod
-    def _set_overlap(set1: set[str], set2: set[str]) -> float:
-        """집합 중첩도 (Jaccard similarity)
-
-        Args:
-            set1, set2: 비교할 집합
-
-        Returns:
-            0~1 점수 (Jaccard index)
-        """
-        if not set1 or not set2:
-            return 0.0
-        intersection = len(set1 & set2)
-        union = len(set1 | set2)
-        return intersection / union
-
-    def _text_similarity(self, text1: str, text2: str) -> float:
-        """텍스트 의미 유사도 (임베딩 기반)
-
-        Args:
-            text1, text2: 비교할 텍스트
-
-        Returns:
-            0~1 점수 (코사인 유사도)
-        """
-        query = """
-        WITH $text1 as t1, $text2 as t2
-        // Value 노드에서 임베딩 조회 (기존 임베딩 재사용)
-        MATCH (v1:Value {name: t1})
-        MATCH (v2:Value {name: t2})
-        WHERE v1.value_embedding IS NOT NULL AND v2.value_embedding IS NOT NULL
-        RETURN vector.similarity.cosine(v1.value_embedding, v2.value_embedding) as similarity
-        """
-
-        results = self.graph_repo.execute_query(query, {"text1": text1, "text2": text2})
-        if results and results[0]["similarity"] is not None:
-            return max(0.0, results[0]["similarity"])
-        return 0.0
-
-    def _find_by_key_alignment(
-        self, source_doc_id: str, important_keys: list[str]
-    ) -> dict[str, dict]:
-        """Key Alignment: 의미적 스키마 매칭
-
-        "지역" ↔ "소재지", "병상수" ↔ "병상 수" 같은 스키마 차이 해결
-
-        Returns:
-            {
-                "doc_id_1": {"score": 0.85, "matched_keys": ["소재지", "병상 수"]},
-                ...
-            }
-        """
-        query = """
-        // 1. 기준 Document의 Key들 조회
-        MATCH (d:Document {id: $source_doc_id})-[:EXTRACTED_FROM]-(v:Value)-[:HAS_VALUE]-(k:Key)
-        WHERE k.name IN $important_keys AND k.name_embedding IS NOT NULL
-        WITH collect(DISTINCT k) as source_keys
-
-        // 2. 벡터 유사도로 유사한 Key 찾기 (스키마 정렬)
-        UNWIND source_keys as sk
-        MATCH (k2:Key)
-        WHERE k2.name <> sk.name AND k2.name_embedding IS NOT NULL
-        WITH sk, k2,
-             vector.similarity.cosine(sk.name_embedding, k2.name_embedding) as key_sim
-        WHERE key_sim > 0.7
-
-        // 3. 유사한 Key를 가진 Document 찾기
-        MATCH (k2)-[:HAS_VALUE]->(:Value)-[:EXTRACTED_FROM]->(d2:Document)
-        WHERE d2.id <> $source_doc_id
-
-        WITH d2, collect(DISTINCT k2.name) as matched_keys, avg(key_sim) as avg_key_sim
-        RETURN d2.id as doc_id, avg_key_sim as score, matched_keys
-        ORDER BY score DESC
-        LIMIT 50
-        """
-
-        results = self.graph_repo.execute_query(
-            query, {"source_doc_id": source_doc_id, "important_keys": important_keys}
-        )
-
-        return {
-            r["doc_id"]: {"score": r["score"], "matched_keys": r["matched_keys"]}
-            for r in results
-        }
-
-    def _find_by_value_similarity(
-        self, source_doc_id: str, important_values: dict[str, list[str]]
-    ) -> dict[str, dict]:
-        """Value 벡터 유사도로 후보 찾기
-
-        LLM이 "대형"을 추출했지만 GraphDB에 "500병상 이상"으로 저장된 경우,
-        value_embedding 벡터 유사도로 찾을 수 있음
-
-        Returns:
-            {
-                "doc_id_1": {"score": 0.82, "matched_values": {"병원규모": "500병상"}},
-                ...
-            }
-        """
-        # important_values: {"병원규모": ["대형"], "지역": ["서울"]}
-        all_values = [v for values in important_values.values() for v in values]
-
-        query = """
-        // 1. 기준 Document의 Value 조회 (중요 Key만)
-        MATCH (d:Document {id: $source_doc_id})-[:EXTRACTED_FROM]-(v:Value)
-        WHERE v.name IN $all_values AND v.value_embedding IS NOT NULL
-
-        WITH collect(v) as source_values
-
-        // 2. 벡터 유사도로 유사한 Value 찾기
-        UNWIND source_values as sv
-        MATCH (v2:Value)
-        WHERE v2.name <> sv.name AND v2.value_embedding IS NOT NULL
-        WITH sv, v2,
-             vector.similarity.cosine(sv.value_embedding, v2.value_embedding) as value_sim
-        WHERE value_sim > 0.75
-
-        // 3. 유사한 Value를 가진 Document 찾기
-        MATCH (v2)-[:EXTRACTED_FROM]->(d2:Document)
-        WHERE d2.id <> $source_doc_id
-
-        WITH d2, collect({key: v2.key_name, value: v2.name}) as matched_values, avg(value_sim) as avg_value_sim
-        RETURN d2.id as doc_id, avg_value_sim as score, matched_values
-        ORDER BY score DESC
-        LIMIT 50
-        """
-
-        results = self.graph_repo.execute_query(
-            query, {"source_doc_id": source_doc_id, "all_values": all_values}
-        )
-
-        candidates = {}
-        for r in results:
-            matched_dict = {mv["key"]: mv["value"] for mv in r["matched_values"]}
-            candidates[r["doc_id"]] = {"score": r["score"], "matched_values": matched_dict}
-
-        return candidates
-
-    def _typed_value_comparison(
+    def score_pair(
         self,
         source_doc_id: str,
-        important_keys: list[str],
-        important_values: dict[str, list[str]],
-    ) -> dict[str, dict]:
-        """Typed Value Comparison: 타입별 값 비교
+        target_doc_id: str,
+        feature_classes: Optional[dict[str, str]] = None,
+    ) -> Optional[RelationCandidate]:
+        """두 Document 간 관계를 직접 비교·채점 (propose 용, LLM 불필요).
 
-        Key 타입에 따라 적합한 비교 방식 적용:
-        - semantic: embedding similarity (의미적 유사도)
-        - numeric_date: range-based proximity (시간/수치 근접성)
-        - proper_noun: embedding + taxonomy (고유명사 범주)
+        공유 Key(이름 일치)에 대해 타입별 Value 비교(§8.3)와 종합 점수(§8.4)를 계산하고
+        Level 2 관계 유형(§8.6)을 판정한다.
+
+        Args:
+            source_doc_id: 출발 Document ID
+            target_doc_id: 도착 Document ID
+            feature_classes: Key별 feature_class (관계 유형 판정용)
 
         Returns:
-            {
-                "doc_id_1": {"score": 0.75, "matched_values": {"병상수": "1400", "진료과목": "내과"}},
-                ...
-            }
+            RelationCandidate (공통 Key가 없으면 None)
         """
-        candidates = {}
+        feature_classes = feature_classes or {}
+        source_kv = self._load_source_kv(source_doc_id)
+        target_kv = self._load_source_kv(target_doc_id)
+        common_keys = set(source_kv) & set(target_kv)
+        if not common_keys:
+            return None
 
-        # 1. 기준 Document의 Key-Value 조회 (key_type 포함)
-        query_source = """
-        MATCH (d:Document {id: $source_doc_id})-[:EXTRACTED_FROM]-(v:Value)-[:HAS_VALUE]-(k:Key)
-        WHERE k.name IN $important_keys
-        RETURN k.name as key_name, k.key_type as key_type, v.name as value_name, v.numeric_value as numeric_value
-        """
-        source_results = self.graph_repo.execute_query(
-            query_source, {"source_doc_id": source_doc_id, "important_keys": important_keys}
+        target_table = self.os_repo.get_document_table(target_doc_id) or ""
+        aligned_sum = 0.0
+        typed_sum = 0.0
+        matched_values: dict[str, str] = {}
+        exact_keys: set[str] = set()
+
+        for key in common_keys:
+            s_info, t_info = source_kv[key], target_kv[key]
+            key_type = s_info["key_type"]
+            s_val = s_info["values"][0] if s_info["values"] else ""
+            t_val = t_info["values"][0] if t_info["values"] else ""
+
+            if key_type == "numeric_date" and s_info["numeric_values"] and t_info["numeric_values"]:
+                s_num, t_num = s_info["numeric_values"][0], t_info["numeric_values"][0]
+                scale = max(abs(s_num) * 0.5, 100.0)
+                typed = _clamp01(1.0 - abs(s_num - t_num) / scale)
+            else:
+                s_vec = embedding_service.generate_embedding(str(s_val))
+                t_vec = embedding_service.generate_embedding(str(t_val))
+                typed = _clamp01(self._cosine(s_vec, t_vec))
+
+            aligned_sum += 1.0  # 동일 Key명 → 완전 정렬
+            typed_sum += typed
+            matched_values[key] = str(t_val)
+            if str(s_val).strip() == str(t_val).strip():
+                exact_keys.add(key)
+
+        n = len(common_keys)
+        candidate = RelationCandidate(
+            doc_id=target_doc_id,
+            aligned_attribute_score=_clamp01(aligned_sum / n),
+            typed_value_match_score=_clamp01(typed_sum / n),
+            graph_structure_similarity=self._graph_structure_similarity(source_doc_id, target_doc_id),
+            document_semantic_score=self._document_semantic(source_doc_id, target_doc_id),
+            matched_keys=sorted(common_keys),
+            matched_values=matched_values,
+            table_name=target_table,
         )
-
-        if not source_results:
-            return candidates
-
-        # Key별로 그룹화
-        source_kv_map = {}
-        for r in source_results:
-            key = r["key_name"]
-            if key not in source_kv_map:
-                source_kv_map[key] = {"values": [], "key_type": r["key_type"], "numeric_values": []}
-            source_kv_map[key]["values"].append(r["value_name"])
-            if r["numeric_value"] is not None:
-                source_kv_map[key]["numeric_values"].append(r["numeric_value"])
-
-        # 2. 각 Key별로 타입에 맞는 방식으로 검색
-        for key_name, kv_info in source_kv_map.items():
-            key_type = kv_info["key_type"]
-            source_values = kv_info["values"]
-
-            if key_type == "numeric_date":
-                # Numeric/Date: 범위 기반 검색
-                if kv_info["numeric_values"]:
-                    self._find_by_numeric_proximity(
-                        key_name, kv_info["numeric_values"], candidates
-                    )
-            elif key_type == "proper_noun":
-                # Proper Noun: Taxonomy 필터링 + 임베딩 유사도
-                self._find_by_taxonomy(
-                    source_doc_id, key_name, source_values, candidates
-                )
-            else:  # semantic
-                # Semantic: 임베딩 유사도
-                if len(source_values) > 1:
-                    # 다중 값: Jaccard overlap
-                    self._find_by_set_overlap(
-                        source_doc_id, key_name, source_values, candidates
-                    )
-                else:
-                    # 단일 값: 임베딩 유사도
-                    self._find_by_text_similarity(
-                        source_doc_id, key_name, source_values[0], candidates
-                    )
-
-        # 3. 점수 정규화 (여러 Key 종합)
-        for doc_id in candidates:
-            candidates[doc_id]["score"] = candidates[doc_id]["score"] / max(len(source_kv_map), 1)
-
-        return candidates
-
-    def _find_by_numeric_proximity(
-        self, key_name: str, source_numeric_values: list[float], candidates: dict
-    ):
-        """숫자형 값 근접도로 후보 찾기 (numeric_value 필드 사용)"""
-        if not source_numeric_values:
-            return
-
-        source_num = source_numeric_values[0]
-
-        # 숫자 scale 추정 (동적 설정)
-        scale = max(source_num * 0.5, 100)  # 값의 50% 또는 최소 100
-
-        query = """
-        MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)-[:EXTRACTED_FROM]->(d:Document)
-        WHERE v.numeric_value IS NOT NULL
-        RETURN d.id as doc_id, v.name as value_name, v.numeric_value as numeric_value
-        """
-        results = self.graph_repo.execute_query(query, {"key_name": key_name})
-
-        for r in results:
-            target_num = r["numeric_value"]
-            proximity = self._numeric_proximity(source_num, target_num, scale)
-
-            if proximity > 0.5:  # 최소 유사도 threshold
-                doc_id = r["doc_id"]
-                if doc_id not in candidates:
-                    candidates[doc_id] = {"score": 0.0, "matched_values": {}}
-                candidates[doc_id]["score"] += proximity
-                candidates[doc_id]["matched_values"][key_name] = r["value_name"]
-
-    def _find_by_set_overlap(
-        self, source_doc_id: str, key_name: str, source_values: list[str], candidates: dict
-    ):
-        """집합형 값 Jaccard overlap으로 후보 찾기"""
-        source_set = set(source_values)
-
-        query = """
-        MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)-[:EXTRACTED_FROM]->(d:Document)
-        WHERE d.id <> $source_doc_id
-        WITH d, collect(DISTINCT v.name) as values
-        RETURN d.id as doc_id, values
-        """
-        results = self.graph_repo.execute_query(
-            query, {"key_name": key_name, "source_doc_id": source_doc_id}
+        candidate.relation_type = self._classify_relation_type(
+            candidate, {"exact_keys": exact_keys}, {}, feature_classes
         )
+        return candidate
 
-        for r in results:
-            target_set = set(r["values"])
-            overlap = self._set_overlap(source_set, target_set)
+    # ──────────────────────────────────────────────
+    # 내부 로직
+    # ──────────────────────────────────────────────
 
-            if overlap > 0.3:  # 최소 30% 중첩
-                doc_id = r["doc_id"]
-                if doc_id not in candidates:
-                    candidates[doc_id] = {"score": 0.0, "matched_values": {}}
-                candidates[doc_id]["score"] += overlap
-                candidates[doc_id]["matched_values"][key_name] = ", ".join(r["values"])
-
-    def _find_by_text_similarity(
-        self, source_doc_id: str, key_name: str, source_value: str, candidates: dict
-    ):
-        """텍스트형 값 임베딩 유사도로 후보 찾기"""
-        query = """
-        MATCH (d1:Document {id: $source_doc_id})-[:EXTRACTED_FROM]-(v1:Value)-[:HAS_VALUE]-(k:Key {name: $key_name})
-        WHERE v1.name = $source_value AND v1.value_embedding IS NOT NULL
-
-        MATCH (k)-[:HAS_VALUE]->(v2:Value)-[:EXTRACTED_FROM]->(d2:Document)
-        WHERE d2.id <> $source_doc_id
-          AND v2.value_embedding IS NOT NULL
-          AND v2.name <> v1.name
-
-        WITH d2, v2, vector.similarity.cosine(v1.value_embedding, v2.value_embedding) as similarity
-        WHERE similarity > 0.7
-
-        RETURN d2.id as doc_id, v2.name as value_name, similarity
-        """
-
-        try:
-            results = self.graph_repo.execute_query(
-                query,
-                {"source_doc_id": source_doc_id, "key_name": key_name, "source_value": source_value},
+    def _load_source_kv(self, source_doc_id: str) -> dict[str, dict[str, Any]]:
+        """기준 Document의 Key-Value(타입/숫자값 포함)를 OpenSearch에서 조회."""
+        rows = self.os_repo.get_document_key_values(source_doc_id)
+        kv: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            key = r.get("parent_key_name", "")
+            if not key:
+                continue
+            entry = kv.setdefault(
+                key,
+                {"key_type": r.get("parent_key_type", "semantic"), "values": [], "numeric_values": []},
             )
+            entry["values"].append(r.get("value_content", ""))
+            if r.get("numeric_value") is not None:
+                entry["numeric_values"].append(float(r["numeric_value"]))
+        return kv
 
-            for r in results:
-                doc_id = r["doc_id"]
-                if doc_id not in candidates:
-                    candidates[doc_id] = {"score": 0.0, "matched_values": {}}
-                candidates[doc_id]["score"] += r["similarity"]
-                candidates[doc_id]["matched_values"][key_name] = r["value_name"]
-        except Exception as e:
-            # 벡터 임베딩이 없거나 유효하지 않으면 조용히 건너뛰기
-            logger.warning(f"Text similarity 검색 실패 (key={key_name}): {e}")
-            pass
+    @staticmethod
+    def _aggregate_key_alignment(similar_keys: list[dict[str, Any]]) -> float:
+        """search_keys 결과 점수를 Key 정렬 신호(0~1)로 집계."""
+        if not similar_keys:
+            return 0.0
+        return _clamp01(max(k.get("score", 0.0) for k in similar_keys))
 
-    def _find_by_taxonomy(
-        self, source_doc_id: str, key_name: str, source_values: list[str], candidates: dict
-    ):
-        """Proper Noun: Taxonomy 레이블 기반 가중치 + 임베딩 유사도
+    def _accumulate(
+        self,
+        candidates: dict[str, dict[str, Any]],
+        key_name: str,
+        key_type: str,
+        source_value: str,
+        kv_info: Optional[dict[str, Any]],
+        key_alignment: float,
+        matched_key_names: list[str],
+        value_hits: list[dict[str, Any]],
+        source_doc_id: str,
+    ) -> None:
+        """Value 검색 결과를 후보 Document별로 누적 (타입별 비교 §8.3 반영)."""
+        source_numeric = None
+        if kv_info and kv_info.get("numeric_values"):
+            source_numeric = kv_info["numeric_values"][0]
 
-        - 같은 taxonomy_label: 높은 가중치 (1.5x)
-        - 다른 taxonomy_label: 낮은 가중치 (0.3x)
-        """
-        # 1. 기준 Document의 taxonomy_label 조회
-        query_source = """
-        MATCH (d:Document {id: $source_doc_id})-[:EXTRACTED_FROM]-(v:Value)-[:HAS_VALUE]-(k:Key {name: $key_name})
-        WHERE v.name IN $source_values
-        RETURN v.name as value_name, v.taxonomy_label as taxonomy_label
-        """
-        source_results = self.graph_repo.execute_query(
-            query_source, {"source_doc_id": source_doc_id, "key_name": key_name, "source_values": source_values}
-        )
+        for hit in value_hits:
+            for doc_id in hit.get("document_ids", []):
+                if doc_id == source_doc_id:
+                    continue
 
-        if not source_results:
-            # taxonomy_label이 없으면 일반 임베딩 유사도로 fallback
-            for value in source_values:
-                self._find_by_text_similarity(source_doc_id, key_name, value, candidates)
-            return
+                typed_score = self._typed_value_score(
+                    key_type, source_value, source_numeric, hit
+                )
+                if typed_score <= 0.0:
+                    continue
 
-        # 2. 각 source value별로 검색
-        for source_row in source_results:
-            source_value = source_row["value_name"]
-            source_label = source_row["taxonomy_label"]
-
-            # 모든 proper_noun 값 검색 (taxonomy_label 제한 없음)
-            query = """
-            MATCH (d1:Document {id: $source_doc_id})-[:EXTRACTED_FROM]-(v1:Value)-[:HAS_VALUE]-(k:Key {name: $key_name})
-            WHERE v1.name = $source_value AND v1.value_embedding IS NOT NULL
-
-            MATCH (k)-[:HAS_VALUE]->(v2:Value)-[:EXTRACTED_FROM]->(d2:Document)
-            WHERE d2.id <> $source_doc_id
-              AND v2.value_embedding IS NOT NULL
-              AND v2.name <> v1.name
-
-            WITH d2, v2,
-                 vector.similarity.cosine(v1.value_embedding, v2.value_embedding) as raw_similarity,
-                 v2.taxonomy_label as target_label
-            WHERE raw_similarity > 0.5
-
-            RETURN d2.id as doc_id, v2.name as value_name, raw_similarity, target_label
-            """
-
-            try:
-                results = self.graph_repo.execute_query(
-                    query,
+                agg = candidates.setdefault(
+                    doc_id,
                     {
-                        "source_doc_id": source_doc_id,
-                        "key_name": key_name,
-                        "source_value": source_value,
+                        "aligned": 0.0,
+                        "typed": 0.0,
+                        "matched_keys": set(),
+                        "matched_values": {},
+                        "table_name": hit.get("table_name", ""),
+                        "exact_keys": set(),
                     },
                 )
+                agg["aligned"] += key_alignment
+                agg["typed"] += typed_score
+                agg["matched_keys"].update(matched_key_names)
+                agg["matched_values"][key_name] = hit.get("value_content", "")
+                if not agg["table_name"]:
+                    agg["table_name"] = hit.get("table_name", "")
+                # 값이 정확히 일치하면 강한 식별 신호로 기록 (관계 유형 판정용)
+                if str(hit.get("value_content", "")).strip() == source_value.strip():
+                    agg["exact_keys"].add(key_name)
 
-                for r in results:
-                    doc_id = r["doc_id"]
-                    raw_similarity = r["raw_similarity"]
-                    target_label = r["target_label"]
+    def _typed_value_score(
+        self,
+        key_type: str,
+        source_value: str,
+        source_numeric: Optional[float],
+        hit: dict[str, Any],
+    ) -> float:
+        """key_type 별 Value 비교 점수 산출 (§8.3)."""
+        if key_type == "numeric_date":
+            target_numeric = hit.get("numeric_value")
+            if source_numeric is None or target_numeric is None:
+                return 0.0
+            scale = max(abs(source_numeric) * 0.5, 100.0)
+            return _clamp01(1.0 - abs(source_numeric - float(target_numeric)) / scale)
 
-                    # Taxonomy 가중치 적용
-                    if source_label and target_label and source_label == target_label:
-                        # 같은 레이블: 높은 가중치
-                        weighted_score = raw_similarity * 1.5
-                    else:
-                        # 다른 레이블 또는 레이블 없음: 낮은 가중치
-                        weighted_score = raw_similarity * 0.3
+        # semantic / proper_noun: 임베딩 코사인 유사도 (OpenSearch k-NN 점수 사용)
+        sim = _clamp01(hit.get("score", 0.0))
+        if key_type == "proper_noun":
+            # taxonomy 동일 범주 가중(근사): 값이 정확 일치하면 가중 상향
+            if str(hit.get("value_content", "")).strip() == source_value.strip():
+                sim = _clamp01(sim * 1.5)
+        return sim
 
-                    if doc_id not in candidates:
-                        candidates[doc_id] = {"score": 0.0, "matched_values": {}}
-                    candidates[doc_id]["score"] += weighted_score
-                    candidates[doc_id]["matched_values"][key_name] = r["value_name"]
+    def _document_semantic(self, source_doc_id: str, target_doc_id: str) -> float:
+        """문서 전체 의미 유사도 (보조 지표, §8.4 10%).
 
-            except Exception as e:
-                logger.warning(f"Taxonomy 검색 실패 (key={key_name}, value={source_value}): {e}")
+        documents 인덱스에 저장된 문서 임베딩 간 코사인 유사도. 조회 실패 시 0.0.
+        """
+        try:
+            client = self.os_repo.client.client
+            resp = client.mget(
+                index=self.os_repo.documents_index,
+                body={"ids": [source_doc_id, target_doc_id]},
+            )
+            docs = {d["_id"]: d.get("_source", {}) for d in resp.get("docs", []) if d.get("found")}
+            v1 = docs.get(source_doc_id, {}).get("embedding")
+            v2 = docs.get(target_doc_id, {}).get("embedding")
+            if not v1 or not v2:
+                return 0.0
+            return _clamp01(self._cosine(v1, v2))
+        except Exception:
+            return 0.0
 
-    def _get_graph_structure_similarity(self, _source_doc_id: str, _target_doc_id: str) -> float:
-        """GraphSAGE 기반 구조적 유사도 계산
+    @staticmethod
+    def _cosine(v1: list[float], v2: list[float]) -> float:
+        """두 벡터의 코사인 유사도."""
+        dot = sum(a * b for a, b in zip(v1, v2))
+        n1 = math.sqrt(sum(a * a for a in v1))
+        n2 = math.sqrt(sum(b * b for b in v2))
+        if n1 == 0 or n2 == 0:
+            return 0.0
+        return dot / (n1 * n2)
 
-        TODO: GraphSAGE 임베딩 구현 후 활성화
-        현재는 placeholder로 0.0 반환
+    @staticmethod
+    def _graph_structure_similarity(_source_doc_id: str, _target_doc_id: str) -> float:
+        """GraphSAGE 기반 구조 유사도.
 
-        Args:
-            _source_doc_id: 기준 Document ID (미사용)
-            _target_doc_id: 비교 대상 Document ID (미사용)
-
-        Returns:
-            구조적 유사도 (0~1)
+        4차년도 GNN/GraphSAGE 관계 생성 모델로 활성화 예정(§8.4, §10.4).
+        현재는 placeholder 0.0.
         """
         return 0.0
 
-    def _get_document_semantic_similarity(self, source_doc_id: str, target_doc_id: str) -> float:
-        """문서 전체 의미 유사도 계산 (보조 지표)
+    def _classify_relation_type(
+        self,
+        candidate: RelationCandidate,
+        agg: dict[str, Any],
+        important_values: dict[str, list[str]],
+        feature_classes: dict[str, str],
+    ) -> str:
+        """Level 2 관계 유형 판정 (§8.6).
 
-        Document 노드의 raw_text 또는 전체 KV 임베딩 비교
-
-        Args:
-            source_doc_id: 기준 Document ID
-            target_doc_id: 비교 대상 Document ID
-
-        Returns:
-            문서 의미 유사도 (0~1)
+        - SAME_AS: 식별/위치 Key가 정확히 일치하고 종합 점수가 매우 높음 (동일 개체).
+        - REFERENCES: 식별자(identity) Key가 일치 (한 레코드가 다른 레코드를 참조).
+        - RELATED_TO: 그 외 (공유 속성/유사 값으로 의미적 연관).
         """
-        # Document에 document_embedding 속성이 있다면 사용
-        query = """
-        MATCH (d1:Document {id: $source_doc_id})
-        MATCH (d2:Document {id: $target_doc_id})
-        WHERE d1.document_embedding IS NOT NULL AND d2.document_embedding IS NOT NULL
-        RETURN vector.similarity.cosine(d1.document_embedding, d2.document_embedding) as similarity
-        """
-        results = self.graph_repo.execute_query(
-            query, {"source_doc_id": source_doc_id, "target_doc_id": target_doc_id}
-        )
+        exact_keys = agg.get("exact_keys", set())
+        identity_keys = {k for k in exact_keys if feature_classes.get(k) == "identity"}
+        strong_keys = {k for k in exact_keys if feature_classes.get(k) in ("identity", "location")}
 
-        if results and results[0]["similarity"] is not None:
-            return max(0.0, results[0]["similarity"])
-
-        return 0.0
-
-    def _find_by_normalized_match(
-        self, source_doc_id: str, important_keys: list[str]
-    ) -> dict[str, dict]:
-        """NormalizedValue 정확 매칭으로 후보 찾기 (가장 높은 신뢰도)
-
-        정규화된 값이 정확히 일치 = 같은 개념 (Entity Resolution)
-
-        Returns:
-            {
-                "doc_id_1": {"score": 1.0, "matched": {"지역": "서울", "규모": "대형"}},
-                ...
-            }
-        """
-        query = """
-        // 1. 기준 Document의 NormalizedValue 조회
-        MATCH (d:Document {id: $source_doc_id})-[:HAS_NORMALIZED_VALUE]->(nv:NormalizedValue)
-        WHERE nv.key_name IN $important_keys
-
-        WITH collect({key: nv.key_name, value: nv.name}) as source_normalized
-
-        // 2. 같은 NormalizedValue를 공유하는 Document 찾기
-        UNWIND source_normalized as snv
-        MATCH (d2:Document)-[:HAS_NORMALIZED_VALUE]->(nv2:NormalizedValue {key_name: snv.key, name: snv.value})
-        WHERE d2.id <> $source_doc_id
-
-        WITH d2, collect({key: snv.key, value: snv.value}) as matched, count(DISTINCT snv.key) as match_count
-        WITH d2, matched, toFloat(match_count) / size($important_keys) as score
-
-        RETURN d2.id as doc_id, score, matched
-        ORDER BY score DESC
-        LIMIT 50
-        """
-
-        results = self.graph_repo.execute_query(
-            query, {"source_doc_id": source_doc_id, "important_keys": important_keys}
-        )
-
-        candidates = {}
-        for r in results:
-            matched_dict = {m["key"]: m["value"] for m in r["matched"]}
-            candidates[r["doc_id"]] = {"score": r["score"], "matched": matched_dict}
-
-        return candidates
-
+        if strong_keys and candidate.final_score >= settings.LEVEL2_SAME_AS_THRESHOLD:
+            return RELATION_SAME_AS
+        if identity_keys:
+            return RELATION_REFERENCES
+        return RELATION_RELATED_TO
