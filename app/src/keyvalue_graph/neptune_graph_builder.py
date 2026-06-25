@@ -39,7 +39,8 @@ class NeptuneGraphBuilder:
         record: DataRecord,
         centrality_name: str = "데이터현황",
         domain: str = None,
-        create_document: bool = True
+        create_document: bool = True,
+        table_name: str = None
     ) -> Dict[str, Any]:
         """단일 레코드로부터 Neptune + OpenSearch에 저장.
 
@@ -48,6 +49,8 @@ class NeptuneGraphBuilder:
             centrality_name: 중심 노드 이름
             domain: 데이터 도메인 (예: "의료", "법률"). None이면 centrality_name 사용
             create_document: Document 노드 생성 여부
+            table_name: 이 레코드가 속한 데이터셋(테이블)명. Level 1 게이팅의 기준이 된다.
+                None이면 source_file 의 stem 을 사용.
 
         Returns:
             저장 결과
@@ -55,15 +58,19 @@ class NeptuneGraphBuilder:
         # domain이 명시되지 않으면 centrality_name 사용 (하위 호환)
         if domain is None:
             domain = centrality_name
+        # table_name 미지정 시 파일 stem 을 데이터셋 식별자로 사용
+        if table_name is None:
+            from pathlib import Path
+            table_name = Path(record.source_file).stem
         doc_id = record.get_document_id()
 
         # 1. Neptune에 RDF 트리플 저장
-        sparql_insert = self._generate_insert_query(record, centrality_name, create_document)
+        sparql_insert = self._generate_insert_query(record, centrality_name, create_document, table_name)
         logger.debug(f"생성된 SPARQL 쿼리:\n{sparql_insert}")
         self.neptune_client.execute_update(sparql_insert)
 
         # 2. OpenSearch에 임베딩 저장
-        self._index_to_opensearch(record, domain)
+        self._index_to_opensearch(record, domain, table_name)
 
         return {
             "success": True,
@@ -86,7 +93,8 @@ class NeptuneGraphBuilder:
         self,
         record: DataRecord,
         centrality_name: str,
-        create_document: bool
+        create_document: bool,
+        table_name: str = ""
     ) -> str:
         """SPARQL INSERT 쿼리 생성."""
         ns = str(self.namespace)
@@ -108,6 +116,9 @@ class NeptuneGraphBuilder:
             triples.append(f"{doc_uri} <{ns}documentId> \"{self._escape_sparql_literal(doc_id)}\" .")
             triples.append(f"{doc_uri} <{ns}sourceFile> \"{self._escape_sparql_literal(record.source_file)}\" .")
             triples.append(f"{doc_uri} <{ns}recordIndex> {record.record_index} .")
+            # 데이터셋(테이블) 소속 — Level 1 ↔ Level 2 게이팅 연결 고리
+            if table_name:
+                triples.append(f"{doc_uri} <{ns}tableName> \"{self._escape_sparql_literal(table_name)}\" .")
             # rawText는 OpenSearch에 저장되므로 Neptune에서는 생략
 
         # Key-Value 노드
@@ -139,16 +150,17 @@ INSERT DATA {{
 }}
 """
 
-    def _index_to_opensearch(self, record: DataRecord, domain: str):
+    def _index_to_opensearch(self, record: DataRecord, domain: str, table_name: str = ""):
         """OpenSearch에 임베딩 인덱싱.
 
         Args:
             record: 데이터 레코드
             domain: 데이터 도메인 (예: "의료", "법률")
+            table_name: 데이터셋(테이블)명. Level 1 게이팅 필터에 사용.
         """
         doc_id = record.get_document_id()
 
-        # 1. Document 인덱싱
+        # 1. Document 인덱싱 (Neptune documentId 와 동일한 결정적 ID 사용 → 저장소 간 정합)
         doc_content = json.dumps(record.raw_data, ensure_ascii=False)
         doc_embedding = embedding_service.generate_embedding(doc_content)
 
@@ -156,13 +168,15 @@ INSERT DATA {{
             content=doc_content,
             embedding=doc_embedding,
             domain=domain,
+            document_id=doc_id,
+            table_name=table_name,
             metadata={
                 "source_file": record.source_file,
                 "record_index": record.record_index
             }
         )
 
-        # Document UUID 저장 (Value 인덱싱 시 사용)
+        # Document ID 저장 (Value 인덱싱 시 사용) — Neptune documentId 와 동일
         doc_uuid = doc_result["doc_id"]
 
         # 2. Key 인덱싱 (중복 방지 + field_type_classifier)
@@ -243,7 +257,8 @@ INSERT DATA {{
                     document_ids=[doc_uuid],
                     embedding=value_embedding,
                     value_type=record.infer_value_type(key_name, value).value,
-                    numeric_value=numeric_value
+                    numeric_value=numeric_value,
+                    table_name=table_name
                 )
 
     def _get_key_uuid(self, key_name: str) -> str | None:
