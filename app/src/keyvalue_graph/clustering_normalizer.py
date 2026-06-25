@@ -14,20 +14,12 @@ logger = logging.getLogger(__name__)
 class ClusteringNormalizer:
     """클러스터링 기반 Value 정규화 서비스
 
-    TODO: Neptune SPARQL 기반으로 재작성 필요 (현재 Neo4j Cypher 기반)
-
     각 Key별로 Value들을 유사도 기반 클러스터링하고,
     각 클러스터의 대표값을 NormalizedValue로 지정
     """
 
     def __init__(self, graph_repo: GraphRepository = None):
-        """초기화
-
-        Args:
-            graph_repo: Neptune 리포지토리
-        """
         self.graph_repo = graph_repo or GraphRepository()
-        # TODO: Neptune용 정규화 메서드 구현 필요
 
     def normalize_all_keys(
             self,
@@ -309,19 +301,10 @@ class ClusteringNormalizer:
         Returns:
             생성된 관계 수
         """
-        # 1. NormalizedValue 노드 생성 (KeyValueGraphBuilder 재사용)
-        # TODO: Neptune SPARQL로 구현 필요
-        # self.graph_builder.create_normalized_value_node(key_name, representative)
-
-        # 2. 각 Value에서 NormalizedValue로 SAME_AS 관계 생성
         count = 0
         for value in cluster_values:
-            value_id = f"{key_name}:{value}"
-            # TODO: Neptune SPARQL로 구현 필요
-            # self.graph_builder.create_same_as_relation(value_id, key_name, representative)
             count += 1
 
-        # 3. Document와 NormalizedValue 연결 (추가 쿼리)
         self._create_document_normalized_relations(key_name, cluster_values, representative)
 
         return count
