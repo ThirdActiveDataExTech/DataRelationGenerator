@@ -27,7 +27,9 @@ class OpenSearchRepository:
             content: str,
             embedding: List[float],
             domain: str = "",
-            metadata: Optional[Dict[str, Any]] = None
+            metadata: Optional[Dict[str, Any]] = None,
+            document_id: Optional[str] = None,
+            table_name: str = ""
     ) -> Dict[str, Any]:
         """Document 노드 인덱싱.
 
@@ -36,18 +38,28 @@ class OpenSearchRepository:
             embedding: 문서 임베딩 벡터 (768차원)
             domain: 데이터 도메인 (예: 의료, 법률, 방송)
             metadata: 메타데이터
+            document_id: 문서 ID. 지정 시 OpenSearch _id 로 사용하여 Neptune documentId 와 동일 키로 정렬.
+                미지정 시 UUID 자동 생성.
+            table_name: 이 문서가 속한 데이터셋(테이블)명. Level 1 게이팅 및 Value 검색 필터에 사용.
 
         Returns:
-            인덱싱 결과 {"doc_id": UUID, ...}
+            인덱싱 결과 {"doc_id": document_id, ...}
         """
         body = {
             "content": content,
             "embedding": embedding,
             "domain": domain,
+            "table_name": table_name,
             "metadata": metadata or {}
         }
-        doc_uuid, response = self.client.index_document(self.documents_index, body)
-        return {"doc_id": doc_uuid, **response}
+        if document_id is not None:
+            body["doc_id"] = document_id
+            doc_id, response = self.client.index_document(
+                self.documents_index, body, doc_id=document_id, add_id_to_body=False
+            )
+        else:
+            doc_id, response = self.client.index_document(self.documents_index, body)
+        return {"doc_id": doc_id, **response}
 
     def index_key(
             self,
@@ -103,7 +115,8 @@ class OpenSearchRepository:
             document_ids: List[str],
             embedding: Optional[List[float]] = None,
             value_type: str = "text",
-            numeric_value: Optional[float] = None
+            numeric_value: Optional[float] = None,
+            table_name: str = ""
     ) -> Dict[str, Any]:
         """Value 노드 인덱싱.
 
@@ -112,10 +125,11 @@ class OpenSearchRepository:
             parent_key_id: 부모 Key ID (UUID)
             parent_key_name: 부모 Key 이름 (한글)
             parent_key_type: 부모 Key 타입 (semantic, numeric_date, proper_noun)
-            document_ids: 이 Value가 추출된 Document ID 리스트 (UUID)
+            document_ids: 이 Value가 추출된 Document ID 리스트
             embedding: Value 임베딩 벡터 (semantic/proper_noun만)
             value_type: Value 데이터 타입 (text, number 등)
             numeric_value: 숫자 값 (numeric_date 타입만)
+            table_name: 이 Value가 속한 데이터셋(테이블)명. Level 1 게이팅 필터에 사용.
 
         Returns:
             인덱싱 결과 {"value_id": UUID, ...}
@@ -126,7 +140,8 @@ class OpenSearchRepository:
             "parent_key_name": parent_key_name,
             "parent_key_type": parent_key_type,
             "document_ids": document_ids,
-            "value_type": value_type
+            "value_type": value_type,
+            "table_name": table_name
         }
         if embedding is not None:
             body["embedding"] = embedding
@@ -273,7 +288,8 @@ class OpenSearchRepository:
             self,
             query_vector: List[float],
             parent_key_ids: List[str],
-            top_k: int = 10
+            top_k: int = 10,
+            allowed_table_names: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """Value 벡터 검색 (특정 Key들에 속한 Value만).
 
@@ -281,10 +297,18 @@ class OpenSearchRepository:
             query_vector: 쿼리 임베딩 벡터
             parent_key_ids: 검색 범위를 제한할 Key ID 리스트
             top_k: 반환할 최대 결과 수
+            allowed_table_names: Level 1 게이팅 — 검색 대상을 이 데이터셋(테이블)들에 속한
+                Value로만 제한. None이면 제한하지 않음.
 
         Returns:
-            검색 결과 리스트 (각 결과는 value_id, value_content, parent_key_id, score 포함)
+            검색 결과 리스트 (value_id, value_content, parent_key_id, parent_key_name,
+            value_type, numeric_value, document_ids, table_name, score 포함)
         """
+        filters: List[Dict[str, Any]] = [{"terms": {"parent_key_id": parent_key_ids}}]
+        if allowed_table_names:
+            # 동적 매핑 문자열은 .keyword 서브필드로 정확 매칭
+            filters.append({"terms": {"table_name.keyword": allowed_table_names}})
+
         query_body = {
             "size": top_k,
             "query": {
@@ -297,9 +321,7 @@ class OpenSearchRepository:
                             }
                         }
                     },
-                    "filter": [
-                        {"terms": {"parent_key_id": parent_key_ids}}
-                    ]
+                    "filter": filters
                 }
             }
         }
@@ -308,15 +330,80 @@ class OpenSearchRepository:
 
         results = []
         for hit in response["hits"]["hits"]:
+            source = hit["_source"]
             results.append({
-                "value_id": hit["_source"]["value_id"],
-                "value_content": hit["_source"]["value_content"],
-                "parent_key_id": hit["_source"]["parent_key_id"],
-                "value_type": hit["_source"]["value_type"],
+                "value_id": source["value_id"],
+                "value_content": source["value_content"],
+                "parent_key_id": source["parent_key_id"],
+                "parent_key_name": source.get("parent_key_name", ""),
+                "parent_key_type": source.get("parent_key_type", "semantic"),
+                "value_type": source["value_type"],
+                "numeric_value": source.get("numeric_value"),
+                "document_ids": source.get("document_ids", []),
+                "table_name": source.get("table_name", ""),
                 "score": hit["_score"]
             })
 
         return results
+
+    def get_document_key_values(self, document_id: str, size: int = 500) -> List[Dict[str, Any]]:
+        """특정 Document에서 추출된 모든 Value(=Key-Value)를 조회.
+
+        Neptune openCypher 대신 OpenSearch values 인덱스에서 직접 조회한다.
+
+        Args:
+            document_id: 기준 Document ID (Neptune documentId 와 동일 키)
+            size: 최대 조회 개수
+
+        Returns:
+            Value 문서 리스트 (parent_key_name, parent_key_type, value_content,
+            numeric_value, embedding, table_name 포함)
+        """
+        query_body = {
+            "size": size,
+            "query": {"term": {"document_ids.keyword": document_id}},
+        }
+        response = self.client.search(self.values_index, query_body)
+        return [hit["_source"] for hit in response["hits"]["hits"]]
+
+    def count_documents_by_table(self, table_name: str) -> int:
+        """특정 데이터셋(테이블)에 속한 Document 수를 반환 (KV 그래프 처리 여부 판단용).
+
+        Args:
+            table_name: 데이터셋(테이블)명
+
+        Returns:
+            Document 개수 (인덱스 없거나 조회 실패 시 0)
+        """
+        try:
+            if not self.client.client.indices.exists(index=self.documents_index):
+                return 0
+            resp = self.client.client.count(
+                index=self.documents_index,
+                body={"query": {"term": {"table_name.keyword": table_name}}},
+            )
+            return int(resp.get("count", 0))
+        except Exception:
+            return 0
+
+    def get_document_table(self, document_id: str) -> Optional[str]:
+        """Document ID로 소속 데이터셋(테이블)명을 조회.
+
+        Args:
+            document_id: Document ID
+
+        Returns:
+            table_name 또는 None
+        """
+        try:
+            source = self.client.client.get(index=self.documents_index, id=document_id)["_source"]
+            return source.get("table_name") or None
+        except Exception:
+            # 문서 인덱스에 없으면 values 인덱스에서 보조 조회
+            values = self.get_document_key_values(document_id, size=1)
+            if values:
+                return values[0].get("table_name") or None
+            return None
 
     def delete_document(self, doc_id: str) -> Dict[str, Any]:
         """Document 삭제.
