@@ -41,6 +41,7 @@ class RelationPipeline:
         dataset_repo: DatasetRepository | None = None,
         dataset_service: DatasetService | None = None,
     ):
+        """DatasetRepository와 DatasetService를 주입받아 초기화."""
         self.dataset_repo = dataset_repo or get_dataset_repository()
         self.dataset_service = dataset_service or DatasetService()
 
@@ -183,7 +184,7 @@ class RelationPipeline:
     _KW_WEIGHT = 0.4
 
     def _run_tier2(self, a: DatasetProfile, b: DatasetProfile) -> Tier2Candidate | None:
-        """description 임베딩 + keywords 평균 임베딩 결합 유사도 계산."""
+        """Description 임베딩 + keywords 평균 임베딩 결합 유사도 계산."""
         if not a.table_embedding or not b.table_embedding:
             logger.debug(f"[Tier2] {a.table_name} 또는 {b.table_name} 임베딩 없음, 스킵")
             return None

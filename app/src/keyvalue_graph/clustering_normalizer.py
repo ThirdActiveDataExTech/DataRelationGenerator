@@ -19,6 +19,7 @@ class ClusteringNormalizer:
     """
 
     def __init__(self, graph_repo: GraphRepository = None):
+        """GraphRepository를 주입받아 초기화."""
         self.graph_repo = graph_repo or GraphRepository()
 
     def normalize_all_keys(
