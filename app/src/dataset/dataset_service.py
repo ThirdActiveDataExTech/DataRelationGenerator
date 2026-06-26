@@ -29,6 +29,7 @@ class DatasetService:
         dataset_repo: DatasetRepository | None = None,
         ontology_service: OntologyService | None = None,
     ):
+        """Neptune·OpenSearch 클라이언트 및 온톨로지 서비스를 주입받아 초기화."""
         self.neptune = neptune_client or get_neptune_client()
         self.dataset_repo = dataset_repo or get_dataset_repository()
         self.ontology = ontology_service or OntologyService(neptune_client=self.neptune)

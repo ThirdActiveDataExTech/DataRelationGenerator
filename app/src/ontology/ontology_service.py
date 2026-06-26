@@ -35,6 +35,7 @@ class OntologyService:
     """Neptune 도메인 온톨로지 계층 관리 서비스."""
 
     def __init__(self, neptune_client: NeptuneClient | None = None):
+        """NeptuneClient를 주입받아 초기화."""
         self.neptune = neptune_client or get_neptune_client()
 
     def link_dataset_to_domain(self, table_name: str, domain: str) -> str:
