@@ -55,7 +55,7 @@ class LLMResponse:
             raise ValueError(f"Unknown task: {task}")
         self.prompt_name, self.prompt_label = config
 
-    def generate_llm_response(self, variables: Any) -> Dict[str, Any] | str:
+    def generate_llm_response(self, variables: Any) -> Dict[str, Any]:
         """통합 LLM 응답 처리"""
         prompt = self._get_prompt()
         compiled_prompt = self._compile_prompt(prompt, **variables)
