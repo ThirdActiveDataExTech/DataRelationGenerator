@@ -142,9 +142,41 @@ class Settings(BaseSettings):
     OPENSEARCH_PORT: int = 9200
     OPENSEARCH_USE_SSL: bool = False
     OPENSEARCH_VERIFY_CERTS: bool = False
-    OPENSEARCH_DOCUMENTS_INDEX: str = "documents"
-    OPENSEARCH_KEYS_INDEX: str = "keys"
-    OPENSEARCH_VALUES_INDEX: str = "values"
+    # 인덱스 명칭은 설계 문서(§3.2/§13)의 third-party-* 규칙을 따른다.
+    OPENSEARCH_DOCUMENTS_INDEX: str = "third-party-graph-documents"
+    OPENSEARCH_KEYS_INDEX: str = "third-party-graph-keys"
+    OPENSEARCH_VALUES_INDEX: str = "third-party-graph-values"
+    OPENSEARCH_DATASETS_INDEX: str = "third-party-datasets"
+
+    # 원본 업로드 파일(blob) 보관 백엔드 선택 (§3.2): filesystem | minio | none
+    #   - filesystem: 로컬 디스크(또는 PVC 마운트 경로)에 저장 — active-metadata 프로젝트와 동일 방식
+    #   - minio: 아래 MINIO_* 설정으로 S3 호환 객체 저장소에 저장
+    #   - none: 원본 blob 미보관 (레코드는 OpenSearch/Neptune에 적재됨)
+    RAW_STORAGE_BACKEND: str = "filesystem"
+    # filesystem 백엔드의 루트 경로. k8s 배포 시 PVC 마운트 경로로 주입
+    RAW_STORAGE_PATH: str = "./raw_uploads"
+
+    # 실제 값은 .env / k8s env 로 주입한다. 아래는 in-cluster 서비스 DNS 형태의 placeholder 기본값.
+    MINIO_ENABLED: bool = False
+    MINIO_ENDPOINT: str = "http://minio:9000"
+    MINIO_ACCESS_KEY: str = ""
+    MINIO_SECRET_KEY: str = ""
+    MINIO_SECURE: bool = False
+    MINIO_REGION: str = "ap-northeast-2"
+    MINIO_BUCKET: str = "third-party-datasets-raw"
+
+    # Level 2 (레코드 간) 관계 발굴 설정
+    # Level 1에서 연결된 데이터셋 내부로만 후보 탐색을 제한할지 여부 (§2, §8)
+    LEVEL2_GATE_BY_LEVEL1: bool = True
+    # 후보 발굴 시 OpenSearch Key/Value 검색 k 값
+    LEVEL2_KEY_SEARCH_K: int = 5
+    LEVEL2_VALUE_SEARCH_K: int = 20
+    # SAME_AS 로 승격할 종합 점수 하한 (정규화/식별자 강일치 신호)
+    LEVEL2_SAME_AS_THRESHOLD: float = 0.9
+
+    # Dataset RDF Namespace
+    DATASET_RDF_NAMESPACE: str = "http://datarelation.co.kr/ontology#"
+    DATASET_RDF_NAMESPACE_PREFIX: str = "dm"
 
     # Embedding Config
     EMBEDDING_MODEL_NAME: str = "jhgan/ko-sroberta-multitask"
