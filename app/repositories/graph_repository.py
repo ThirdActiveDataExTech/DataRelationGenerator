@@ -1,5 +1,6 @@
 """Neptune RDF 기반 그래프 레포지토리."""
 
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import logging
 from urllib.parse import quote
@@ -189,6 +190,68 @@ class GraphRepository:
                 logger.error(f"관계 생성 실패: {e}")
 
         return count
+
+    def create_document_relation(
+        self,
+        source_doc_id: str,
+        target_doc_id: str,
+        relation_type: str,
+        score: float,
+        method: str = "llm",
+        reason: str = "",
+    ) -> str:
+        """Level 2 (레코드 간) 관계를 RDF Reification 으로 Neptune에 영구 저장 (§8.5).
+
+        관계 엣지 자체에 메타데이터(유형/점수/근거/방법)를 부착하여 액티브 메타데이터로
+        기록한다. Dataset 레벨(§7) 저장 방식과 동일한 reification 패턴을 사용한다.
+
+        Args:
+            source_doc_id: 출발 Document ID
+            target_doc_id: 도착 Document ID
+            relation_type: 관계 유형 (SAME_AS / RELATED_TO / REFERENCES)
+            score: 종합 점수 (0~1)
+            method: 생성 방법 (rule / embedding / llm)
+            reason: 판단 근거
+
+        Returns:
+            생성된 관계 reification 노드의 ID 문자열
+        """
+        ns = self.namespace
+        source_uri = self._make_uri(f"document/{source_doc_id}")
+        target_uri = self._make_uri(f"document/{target_doc_id}")
+        rel_id = f"docrelation/{source_doc_id}--{target_doc_id}"
+        rel_uri = self._make_uri(rel_id)
+        created_at = datetime.now(timezone.utc).isoformat()
+
+        def _esc(s: str) -> str:
+            return s.replace("\\", "\\\\").replace('"', '\\"')
+
+        update = f"""
+        PREFIX kv: <{ns}>
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+        PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+
+        DELETE {{ {rel_uri} ?p ?o . }}
+        WHERE  {{ OPTIONAL {{ {rel_uri} ?p ?o . }} }} ;
+
+        INSERT DATA {{
+            {rel_uri} rdf:type rdf:Statement ;
+                rdf:subject {source_uri} ;
+                rdf:predicate kv:relatedTo ;
+                rdf:object {target_uri} ;
+                kv:relationType "{_esc(relation_type)}" ;
+                kv:relationScore "{score}"^^xsd:float ;
+                kv:relationMethod "{_esc(method)}" ;
+                kv:relationReason "{_esc(reason)}" ;
+                kv:createdAt "{created_at}"^^xsd:dateTime .
+        }}
+        """
+        self.client.execute_update(update)
+        logger.info(
+            f"[Level2 Relation] {source_doc_id} --[{relation_type}]--> {target_doc_id} "
+            f"(score={score}, method={method})"
+        )
+        return rel_id
 
     def get_document_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]:
         """Document ID로 문서 조회.

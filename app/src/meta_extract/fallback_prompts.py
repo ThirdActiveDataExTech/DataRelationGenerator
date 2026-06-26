@@ -737,6 +737,95 @@ Key-Value 메타데이터:
 - 지명도 고유명사이므로 proper_noun
 """
 
+    TABLE_RELATION_VERIFICATION: str = """**반드시 verify_table_relation tool을 사용하여 응답할 것.**
+
+당신은 두 데이터 테이블이 실제 서비스나 워크플로우에서 함께 사용될 수 있는지를 판단하는 전문가입니다.
+
+# 테이블 A
+이름: {table_a}
+도메인: {domain_a}
+설명: {description_a}
+요약: {summary_a}
+컬럼: {columns_a}
+샘플 레코드:
+{samples_a}
+
+# 테이블 B
+이름: {table_b}
+도메인: {domain_b}
+설명: {description_b}
+요약: {summary_b}
+컬럼: {columns_b}
+샘플 레코드:
+{samples_b}
+
+임베딩 유사도: {embedding_score}
+
+# 판단 기준
+
+**컬럼 구조나 값이 직접 연결되지 않아도 관계가 있을 수 있습니다.**
+아래 3가지 관점 중 하나라도 해당하면 related=true로 판단하세요.
+
+## 1. 구조적 연결
+- 공통 컬럼(FK/PK)이 있거나 동일한 식별자를 공유하는가?
+- 예: 두 테이블 모두 HOSPITAL_ID를 가짐
+
+## 2. 개념적 연결
+- 컬럼 이름은 달라도 같은 개념을 서로 다른 방식으로 표현하는가?
+- 예: 상품 카테고리 코드 ↔ 분류명 — 같은 분류 체계를 다른 형태로 저장
+- 예: 지역 코드 ↔ 지역명 텍스트 — 동일한 지역 정보를 코드/텍스트로 각각 보유
+
+## 3. 쓰임새 연결 (가장 중요)
+- 실제 서비스나 워크플로우에서 A 데이터를 활용하려면 B 데이터가 필요한가?
+- 또는 A와 B를 함께 사용할 때 단독 사용보다 더 큰 가치를 제공하는가?
+- 예: 주문 데이터 → 고객 데이터 (주문자 정보 조회에 필요)
+- 예: 사용자 행동 로그 → 상품 메타데이터 (행동 분석 시 상품 정보 필요)
+
+# related=false인 경우
+- 두 테이블이 완전히 다른 목적으로 사용되며 함께 쓸 시나리오가 전혀 없을 때
+- 단순히 같은 의료 도메인이라는 이유만으로는 부족
+
+# relation_type 작성 방법
+두 테이블이 어떤 방식으로 연결되는지 짧은 한국어 문장으로 작성하세요.
+- 구조적: "A-B (1:N 참조)", "A-B (공통 식별자)"
+- 개념적: "A코드-B분류 매핑"
+- 쓰임새: "A 기반 B 조회", "A 처리 시 B 활용"
+
+# 출력
+반드시 verify_table_relation function tool을 호출하세요.
+"""
+
+    TABLE_METADATA_EXTRACTION: str = """**반드시 extract_table_metadata tool을 사용하여 응답할 것.**
+
+당신은 데이터 테이블의 메타데이터를 분석하여 핵심 정보를 추출하는 전문가입니다.
+
+# 테이블 정보
+테이블명: {table_name}
+컬럼 목록: {columns}
+컬럼 설명: {column_descriptions}
+샘플 레코드:
+{sample_records}
+
+# 임무
+
+## 1. description
+테이블이 무엇을 담고 있는지, 어떤 목적으로 쓰이는지를 1~2문장으로 요약하세요.
+- 단순히 컬럼명을 나열하지 말 것
+- "어떤 데이터가, 왜 필요한지"를 중심으로 작성
+
+좋은 예: "암 환자의 진단코드, 수술 이력, 고혈압·당뇨 과거력 등 임상 정보를 담은 테이블로, 환자 맞춤형 의료 서비스 설계에 활용됩니다."
+나쁜 예: "DIAGNOSIS_CODE, SURGERY_DATE, HYPERTENSION_HISTORY 컬럼을 포함합니다."
+
+## 2. keywords
+테이블을 대표하는 도메인 개념어 5~10개를 추출하세요.
+- 컬럼명이 아니라 **의미 개념**으로 추출 (예: "진단코드" 대신 "암 진단", "수술 이력")
+- 다른 테이블과 연결될 수 있는 개념어 우선 (예: "병원", "환자", "질환명")
+- 한국어로 작성
+
+# 출력
+반드시 extract_table_metadata function tool을 호출하세요.
+"""
+
     PROPER_NOUN_LABELING: str = """**반드시 label_proper_nouns tool을 사용하여 응답할 것.**
 
 고유명사 값들을 범주별로 분류하세요.
@@ -773,6 +862,8 @@ Key-Value 메타데이터:
             "relation_key_analysis": cls.RELATION_KEY_ANALYSIS,
             "field_type_classification": cls.FIELD_TYPE_CLASSIFICATION,
             "proper_noun_labeling": cls.PROPER_NOUN_LABELING,
+            "table_relation_verification": cls.TABLE_RELATION_VERIFICATION,
+            "table_metadata_extraction": cls.TABLE_METADATA_EXTRACTION,
         }
 
         if task not in prompt_map:

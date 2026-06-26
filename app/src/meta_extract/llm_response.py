@@ -25,11 +25,12 @@ from app.schemas.keyvalue_graph import (
     field_type_classification_tool,
     proper_noun_labeling_tool
 )
+from app.schemas.dataset import table_metadata_extraction_tool, table_relation_verification_tool
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 
 
 class LLMResponse:
-    """LLM 응답 처리 클래스 - 메타데이터 추출 및 Neo4j 쿼리 생성용"""
+    """LLM 응답 처리 클래스 - 메타데이터 추출용"""
 
     PROMPT_CONFIG = {
         "document_relation_inference": (
@@ -42,6 +43,8 @@ class LLMResponse:
         "relation_key_analysis": ("relation_key_analysis", "production"),
         "field_type_classification": ("field_type_classification", "production"),
         "proper_noun_labeling": ("proper_noun_labeling", "production"),
+        "table_relation_verification": ("table_relation_verification", "production"),
+        "table_metadata_extraction": ("table_metadata_extraction", "production"),
     }
 
     def __init__(self, task: str):
@@ -52,7 +55,7 @@ class LLMResponse:
             raise ValueError(f"Unknown task: {task}")
         self.prompt_name, self.prompt_label = config
 
-    def generate_llm_response(self, variables: Any) -> Dict[str, Any] | str:
+    def generate_llm_response(self, variables: Any) -> Dict[str, Any]:
         """통합 LLM 응답 처리"""
         prompt = self._get_prompt()
         compiled_prompt = self._compile_prompt(prompt, **variables)
@@ -113,6 +116,10 @@ class LLMResponse:
             tools = [field_type_classification_tool]
         elif self.task == "proper_noun_labeling":
             tools = [proper_noun_labeling_tool]
+        elif self.task == "table_relation_verification":
+            tools = [table_relation_verification_tool]
+        elif self.task == "table_metadata_extraction":
+            tools = [table_metadata_extraction_tool]
         else:
             tools = []
 

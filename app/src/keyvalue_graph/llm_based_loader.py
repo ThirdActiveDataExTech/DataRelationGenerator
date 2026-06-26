@@ -31,7 +31,8 @@ class LLMBasedKeyValueLoader:
             domain: str = None,
             source_file: str = "llm_extract",
             record_index: int = 0,
-            extractable_metadata: Dict[str, Any] = None
+            extractable_metadata: Dict[str, Any] = None,
+            table_name: str = None
     ) -> Dict[str, Any]:
         """데이터로부터 LLM으로 Key-Value를 추출하고 그래프를 생성.
 
@@ -42,6 +43,7 @@ class LLMBasedKeyValueLoader:
             source_file: 소스 파일명
             record_index: 레코드 인덱스
             extractable_metadata: 추출 가능한 메타데이터 정의
+            table_name: 데이터셋(테이블)명. Level 1 게이팅 기준. None이면 source_file stem 사용.
 
         Returns:
             그래프 생성 결과
@@ -123,7 +125,8 @@ class LLMBasedKeyValueLoader:
         result = self.graph_builder.build_from_record(
             record,
             centrality_name=centrality_name,
-            domain=domain
+            domain=domain,
+            table_name=table_name
         )
 
         logger.info(
