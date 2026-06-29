@@ -9,7 +9,6 @@ from app.schemas.dataset import (
     ColumnMatchInfo,
     DatasetProfile,
     DatasetRelation,
-    Level1RelationType,
     RelationPipelineResult,
     Tier1Result,
     Tier2Candidate,
@@ -107,11 +106,10 @@ class RelationPipeline:
     ) -> RelationPipelineResult:
         result = RelationPipelineResult(table_a=a.table_name, table_b=b.table_name)
 
-        # Tier 1
+        # Tier 1 (규칙) / Tier 2 (임베딩) — 후보 탐지
         tier1 = self._run_tier1(a, b)
         result.tier1 = tier1
 
-        # Tier 2
         candidate = self._run_tier2(a, b)
         if candidate:
             result.tier2_candidates = [candidate]
@@ -123,25 +121,30 @@ class RelationPipeline:
         if not has_tier1 and not has_tier2:
             return result
 
+        # Tier 3 — 모든 후보는 LLM 검증을 반드시 거친다.
+        # 저장 method 태그는 "검증 통과 방식"이 아니라 "후보 출처"를 나타낸다:
+        # 공통 컬럼이 있으면 rule(Tier1), 없으면 embedding(Tier2).
         embedding_score = candidate.score if candidate else 1.0
         tier3 = self._run_tier3(a, b, embedding_score, tier3_confidence_threshold)
 
         if tier3:
             result.tier3_verified = [tier3]
+            origin_method = "rule" if has_tier1 else "embedding"
             # 관계 유형을 Level 1 표준 3종(§7.4)으로 정규화 (원본 라벨은 하위 보존)
             canonical_type = canonicalize_level1_type(
                 tier3.relation_type, has_common_columns=has_tier1
             )
             rel = DatasetRelation(
                 table_a=tier3.table_a, table_b=tier3.table_b,
-                score=tier3.confidence, method=tier3.method,
+                score=tier3.confidence, method=origin_method,
                 relation_type=canonical_type,
             )
             self.dataset_service.save_relation(rel)
             result.saved_relations.append(rel)
             logger.info(
                 f"[Pipeline] {a.table_name} <-> {b.table_name}: "
-                f"관계 확정 ({tier3.relation_type}, confidence={tier3.confidence:.2f})"
+                f"관계 확정 (method={origin_method}, {tier3.relation_type}, "
+                f"confidence={tier3.confidence:.2f})"
             )
         else:
             logger.debug(f"[Pipeline] {a.table_name} <-> {b.table_name}: LLM 판단 — 관계 없음")
