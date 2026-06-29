@@ -337,6 +337,13 @@
   padding: 24px 0;
 }
 
+.dm-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
 .dm-dataset-list {
   list-style: none;
   display: flex;

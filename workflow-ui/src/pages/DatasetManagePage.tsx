@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import './DatasetManagePage.css'
+import RelationGraph from '../components/RelationGraph'
 
 interface AppConfig {
   x_token: string
@@ -75,6 +76,7 @@ export default function DatasetManagePage() {
   const [stats, setStats] = useState<Stats | null>(null)
   const [expandedDataset, setExpandedDataset] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
   const [tier2Threshold, setTier2Threshold] = useState(0.4)
   const [tier3Threshold, setTier3Threshold] = useState(0.7)
@@ -129,7 +131,12 @@ export default function DatasetManagePage() {
   const headers = useCallback(() => ({ 'x-token': config!.x_token }), [config])
 
   const loadAll = async () => {
-    await Promise.all([loadDatasets(), loadRelations(), loadStats()])
+    setLoading(true)
+    try {
+      await Promise.all([loadDatasets(), loadRelations(), loadStats()])
+    } finally {
+      setLoading(false)
+    }
   }
 
   const loadDatasets = async () => {
@@ -306,6 +313,17 @@ export default function DatasetManagePage() {
         </section>
       )}
 
+      {/* ── 관계 그래프 (Neptune 스타일) ── */}
+      <section className="dm-card">
+        <div className="dm-section-header">
+          <h2 className="dm-section-title">
+            관계 그래프 <span className="dm-badge">{relations.length}</span>
+          </h2>
+          <button className="dm-btn dm-btn-ghost" onClick={loadRelations}>새로고침</button>
+        </div>
+        <RelationGraph datasets={datasets} relations={relations} />
+      </section>
+
       {/* ── 등록된 데이터셋 + 관계 현황 (2컬럼) ── */}
       <div className="dm-overview-grid">
 
@@ -323,7 +341,9 @@ export default function DatasetManagePage() {
             </div>
           </div>
 
-          {datasets.length === 0 ? (
+          {loading ? (
+            <p className="dm-empty dm-loading"><span className="dm-spinner" />데이터셋 불러오는 중…</p>
+          ) : datasets.length === 0 ? (
             <p className="dm-empty">등록된 데이터셋이 없습니다.</p>
           ) : (
             <ul className="dm-dataset-list">
@@ -387,7 +407,9 @@ export default function DatasetManagePage() {
             <button className="dm-btn dm-btn-ghost" onClick={loadRelations}>새로고침</button>
           </div>
 
-          {relations.length === 0 ? (
+          {loading ? (
+            <p className="dm-empty dm-loading"><span className="dm-spinner" />관계 불러오는 중…</p>
+          ) : relations.length === 0 ? (
             <p className="dm-empty">저장된 관계가 없습니다.<br />파이프라인을 실행해 관계를 생성하세요.</p>
           ) : (
             <ul className="dm-relation-list">
