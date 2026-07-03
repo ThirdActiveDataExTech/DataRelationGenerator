@@ -52,7 +52,7 @@ class RelationPipeline:
         self,
         table_names: list[str],
         tier2_threshold: float = 0.4,
-        tier3_confidence_threshold: float = 0.7,
+        tier3_confidence_threshold: float = 0.8,
     ) -> list[RelationPipelineResult]:
         """모든 테이블 쌍에 대해 3-Tier 파이프라인 실행.
 
@@ -253,6 +253,15 @@ class RelationPipeline:
                 logger.debug(f"[Tier3] {a.table_name} <-> {b.table_name}: 관계 없음")
                 return None
 
+            # 테이블 데이터 내 근거 없이 활용 시나리오만으로 판단한 관계는 저장하지 않음
+            evidence_type = result.get("evidence_type", "")
+            if evidence_type in ("usage_dependency", "none"):
+                logger.info(
+                    f"[Tier3] {a.table_name} <-> {b.table_name}: "
+                    f"데이터 근거 없음 (evidence_type={evidence_type}), 저장 제외"
+                )
+                return None
+
             confidence = result.get("confidence", 0.0)
             if confidence < confidence_threshold:
                 logger.debug(
@@ -263,12 +272,14 @@ class RelationPipeline:
 
             logger.info(
                 f"[Tier3] {a.table_name} <-> {b.table_name}: "
-                f"관계 확정 (type={result['relation_type']}, confidence={confidence:.2f})"
+                f"관계 확정 (type={result['relation_type']}, "
+                f"evidence={evidence_type}, confidence={confidence:.2f})"
             )
             return Tier3Result(
                 table_a=a.table_name,
                 table_b=b.table_name,
                 relation_type=result["relation_type"],
+                evidence_type=evidence_type,
                 confidence=confidence,
                 reason=result.get("reason", ""),
                 embedding_score=embedding_score,
