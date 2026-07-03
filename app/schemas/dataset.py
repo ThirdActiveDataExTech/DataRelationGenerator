@@ -139,10 +139,18 @@ class Tier2Candidate(BaseModel):
 
 # ── Tier 3 ──────────────────────────────────────────────────────────────────
 
+EvidenceType = Literal[
+    "shared_key", "value_overlap", "same_entity", "parallel_schema", "usage_dependency", "none"
+]
+
+
 class TableRelationVerification(BaseModel):
     """LLM 관계 검증 결과 (tool call 스키마)."""
 
     related: bool = Field(description="두 테이블이 의미적으로 연관되어 있는가")
+    evidence_type: EvidenceType = Field(
+        description="관계 근거 유형 — 근거가 테이블 데이터 안에 존재해야 함 (related=false면 none)"
+    )
     relation_type: str = Field(description="관계 유형 설명 (예: 진단명-건강정보, 환자-병원)")
     confidence: float = Field(ge=0.0, le=1.0, description="확신도")
     reason: str = Field(description="판단 근거 (2~3문장)")
@@ -175,6 +183,7 @@ class Tier3Result(BaseModel):
     table_a: str
     table_b: str
     relation_type: str
+    evidence_type: str = Field(default="", description="LLM이 분류한 관계 근거 유형")
     confidence: float
     reason: str
     embedding_score: float = Field(description="Tier 2 유사도 (참고용)")
@@ -199,4 +208,4 @@ class RunRelationPipelineRequest(BaseModel):
 
     table_names: list[str] = Field(description="대상 테이블명 목록 (비어있으면 전체)")
     tier2_threshold: float = Field(default=0.4, ge=0.0, le=1.0, description="Tier 2 유사도 임계값")
-    tier3_confidence_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Tier 3 확신도 임계값")
+    tier3_confidence_threshold: float = Field(default=0.8, ge=0.0, le=1.0, description="Tier 3 확신도 임계값")
