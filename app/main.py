@@ -42,9 +42,20 @@ async def lifespan(lifespan_app: FastAPI):
     logging.info(f"uptime: {get_current_datetime()}")
     logging.debug(f"Working Directory: {repr(os.getcwd())}")
     logging.info(f"Start {settings.SERVICE_NAME} {VERSION}")
-    logging.info(f"Creating tables before the app starts for hero service")
+
+    # 카탈로그 자동 동기화 루프 (액티브 루프) — CATALOG_SYNC_ENABLED=True 일 때만
+    catalog_sync_task = None
+    if settings.CATALOG_SYNC_ENABLED:
+        import asyncio
+
+        from app.src.dataset.catalog_sync import periodic_catalog_sync
+
+        catalog_sync_task = asyncio.create_task(periodic_catalog_sync())
+
     yield
     # shutdown event
+    if catalog_sync_task:
+        catalog_sync_task.cancel()
     logging.info(f"Shut down {settings.SERVICE_NAME} Service")
 
 
