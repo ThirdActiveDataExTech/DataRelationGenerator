@@ -53,8 +53,15 @@ class DatasetProfile(BaseModel):
     """테이블 레벨 메타데이터 프로파일."""
 
     dataset_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="OpenSearch 문서 ID (UUID)")
-    table_name: str = Field(description="테이블명 (식별자)")
+    table_name: str = Field(description="테이블명 (표시용)")
+    catalog_identifier: str = Field(
+        default="",
+        description="통합 카탈로그 식별자 (① catalog_entry.identifier, DCAT dct:identifier). 연동 시 필수 키",
+    )
     domain: str = Field(description="데이터 도메인 (medical, broadcast, general 등)")
+    domain_confidence: float | None = Field(
+        default=None, description="도메인 자동 분류 신뢰도 (None = 사용자/카탈로그 지정)"
+    )
     record_count: int = Field(description="레코드 수")
     column_count: int = Field(description="컬럼 수")
     column_names: list[str] = Field(description="컬럼명 목록")
@@ -73,18 +80,53 @@ class DatasetRelation(BaseModel):
 
     table_a: str = Field(description="출발 테이블명")
     table_b: str = Field(description="도착 테이블명")
+    catalog_identifier_a: str = Field(default="", description="출발 데이터셋의 통합 카탈로그 식별자 (①연동 키)")
+    catalog_identifier_b: str = Field(default="", description="도착 데이터셋의 통합 카탈로그 식별자 (①연동 키)")
     score: float = Field(ge=0.0, le=1.0, description="관계 점수")
     method: str = Field(description="생성 방법 (rule, embedding, llm)")
     relation_type: str = Field(description="관계 유형 설명 (예: FK, 진단명-건강정보)")
+    evidence: dict[str, Any] = Field(
+        default_factory=dict,
+        description="생성 근거 (LLM reason, 매칭 컬럼, 임베딩 점수 등) — ① 환류 시 검토 근거로 사용",
+    )
 
 
 class DatasetIngestRequest(BaseModel):
     """테이블 메타데이터 적재 요청."""
 
     table_name: str = Field(description="테이블명")
-    domain: str = Field(description="도메인 (medical, broadcast, general 등)")
+    domain: str = Field(default="", description="도메인 (medical, broadcast 등). 빈 값이면 특징 기반 자동 분류")
+    catalog_identifier: str = Field(default="", description="통합 카탈로그 식별자 (catalog_entry.identifier)")
     description: str = Field(default="", description="짧은 설명")
     table_summary: str = Field(default="", description="상세 요약 (비어있으면 description 사용)")
+
+
+class IngestFromCatalogRequest(BaseModel):
+    """① 통합 카탈로그 기반 등록 요청 (catalog_entry_id 또는 catalog_identifier 중 하나 필수)."""
+
+    catalog_entry_id: int | None = Field(default=None, description="카탈로그 엔트리 숫자 PK (직접 조회)")
+    catalog_identifier: str = Field(default="", description="DCAT 고유 식별자 (identifier)")
+    table_name: str = Field(default="", description="테이블명 재정의 (기본: 카탈로그 title)")
+    domain: str = Field(default="", description="도메인 재정의 (생략 시 특징 기반 자동 분류)")
+    records: list[dict] | None = Field(
+        default=None,
+        description="선택: 실데이터 레코드. 있으면 컬럼 프로파일링 포함, 없으면 메타데이터-only 등록",
+    )
+
+
+class RelationDecisionRequest(BaseModel):
+    """① 승인 워크플로우의 승인/반려 결정 콜백 요청 (내부 API).
+
+    승인 SSOT는 ①(dataset_relation.status)이며, ②는 결정을 그래프에 반영만 한다.
+    """
+
+    source_identifier: str = Field(description="출발 데이터셋의 카탈로그 식별자")
+    target_identifier: str = Field(description="도착 데이터셋의 카탈로그 식별자")
+    relation_type: str = Field(description="관계 유형")
+    score: float = Field(ge=0.0, le=1.0, description="관계 점수")
+    method: str = Field(default="llm", description="생성 방법")
+    evidence: dict[str, Any] = Field(default_factory=dict, description="생성 근거")
+    approved: bool = Field(description="승인 여부 (True: 그래프 반영, False: no-op)")
 
 
 class DatasetSearchRequest(BaseModel):
@@ -108,11 +150,14 @@ class DatasetSearchResult(BaseModel):
 # ── Tier 1 ──────────────────────────────────────────────────────────────────
 
 class ColumnMatchInfo(BaseModel):
-    """Tier 1 컬럼 매칭 결과."""
+    """Tier 1/1.5 컬럼 매칭 결과."""
 
     column_a: str = Field(description="테이블 A의 컬럼명")
     column_b: str = Field(description="테이블 B의 컬럼명")
-    match_type: Literal["exact_name", "fk", "code_dict"] = Field(description="매칭 방식")
+    match_type: Literal["exact_name", "fk", "code_dict", "ai_correlation"] = Field(
+        description="매칭 방식 (ai_correlation: ① 컬럼 연관성 분석 서비스의 의미적 매칭)"
+    )
+    correlation: float | None = Field(default=None, description="AI 매칭 연관성 점수 (ai_correlation 전용)")
 
 
 class Tier1Result(BaseModel):
@@ -129,12 +174,19 @@ class Tier1Result(BaseModel):
 # ── Tier 2 ──────────────────────────────────────────────────────────────────
 
 class Tier2Candidate(BaseModel):
-    """Tier 2 KNN 유사도 후보."""
+    """Tier 2 연관성 후보 (임베딩 + PPMI 결합)."""
 
     table_a: str
     table_b: str
-    score: float = Field(ge=0.0, le=1.0, description="table_embedding 코사인 유사도")
+    score: float = Field(ge=0.0, le=1.0, description="결합 연관성 점수 (임베딩 + PPMI 가중 결합)")
     method: Literal["embedding"] = "embedding"
+    embedding_score: float | None = Field(default=None, description="결합 전 임베딩 코사인 유사도")
+    ppmi_score: float | None = Field(
+        default=None, description="KV 그래프 PPMI 연관성 수치 (KV 특징 없으면 None)"
+    )
+    shared_features: list[str] = Field(
+        default_factory=list, description="두 데이터셋이 공유하는 상위 KV 특징 (PPMI 근거)"
+    )
 
 
 # ── Tier 3 ──────────────────────────────────────────────────────────────────
@@ -144,10 +196,17 @@ EvidenceType = Literal[
 ]
 
 
+TableNature = Literal["record", "knowledge_content"]
+
+
 class TableRelationVerification(BaseModel):
     """LLM 관계 검증 결과 (tool call 스키마)."""
 
     related: bool = Field(description="두 테이블이 의미적으로 연관되어 있는가")
+    table_a_nature: TableNature = Field(
+        description="테이블 A의 성격 (record: 실세계 개체·사건의 기록 / knowledge_content: 지식·콘텐츠 자체가 행의 대상)"
+    )
+    table_b_nature: TableNature = Field(description="테이블 B의 성격")
     evidence_type: EvidenceType = Field(
         description="관계 근거 유형 — 근거가 테이블 데이터 안에 존재해야 함 (related=false면 none)"
     )
@@ -198,14 +257,24 @@ class RelationPipelineResult(BaseModel):
     table_a: str
     table_b: str
     tier1: list[Tier1Result] = Field(default_factory=list)
+    tier15_matches: list[ColumnMatchInfo] = Field(
+        default_factory=list, description="Tier 1.5 — ① 컬럼 연관성 분석 서비스의 의미적 컬럼 매칭"
+    )
     tier2_candidates: list[Tier2Candidate] = Field(default_factory=list)
     tier3_verified: list[Tier3Result] = Field(default_factory=list)
     saved_relations: list[DatasetRelation] = Field(default_factory=list, description="Neptune에 저장된 관계")
+    pending_relations: list[DatasetRelation] = Field(
+        default_factory=list, description="① 승인 대기로 제안된 저신뢰 관계 (그래프 미반영)"
+    )
 
 
 class RunRelationPipelineRequest(BaseModel):
     """관계 생성 파이프라인 실행 요청."""
 
-    table_names: list[str] = Field(description="대상 테이블명 목록 (비어있으면 전체)")
+    table_names: list[str] = Field(default_factory=list, description="대상 테이블명 목록 (비어있으면 전체)")
     tier2_threshold: float = Field(default=0.4, ge=0.0, le=1.0, description="Tier 2 유사도 임계값")
     tier3_confidence_threshold: float = Field(default=0.8, ge=0.0, le=1.0, description="Tier 3 확신도 임계값")
+    refresh_table_names: list[str] = Field(
+        default_factory=list,
+        description="메타데이터가 변동된 테이블 — 이 테이블이 낀 쌍은 기존 관계가 있어도 재평가 (증분 갱신)",
+    )
