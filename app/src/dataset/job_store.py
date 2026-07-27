@@ -20,6 +20,7 @@ class JobStore:
     """
 
     def __init__(self, db_path: str | None = None):
+        """저장 경로를 받아 초기화하고 테이블을 보장한다 (기본: SQLITE_FILE_NAME)."""
         self.db_path = db_path or settings.SQLITE_FILE_NAME
         with self._conn() as conn:
             conn.execute(
@@ -31,7 +32,7 @@ class JobStore:
         return sqlite3.connect(self.db_path, timeout=30)
 
     def put(self, job_id: str, kind: str, data: dict) -> None:
-        """job 상태 저장 (upsert)."""
+        """Job 상태 저장 (upsert)."""
         with self._conn() as conn:
             conn.execute(
                 f"INSERT OR REPLACE INTO {_TABLE} (job_id, kind, payload) VALUES (?, ?, ?)",
@@ -54,7 +55,7 @@ class JobStore:
             )
 
     def get(self, job_id: str) -> dict | None:
-        """job 상태 조회. 없으면 None."""
+        """Job 상태 조회. 없으면 None."""
         with self._conn() as conn:
             row = conn.execute(
                 f"SELECT payload FROM {_TABLE} WHERE job_id = ?", (job_id,)
@@ -66,6 +67,7 @@ _store: JobStore | None = None
 
 
 def get_job_store() -> JobStore:
+    """JobStore 모듈 싱글턴 반환."""
     global _store
     if _store is None:
         _store = JobStore()

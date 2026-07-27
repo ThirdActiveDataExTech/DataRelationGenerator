@@ -28,6 +28,7 @@ class PPMIAnalyzer:
     """전체 데이터셋 코퍼스 기준 PPMI 연관성 수치 산출기 (인스턴스 = 실행 1회의 코퍼스 캐시)."""
 
     def __init__(self, opensearch_repo=None):
+        """OpenSearch 저장소를 주입받아 초기화 (기본: 모듈 싱글턴)."""
         if opensearch_repo is None:
             from app.repositories.opensearch_repository import get_opensearch_repository
             opensearch_repo = get_opensearch_repository()
