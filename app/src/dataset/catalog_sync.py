@@ -125,6 +125,7 @@ class CatalogSyncService:
 
 
 def get_catalog_sync_service() -> CatalogSyncService:
+    """기본 의존성으로 구성된 CatalogSyncService 반환."""
     return CatalogSyncService()
 
 

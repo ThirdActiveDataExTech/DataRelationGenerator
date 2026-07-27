@@ -22,6 +22,7 @@ class DomainClassifier:
     """도메인별 centroid 기반 분류기 (모델 파일 없음 — 등록 데이터가 곧 학습 데이터)."""
 
     def __init__(self, dataset_repo):
+        """도메인별 임베딩 조회에 사용할 DatasetRepository 를 주입받는다."""
         self.dataset_repo = dataset_repo
 
     def classify(self, embedding: list[float]) -> tuple[str, float, dict[str, float]]:
