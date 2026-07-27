@@ -170,8 +170,7 @@ class RdfGraphBuilder:
         """배치로 여러 레코드를 하나의 통합 RDF 그래프로 변환.
 
         모든 레코드를 단일 rdflib.Graph에 축적한다.
-        동일 URI의 트리플은 rdflib의 set 특성에 의해 자동 중복제거된다
-        (Neo4j MERGE와 동일 효과).
+        동일 URI의 트리플은 rdflib의 set 특성에 의해 자동 중복제거된다.
 
         Args:
             records: 데이터 레코드 리스트
