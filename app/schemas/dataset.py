@@ -53,7 +53,8 @@ class DatasetProfile(BaseModel):
     """테이블 레벨 메타데이터 프로파일."""
 
     dataset_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="OpenSearch 문서 ID (UUID)")
-    table_name: str = Field(description="테이블명 (표시용)")
+    table_name: str = Field(description="테이블명 (원문 식별용)")
+    display_name: str = Field(default="", description="한국어 표시명 (LLM 자동 생성, 비어있으면 table_name 사용)")
     catalog_identifier: str = Field(
         default="",
         description="통합 카탈로그 식별자 (① catalog_entry.identifier, DCAT dct:identifier). 연동 시 필수 키",
@@ -141,6 +142,7 @@ class DatasetSearchResult(BaseModel):
     """테이블 KNN 검색 결과 단건."""
 
     table_name: str
+    display_name: str = ""
     domain: str
     description: str
     table_summary: str
@@ -227,6 +229,10 @@ class TableMetadataExtraction(BaseModel):
 
     description: str = Field(description="테이블 목적과 내용을 1~2문장으로 요약한 설명")
     keywords: list[str] = Field(description="테이블을 대표하는 도메인 개념 키워드 5~10개 (한국어)")
+    display_name: str = Field(
+        default="",
+        description="테이블의 한국어 표시명 — 사람이 한눈에 알아볼 간결한 명사구 (예: patient_info → '환자 기본정보'). 테이블명이 이미 자연스러운 한국어면 그대로 사용",
+    )
 
 
 table_metadata_extraction_tool = pydantic_function_tool(

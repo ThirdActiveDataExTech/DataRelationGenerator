@@ -389,15 +389,18 @@ class DatasetService:
                 f"(conf={domain_confidence}, scores={scores})"
             )
 
+        # 표시명: LLM 경로에서 자동 생성. 시드 경로(카탈로그 pull)는 table_name이 이미 한글 title
+        display_name = ""
         if seed_keywords:
             keywords, keywords_embedding = seed_keywords, self._embed_keywords(seed_keywords)
         else:
-            keywords, keywords_embedding = self._extract_keywords(
+            keywords, keywords_embedding, display_name = self._extract_keywords(
                 table_name, column_names, sample_records
             )
 
         return DatasetProfile(
             table_name=table_name,
+            display_name=display_name,
             domain=domain,
             domain_confidence=domain_confidence,
             record_count=len(records),
@@ -417,8 +420,8 @@ class DatasetService:
         table_name: str,
         column_names: list[str],
         sample_records: list[dict[str, Any]],
-    ) -> tuple[list[str], list[float]]:
-        """LLM으로 키워드 추출 후 평균 임베딩 반환."""
+    ) -> tuple[list[str], list[float], str]:
+        """LLM으로 키워드·한국어 표시명 추출 후 (키워드, 평균 임베딩, 표시명) 반환."""
         import json
         try:
             variables = {
@@ -428,13 +431,16 @@ class DatasetService:
                 "sample_records": json.dumps(sample_records[:3], ensure_ascii=False),
             }
             result = LLMResponse("table_metadata_extraction").generate_llm_response(variables)
-            keywords = result.get("keywords", []) if isinstance(result, dict) else []
+            if not isinstance(result, dict):
+                return [], [], ""
+            keywords = result.get("keywords", [])
+            display_name = (result.get("display_name") or "").strip()
             if not keywords:
-                return [], []
-            return keywords, self._embed_keywords(keywords)
+                return [], [], display_name
+            return keywords, self._embed_keywords(keywords), display_name
         except Exception as e:
             logger.warning(f"[Dataset] '{table_name}' 키워드 추출 실패: {e}")
-            return [], []
+            return [], [], ""
 
     @staticmethod
     def _embed_keywords(keywords: list[str]) -> list[float]:
