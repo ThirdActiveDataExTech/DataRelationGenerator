@@ -24,7 +24,10 @@ class DatasetRepository:
             # 기존 인덱스에 catalog_identifier 필드 매핑 보강 (idempotent)
             self.client.client.indices.put_mapping(
                 index=_DATASETS_INDEX,
-                body={"properties": {"catalog_identifier": {"type": "keyword"}}},
+                body={"properties": {
+                    "catalog_identifier": {"type": "keyword"},
+                    "display_name": {"type": "keyword"},
+                }},
             )
             return
 
@@ -39,6 +42,7 @@ class DatasetRepository:
                 "properties": {
                     "dataset_id": {"type": "keyword"},
                     "table_name": {"type": "keyword"},
+                    "display_name": {"type": "keyword"},
                     "catalog_identifier": {"type": "keyword"},
                     "domain": {"type": "keyword"},
                     "record_count": {"type": "integer"},
@@ -79,6 +83,7 @@ class DatasetRepository:
         body = {
             "dataset_id": profile.dataset_id,
             "table_name": profile.table_name,
+            "display_name": profile.display_name,
             "catalog_identifier": profile.catalog_identifier,
             "domain_confidence": profile.domain_confidence,
             "domain": profile.domain,
@@ -135,6 +140,7 @@ class DatasetRepository:
         return [
             DatasetSearchResult(
                 table_name=hit["_source"]["table_name"],
+                display_name=hit["_source"].get("display_name", ""),
                 domain=hit["_source"]["domain"],
                 description=hit["_source"].get("description", ""),
                 table_summary=hit["_source"].get("table_summary", ""),
