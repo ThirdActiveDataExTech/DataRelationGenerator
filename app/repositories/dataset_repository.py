@@ -19,8 +19,19 @@ class DatasetRepository:
         self.client = client or get_opensearch_client()
 
     def ensure_index(self, embedding_dim: int) -> None:
-        """datasets 인덱스가 없으면 KNN 매핑으로 생성."""
+        """datasets 인덱스가 없으면 KNN 매핑으로 생성. 있으면 신규 필드 매핑만 보강."""
         if self.client.client.indices.exists(index=_DATASETS_INDEX):
+            # 기존 인덱스에 이후 추가된 필드 매핑 보강 (idempotent)
+            self.client.client.indices.put_mapping(
+                index=_DATASETS_INDEX,
+                body={"properties": {
+                    "catalog_identifier": {"type": "keyword"},
+                    "display_name": {"type": "keyword"},
+                    "party": {"type": "keyword"},
+                    "provider": {"type": "keyword"},
+                    "landing_page": {"type": "keyword"},
+                }},
+            )
             return
 
         mapping: dict[str, Any] = {
@@ -34,6 +45,11 @@ class DatasetRepository:
                 "properties": {
                     "dataset_id": {"type": "keyword"},
                     "table_name": {"type": "keyword"},
+                    "display_name": {"type": "keyword"},
+                    "catalog_identifier": {"type": "keyword"},
+                    "party": {"type": "keyword"},
+                    "provider": {"type": "keyword"},
+                    "landing_page": {"type": "keyword"},
                     "domain": {"type": "keyword"},
                     "record_count": {"type": "integer"},
                     "column_count": {"type": "integer"},
@@ -73,6 +89,12 @@ class DatasetRepository:
         body = {
             "dataset_id": profile.dataset_id,
             "table_name": profile.table_name,
+            "display_name": profile.display_name,
+            "catalog_identifier": profile.catalog_identifier,
+            "party": profile.party,
+            "provider": profile.provider,
+            "landing_page": profile.landing_page,
+            "domain_confidence": profile.domain_confidence,
             "domain": profile.domain,
             "record_count": profile.record_count,
             "column_count": profile.column_count,
@@ -127,6 +149,7 @@ class DatasetRepository:
         return [
             DatasetSearchResult(
                 table_name=hit["_source"]["table_name"],
+                display_name=hit["_source"].get("display_name", ""),
                 domain=hit["_source"]["domain"],
                 description=hit["_source"].get("description", ""),
                 table_summary=hit["_source"].get("table_summary", ""),
@@ -143,6 +166,46 @@ class DatasetRepository:
                 body={
                     "size": 1,
                     "query": {"term": {"table_name": table_name}},
+                    "sort": [{"created_at": {"order": "desc"}}],
+                },
+            )
+            hits = resp["hits"]["hits"]
+            if not hits:
+                return None
+            return DatasetProfile(**hits[0]["_source"])
+        except Exception:
+            return None
+
+    def list_domain_embeddings(self) -> list[tuple[str, list[float]]]:
+        """도메인 분류 centroid 계산용 (domain, table_embedding) 목록."""
+        if not self.client.client.indices.exists(index=_DATASETS_INDEX):
+            return []
+        try:
+            resp = self.client.client.search(
+                index=_DATASETS_INDEX,
+                body={
+                    "size": 1000,
+                    "query": {"match_all": {}},
+                    "_source": {"includes": ["domain", "table_embedding"]},
+                },
+            )
+            return [
+                (h["_source"].get("domain", ""), h["_source"].get("table_embedding") or [])
+                for h in resp["hits"]["hits"]
+            ]
+        except Exception:
+            return []
+
+    def get_by_identifier(self, catalog_identifier: str) -> DatasetProfile | None:
+        """통합 카탈로그 식별자(catalog_entry.identifier)로 단건 조회."""
+        if not catalog_identifier:
+            return None
+        try:
+            resp = self.client.client.search(
+                index=_DATASETS_INDEX,
+                body={
+                    "size": 1,
+                    "query": {"term": {"catalog_identifier": catalog_identifier}},
                     "sort": [{"created_at": {"order": "desc"}}],
                 },
             )

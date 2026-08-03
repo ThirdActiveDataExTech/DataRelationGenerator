@@ -2,10 +2,6 @@ from typing import Dict, List, Literal, Union, Any
 
 from openai import pydantic_function_tool
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, Integer, Text, DateTime
-from sqlalchemy.orm import declarative_base
-
-
 DocumentRelationType = Literal[
     "SIMILAR_TO",  # 유사한 내용/주제
     "CONTRADICTS",  # 상반된 견해
@@ -30,18 +26,6 @@ class DocumentRelationResult(BaseModel):
         default_factory=list,
         description="추출된 Document 간 관계 목록. 관계가 없으면 빈 배열 반환"
     )
-
-
-Base = declarative_base()
-
-
-class DataInfo(Base):
-    __tablename__ = 'data_info'
-    id = Column(Integer, primary_key=True, index=True)
-    origin_text = Column(Text, nullable=False)
-    tags = Column(Text, nullable=False, default="[]")
-    description = Column(Text, nullable=False, default="")
-    extract_time = Column(DateTime, nullable=True)
 
 
 # Pydantic 모델 기반 OpenAI Tool 정의

@@ -106,29 +106,13 @@ class Settings(BaseSettings):
     LANGFUSE_PUBLIC_KEY: str = "pk-lf..."
     LANGFUSE_HOST: str = "http://web.langfuse"
 
-    # Neo4j Config
-    NEO4J_URI: str = "bolt://localhost:7687"
-    NEO4J_USER: str = "neo4j"
-    NEO4J_PASSWORD: str = "password"
-
-    # MCP Server Config
-    NEO4J_TRANSPORT: str = "http"
-    NEO4J_MCP_SERVER_HOST: str = "127.0.0.1"
-    NEO4J_MCP_SERVER_PORT: int = 8001
-    NEO4J_MCP_SERVER_PATH: str = "/api/mcp/"
-
-    @computed_field  # type: ignore[misc]
-    @property
-    def neo4j_mcp_url(self) -> str:
-        return f"{self.NEO4J_TRANSPORT}://{self.NEO4J_MCP_SERVER_HOST}:{self.NEO4J_MCP_SERVER_PORT}{self.NEO4J_MCP_SERVER_PATH}"
-
     # RDF Config
     RDF_NAMESPACE: str = "http://example.org/keyvalue#"
     RDF_NAMESPACE_PREFIX: str = "kv"
 
     # Neptune Config
-    NEPTUNE_ENDPOINT: str = ""
-    NEPTUNE_REGION: str = "us-east-1"
+    NEPTUNE_ENDPOINT: str = "https://localhost:8183"
+    NEPTUNE_REGION: str = "ap-northeast-1"
     NEPTUNE_DIRECT_ENDPOINT: str = ""
     NEPTUNE_USE_IAM: bool = True
 
@@ -153,12 +137,16 @@ class Settings(BaseSettings):
     #   - minio: 아래 MINIO_* 설정으로 S3 호환 객체 저장소에 저장
     #   - none: 원본 blob 미보관 (레코드는 OpenSearch/Neptune에 적재됨)
     RAW_STORAGE_BACKEND: str = "filesystem"
-    # filesystem 백엔드의 루트 경로. k8s 배포 시 PVC 마운트 경로로 주입
+    # filesystem 백엔드의 루트 경로. k8s 배포 시 PVC 마운트 경로로 주입 (예: /data/raw)
     RAW_STORAGE_PATH: str = "./raw_uploads"
 
+    # MinIO (객체 저장소) Config — 업로드 원본 데이터셋 보관 (§3.2)
+    # S3 호환이라 boto3 로 접근. 배포 클러스터(thirdparty 네임스페이스)에 minio pod 가 있으므로
     # 실제 값은 .env / k8s env 로 주입한다. 아래는 in-cluster 서비스 DNS 형태의 placeholder 기본값.
+    #   예) MINIO_ENDPOINT=http://minio.thirdparty.svc.cluster.local:9000
+    # 값이 비어있거나 접속 실패 시 graceful degradation (적재/워크플로우는 계속).
     MINIO_ENABLED: bool = False
-    MINIO_ENDPOINT: str = "http://minio:9000"
+    MINIO_ENDPOINT: str = "http://minio.thirdparty.svc.cluster.local:9000"
     MINIO_ACCESS_KEY: str = ""
     MINIO_SECRET_KEY: str = ""
     MINIO_SECURE: bool = False
@@ -174,8 +162,30 @@ class Settings(BaseSettings):
     # SAME_AS 로 승격할 종합 점수 하한 (정규화/식별자 강일치 신호)
     LEVEL2_SAME_AS_THRESHOLD: float = 0.9
 
+    # 통합 카탈로그(active-metadata-management catalog-service) 연동 Config
+    CATALOG_SERVICE_URL: str = "http://localhost:8084"
+    CATALOG_SERVICE_X_TOKEN: str = "wn"
+    # identifier 검색 시 클라이언트 매칭에 사용할 최대 페이지 수 (100건/페이지)
+    CATALOG_SERVICE_MAX_PAGES: int = 50
+    CATALOG_PUSH_ENABLED: bool = False
+    RELATION_AUTO_APPROVE_THRESHOLD: float = 0.85
+
+    # 컬럼 간 연관성 분석 서비스(column-to-column-correlation-analysis) 연동 Config
+    CORRELATION_SERVICE_ENABLED: bool = False
+    CORRELATION_SERVICE_URL: str = "http://localhost:8002"
+    CORRELATION_SERVICE_X_TOKEN: str = "wn"
+    DOMAIN_CLASSIFY_THRESHOLD: float = 0.5
+
+    # KV 지식그래프 PPMI 상호 연관성 분석
+    PPMI_ENABLED: bool = True
+    PPMI_WEIGHT: float = 0.2
+
+    # 카탈로그 변경 자동 동기화(액티브 루프) Config
+    CATALOG_SYNC_ENABLED: bool = False
+    CATALOG_SYNC_INTERVAL_MINUTES: int = 60
+
     # Dataset RDF Namespace
-    DATASET_RDF_NAMESPACE: str = "http://datarelation.co.kr/ontology#"
+    DATASET_RDF_NAMESPACE: str = "http://datarelation.wisenet.co.kr/ontology#"
     DATASET_RDF_NAMESPACE_PREFIX: str = "dm"
 
     # Embedding Config

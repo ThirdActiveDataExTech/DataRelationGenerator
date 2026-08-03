@@ -366,6 +366,37 @@ class OpenSearchRepository:
         response = self.client.search(self.values_index, query_body)
         return [hit["_source"] for hit in response["hits"]["hits"]]
 
+    def get_table_feature_counts(self, table_name: str, size: int = 500) -> Dict[str, int]:
+        """데이터셋(테이블)의 KV 그래프 특징 출현 횟수 집계 — PPMI 연관성 분석용.
+
+        values 인덱스를 table_name 으로 필터해 Key 이름과 Value 내용을 terms aggregation.
+        특징 표기는 "key:{이름}" / "value:{내용}" 으로 구분한다.
+
+        Returns:
+            {특징: 출현 횟수}. KV 그래프 미구축/실패 시 빈 dict
+        """
+        try:
+            response = self.client.search(
+                self.values_index,
+                {
+                    "size": 0,
+                    "query": {"term": {"table_name.keyword": table_name}},
+                    "aggs": {
+                        "keys": {"terms": {"field": "parent_key_name.keyword", "size": size}},
+                        "values": {"terms": {"field": "value_content.keyword", "size": size}},
+                    },
+                },
+            )
+            aggs = response.get("aggregations", {})
+            counts: Dict[str, int] = {}
+            for bucket in aggs.get("keys", {}).get("buckets", []):
+                counts[f"key:{bucket['key']}"] = bucket["doc_count"]
+            for bucket in aggs.get("values", {}).get("buckets", []):
+                counts[f"value:{bucket['key']}"] = bucket["doc_count"]
+            return counts
+        except Exception:
+            return {}
+
     def count_documents_by_table(self, table_name: str) -> int:
         """특정 데이터셋(테이블)에 속한 Document 수를 반환 (KV 그래프 처리 여부 판단용).
 

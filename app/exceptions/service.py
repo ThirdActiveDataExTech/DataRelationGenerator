@@ -15,28 +15,10 @@ class TokenValidationError(ApplicationError):
         self.result = {"current_x_token": x_token}
 
 
-class InvalidItemStock(ApplicationError):
-    """유효하지 않은 아이템 재고값 설정"""
+class CatalogEntryNotFoundError(ApplicationError):
+    """① 통합 카탈로그(catalog-service)에서 엔트리를 찾지 못함"""
 
-    def __init__(self, stock):
-        self.code = int(f"{settings.SERVICE_CODE}{status.HTTP_400_BAD_REQUEST}")
-        self.message = "Invalid stock"
-        self.result = {"current_stock": stock}
-
-
-class ItemNotFoundError(ApplicationError):
-    """요청한 ID에 해당하는 Item이 존재하지 않음"""
-
-    def __init__(self, item_id):
+    def __init__(self, catalog_key):
         self.code = int(f"{settings.SERVICE_CODE}{status.HTTP_404_NOT_FOUND}")
-        self.message = "Item not found"
-        self.result = {"current_item_id": item_id}
-
-
-class HeroNotFoundError(ApplicationError):
-    """요청한 ID에 해당하는 Hero가 존재하지 않음"""
-
-    def __init__(self, hero_id):
-        self.code = int(f"{settings.SERVICE_CODE}{status.HTTP_404_NOT_FOUND}")
-        self.message = "Hero not found"
-        self.result = {"current_hero_id": hero_id}
+        self.message = "Catalog entry not found"
+        self.result = {"catalog_key": catalog_key}

@@ -18,6 +18,7 @@ from app.schemas.dataset import (
 from app.src.dataset.dataset_service import DatasetService
 from app.src.embedding.embedding_service import embedding_service
 from app.src.meta_extract.llm_response import LLMResponse
+from app.utils.vector import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -53,28 +54,62 @@ class RelationPipeline:
         table_names: list[str],
         tier2_threshold: float = 0.4,
         tier3_confidence_threshold: float = 0.8,
+        refresh_table_names: list[str] | None = None,
+        seed_table_names: list[str] | None = None,
     ) -> list[RelationPipelineResult]:
-        """모든 테이블 쌍에 대해 3-Tier 파이프라인 실행.
+        """모든 테이블 쌍에 대해 관계 생성 파이프라인 실행 (증분: 기존 쌍 스킵).
 
         Args:
-            table_names: 대상 테이블명 목록
+            table_names: 대상 테이블명 목록 (비어있으면 등록된 전체 테이블)
             tier2_threshold: Tier 2 유사도 임계값
             tier3_confidence_threshold: Tier 3 확신도 임계값
+            refresh_table_names: 메타데이터가 변동된 테이블 — 이 테이블이 낀 쌍은
+                기존 관계가 있어도 재평가 (save_relation 이 기존 관계를 대체)
+            seed_table_names: 기준 테이블 — 지정 시 이 테이블이 낀 쌍만 평가.
+                "1st 파티 데이터셋 기준 연계 가능한 3rd 파티 탐색" 시나리오용
 
         Returns:
             테이블 쌍별 RelationPipelineResult 리스트
         """
+        if not table_names:
+            table_names = [p.table_name for p in self.dataset_repo.list_all()]
         profiles = self._load_profiles(table_names)
         if len(profiles) < 2:
             logger.warning("관계 생성에는 2개 이상의 테이블이 필요합니다")
             return []
 
+        # PPMI 코퍼스는 실행 1회 단위로 새로 구성 (전체 대상 테이블 기준)
+        from app.config import settings as _settings
+
+        self._ppmi_analyzer = None
+        if _settings.PPMI_ENABLED:
+            from app.src.dataset.ppmi_analyzer import PPMIAnalyzer
+
+            self._ppmi_analyzer = PPMIAnalyzer()
+            try:
+                self._ppmi_analyzer.load_tables([p.table_name for p in profiles])
+            except Exception as e:
+                logger.warning(f"[Pipeline] PPMI 코퍼스 구성 실패 — 임베딩 신호만 사용: {e}")
+                self._ppmi_analyzer = None
+
         existing_pairs = self.dataset_service.get_existing_relation_pairs()
         all_pairs = list(itertools.combinations(profiles, 2))
+
+        # 기준(seed) 테이블 지정 시 해당 테이블이 낀 쌍만 평가 — 방향성 있는 연계 탐색
+        seeds = set(seed_table_names or [])
+        if seeds:
+            all_pairs = [
+                (a, b) for a, b in all_pairs
+                if a.table_name in seeds or b.table_name in seeds
+            ]
+
+        refresh = set(refresh_table_names or [])
 
         new_pairs = [
             (a, b) for a, b in all_pairs
             if tuple(sorted([a.table_name, b.table_name])) not in existing_pairs
+            or a.table_name in refresh
+            or b.table_name in refresh
         ]
 
         logger.info(
@@ -106,44 +141,81 @@ class RelationPipeline:
     ) -> RelationPipelineResult:
         result = RelationPipelineResult(table_a=a.table_name, table_b=b.table_name)
 
-        # Tier 1 (규칙) / Tier 2 (임베딩) — 후보 탐지
+        # Tier 1 (규칙) / Tier 1.5 (① 컬럼 AI 매칭) / Tier 2 (임베딩) — 후보 탐지
         tier1 = self._run_tier1(a, b)
         result.tier1 = tier1
+
+        # Tier1이 이미 컬럼을 찾았으면 AI 매칭은 생략 (비용 절약, 규칙 매칭이 더 확실)
+        tier15 = self._run_tier15(a, b) if not tier1 else []
+        result.tier15_matches = tier15
 
         candidate = self._run_tier2(a, b)
         if candidate:
             result.tier2_candidates = [candidate]
 
-        # Tier 1 후보 있거나 Tier 2 임계값 이상이면 LLM 판단으로 넘김
+        # Tier 1/1.5 후보 있거나 Tier 2 임계값 이상이면 LLM 판단으로 넘김
         has_tier1 = bool(tier1)
+        has_tier15 = bool(tier15)
         has_tier2 = bool(candidate and candidate.score >= tier2_threshold)
 
-        if not has_tier1 and not has_tier2:
+        if not has_tier1 and not has_tier15 and not has_tier2:
             return result
 
         # Tier 3 — 모든 후보는 LLM 검증을 반드시 거친다.
         # 저장 method 태그는 "검증 통과 방식"이 아니라 "후보 출처"를 나타낸다:
         # 공통 컬럼이 있으면 rule(Tier1), 없으면 embedding(Tier2).
         embedding_score = candidate.score if candidate else 1.0
-        tier3 = self._run_tier3(a, b, embedding_score, tier3_confidence_threshold)
+        tier1_common_columns = (len(tier1[0].matched_columns) if tier1 else 0) + len(tier15)
+        tier3 = self._run_tier3(
+            a, b, embedding_score, tier3_confidence_threshold, tier1_common_columns
+        )
 
         if tier3:
             result.tier3_verified = [tier3]
             origin_method = "rule" if has_tier1 else "embedding"
             # 관계 유형을 Level 1 표준 3종(§7.4)으로 정규화 (원본 라벨은 하위 보존)
             canonical_type = canonicalize_level1_type(
-                tier3.relation_type, has_common_columns=has_tier1
+                tier3.relation_type, has_common_columns=has_tier1 or has_tier15
             )
             rel = DatasetRelation(
                 table_a=tier3.table_a, table_b=tier3.table_b,
+                catalog_identifier_a=a.catalog_identifier,
+                catalog_identifier_b=b.catalog_identifier,
                 score=tier3.confidence, method=origin_method,
                 relation_type=canonical_type,
+                evidence={
+                    "reason": tier3.reason,
+                    "evidence_type": tier3.evidence_type,
+                    "embedding_score": tier3.embedding_score,
+                    "matched_columns": [m.model_dump() for m in tier1[0].matched_columns] if tier1 else [],
+                    "ai_matched_columns": [m.model_dump() for m in tier15],
+                    "ppmi": (
+                        {"score": candidate.ppmi_score, "shared_features": candidate.shared_features}
+                        if candidate and candidate.ppmi_score is not None
+                        else None
+                    ),
+                },
             )
-            self.dataset_service.save_relation(rel)
-            result.saved_relations.append(rel)
+            # 승인 게이팅 (승인 SSOT = ① 카탈로그):
+            # rule(구조 기반) 또는 임계값 이상 → 자동 확정, 미만 llm/embedding → ①에 PENDING 제안.
+            # 카탈로그 미연동(단독 실행) 시에는 게이팅 없이 기존대로 전부 저장.
+            from app.config import settings
+
+            auto_approved = (
+                not settings.CATALOG_PUSH_ENABLED
+                or origin_method == "rule"
+                or tier3.confidence >= settings.RELATION_AUTO_APPROVE_THRESHOLD
+            )
+            if auto_approved:
+                self.dataset_service.save_relation(rel)
+                result.saved_relations.append(rel)
+            else:
+                self.dataset_service.propose_relation_to_catalog(rel)
+                result.pending_relations.append(rel)
             logger.info(
                 f"[Pipeline] {a.table_name} <-> {b.table_name}: "
-                f"관계 확정 (method={origin_method}, {tier3.relation_type}, "
+                f"관계 {'확정' if auto_approved else '승인 대기'} "
+                f"(method={origin_method}, {tier3.relation_type}, "
                 f"confidence={tier3.confidence:.2f})"
             )
         else:
@@ -180,6 +252,38 @@ class RelationPipeline:
         ]
 
     # ──────────────────────────────────────────────
+    # Tier 1.5 — ① 컬럼 연관성 분석 서비스 (AI 매칭)
+    # ──────────────────────────────────────────────
+
+    def _run_tier15(self, a: DatasetProfile, b: DatasetProfile) -> list[ColumnMatchInfo]:
+        """이름이 달라 Tier1 규칙이 놓치는 컬럼 쌍을 ①의 AI 스키마 매칭 서비스로 탐지.
+
+        (예: hr ↔ heart_rate, user_ref ↔ patient_id)
+        비활성(CORRELATION_SERVICE_ENABLED=False)/MinIO 미사용/호출 실패 시 빈 목록 (graceful).
+        """
+        from app.config import settings
+
+        if not settings.CORRELATION_SERVICE_ENABLED:
+            return []
+        try:
+            from app.clients.correlation_client import get_correlation_client, upload_sample_csv
+
+            l_uri, r_uri = upload_sample_csv(a), upload_sample_csv(b)
+            if not (l_uri and r_uri):
+                logger.debug("[Tier1.5] 샘플 CSV 업로드 불가 (MinIO 비활성) — 생략")
+                return []
+            matches = get_correlation_client().match_columns(l_uri, r_uri)
+            if matches:
+                logger.info(
+                    f"[Tier1.5] {a.table_name} <-> {b.table_name}: AI 컬럼 매칭 {len(matches)}건 "
+                    f"({', '.join(f'{m.column_a}~{m.column_b}' for m in matches[:3])}...)"
+                )
+            return matches
+        except Exception as e:
+            logger.warning(f"[Tier1.5] 컬럼 매칭 서비스 호출 실패 — 생략: {e}")
+            return []
+
+    # ──────────────────────────────────────────────
     # Tier 2 — 임베딩 유사도
     # ──────────────────────────────────────────────
 
@@ -192,25 +296,51 @@ class RelationPipeline:
             logger.debug(f"[Tier2] {a.table_name} 또는 {b.table_name} 임베딩 없음, 스킵")
             return None
 
-        desc_score = self._cosine(a.table_embedding, b.table_embedding)
+        desc_score = cosine_similarity(a.table_embedding, b.table_embedding)
 
         if a.keywords_embedding and b.keywords_embedding:
-            kw_score = self._cosine(a.keywords_embedding, b.keywords_embedding)
+            kw_score = cosine_similarity(a.keywords_embedding, b.keywords_embedding)
             score = self._DESC_WEIGHT * desc_score + self._KW_WEIGHT * kw_score
         else:
             score = desc_score
 
-        logger.debug(f"[Tier2] {a.table_name} <-> {b.table_name}: score={score:.3f}")
-        return Tier2Candidate(table_a=a.table_name, table_b=b.table_name, score=score)
+        # PPMI 보조 신호 (계획서 ②-2) — KV 그래프 특징 co-occurrence 기반 연관성 수치.
+        # 설명 문구가 달라도 실제 Key/Value 가 겹치면 잡아내는, 임베딩과 상보적인 신호.
+        from app.config import settings
 
-    @staticmethod
-    def _cosine(v1: list[float], v2: list[float]) -> float:
-        dot = sum(x * y for x, y in zip(v1, v2))
-        norm1 = sum(x ** 2 for x in v1) ** 0.5
-        norm2 = sum(x ** 2 for x in v2) ** 0.5
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-        return max(0.0, min(1.0, dot / (norm1 * norm2)))
+        embedding_score, ppmi_score, shared_features = score, None, []
+        if settings.PPMI_ENABLED:
+            ppmi = self._run_ppmi(a.table_name, b.table_name)
+            if ppmi is not None:
+                ppmi_score = ppmi["ppmi_cosine"]
+                shared_features = ppmi["shared_features"]
+                score = (1 - settings.PPMI_WEIGHT) * score + settings.PPMI_WEIGHT * ppmi_score
+
+        logger.debug(
+            f"[Tier2] {a.table_name} <-> {b.table_name}: score={score:.3f} "
+            f"(embedding={embedding_score:.3f}, ppmi={ppmi_score})"
+        )
+        return Tier2Candidate(
+            table_a=a.table_name, table_b=b.table_name, score=score,
+            embedding_score=embedding_score, ppmi_score=ppmi_score,
+            shared_features=shared_features,
+        )
+
+    def _run_ppmi(self, table_a: str, table_b: str) -> dict | None:
+        """KV 그래프 PPMI 연관성 수치 (graceful — 특징 없음/코퍼스 부족/실패 시 None).
+
+        run() 이 구성한 실행 단위 코퍼스를 사용하고, 단독 호출 시엔 지연 생성한다.
+        """
+        try:
+            analyzer = getattr(self, "_ppmi_analyzer", None)
+            if analyzer is None:
+                from app.src.dataset.ppmi_analyzer import PPMIAnalyzer
+
+                analyzer = self._ppmi_analyzer = PPMIAnalyzer()
+            return analyzer.score_pair(table_a, table_b)
+        except Exception as e:
+            logger.warning(f"[Tier2] PPMI 분석 실패 — 임베딩 점수만 사용: {e}")
+            return None
 
     # ──────────────────────────────────────────────
     # Tier 3 — LLM 검증
@@ -222,58 +352,39 @@ class RelationPipeline:
         b: DatasetProfile,
         embedding_score: float,
         confidence_threshold: float,
+        tier1_common_columns: int = 0,
     ) -> Tier3Result | None:
-        """LLM으로 두 테이블 관계 검증."""
+        """LLM으로 두 테이블 관계 검증 (2회 판정, 불일치 시 3회차 다수결).
+
+        LLM 판정은 경계 사례에서 실행마다 뒤집힐 수 있어, 저장 여부가 일치할 때까지
+        최대 3회 판정해 다수결로 확정한다.
+        """
         try:
-            variables = {
-                "table_a": a.table_name,
-                "domain_a": a.domain,
-                "description_a": a.description,
-                "summary_a": a.table_summary,
-                "columns_a": ", ".join(a.column_names[:20]),
-                "samples_a": json.dumps(a.sample_records[:_SAMPLE_DISPLAY], ensure_ascii=False),
-                "table_b": b.table_name,
-                "domain_b": b.domain,
-                "description_b": b.description,
-                "summary_b": b.table_summary,
-                "columns_b": ", ".join(b.column_names[:20]),
-                "samples_b": json.dumps(b.sample_records[:_SAMPLE_DISPLAY], ensure_ascii=False),
-                "embedding_score": round(embedding_score, 3),
-            }
+            verdicts: list[dict | None] = []
+            for _ in range(2):
+                verdicts.append(self._judge_once(a, b, embedding_score))
+            passed = [
+                v for v in verdicts
+                if v and self._passes_filters(a, b, v, confidence_threshold, tier1_common_columns)
+            ]
+            if len(passed) == 1:  # 1:1 불일치 → tiebreak
+                v3 = self._judge_once(a, b, embedding_score)
+                if v3 and self._passes_filters(a, b, v3, confidence_threshold, tier1_common_columns):
+                    passed.append(v3)
+                else:
+                    logger.info(f"[Tier3] {a.table_name} <-> {b.table_name}: 다수결 기각 (1/3)")
+                    return None
 
-            result = LLMResponse("table_relation_verification").generate_llm_response(
-                variables=variables
-            )
-
-            if not isinstance(result, dict):
-                logger.warning(f"[Tier3] LLM 응답이 dict가 아님: {type(result)}")
+            if not passed:
                 return None
 
-            if not result.get("related", False):
-                logger.debug(f"[Tier3] {a.table_name} <-> {b.table_name}: 관계 없음")
-                return None
-
-            # 테이블 데이터 내 근거 없이 활용 시나리오만으로 판단한 관계는 저장하지 않음
+            result = passed[0]
             evidence_type = result.get("evidence_type", "")
-            if evidence_type in ("usage_dependency", "none"):
-                logger.info(
-                    f"[Tier3] {a.table_name} <-> {b.table_name}: "
-                    f"데이터 근거 없음 (evidence_type={evidence_type}), 저장 제외"
-                )
-                return None
-
             confidence = result.get("confidence", 0.0)
-            if confidence < confidence_threshold:
-                logger.debug(
-                    f"[Tier3] {a.table_name} <-> {b.table_name}: "
-                    f"confidence={confidence:.2f} < threshold={confidence_threshold}"
-                )
-                return None
-
             logger.info(
                 f"[Tier3] {a.table_name} <-> {b.table_name}: "
-                f"관계 확정 (type={result['relation_type']}, "
-                f"evidence={evidence_type}, confidence={confidence:.2f})"
+                f"관계 확정 (type={result['relation_type']}, evidence={evidence_type}, "
+                f"confidence={confidence:.2f}, votes={len(passed)}/{len(verdicts) if len(passed) != 2 else 2})"
             )
             return Tier3Result(
                 table_a=a.table_name,
@@ -288,6 +399,71 @@ class RelationPipeline:
         except Exception as e:
             logger.error(f"[Tier3] {a.table_name} <-> {b.table_name} LLM 검증 실패: {e}")
             return None
+
+    def _judge_once(self, a: DatasetProfile, b: DatasetProfile, embedding_score: float) -> dict | None:
+        """LLM 관계 판정 1회 호출."""
+        variables = {
+            "table_a": a.table_name,
+            "domain_a": a.domain,
+            "description_a": a.description,
+            "summary_a": a.table_summary,
+            "columns_a": ", ".join(a.column_names[:20]),
+            "samples_a": json.dumps(a.sample_records[:_SAMPLE_DISPLAY], ensure_ascii=False),
+            "table_b": b.table_name,
+            "domain_b": b.domain,
+            "description_b": b.description,
+            "summary_b": b.table_summary,
+            "columns_b": ", ".join(b.column_names[:20]),
+            "samples_b": json.dumps(b.sample_records[:_SAMPLE_DISPLAY], ensure_ascii=False),
+            "embedding_score": round(embedding_score, 3),
+        }
+        result = LLMResponse("table_relation_verification").generate_llm_response(variables=variables)
+        if not isinstance(result, dict):
+            logger.warning(f"[Tier3] LLM 응답이 dict가 아님: {type(result)}")
+            return None
+        return result
+
+    def _passes_filters(
+        self,
+        a: DatasetProfile,
+        b: DatasetProfile,
+        result: dict,
+        confidence_threshold: float,
+        tier1_common_columns: int,
+    ) -> bool:
+        """판정 1건이 저장 조건을 만족하는지 검사."""
+        pair = f"{a.table_name} <-> {b.table_name}"
+
+        if not result.get("related", False):
+            logger.debug(f"[Tier3] {pair}: 관계 없음")
+            return False
+
+        # 테이블 데이터 내 근거 없이 활용 시나리오만으로 판단한 관계는 저장하지 않음
+        evidence_type = result.get("evidence_type", "")
+        if evidence_type in ("usage_dependency", "none"):
+            logger.info(f"[Tier3] {pair}: 데이터 근거 없음 (evidence_type={evidence_type}), 저장 제외")
+            return False
+
+        # LLM이 공통 키를 주장하지만 규칙 엔진(Tier1)이 공통 컬럼을 찾지 못한 경우 → 환각
+        if evidence_type == "shared_key" and tier1_common_columns == 0:
+            logger.info(f"[Tier3] {pair}: shared_key 주장이나 공통 컬럼 없음 (환각), 저장 제외")
+            return False
+
+        # 지식·콘텐츠성 데이터끼리의 값·주제 중첩은 관계로 보지 않음.
+        # 예외: LLM이 동종 병렬 데이터셋으로 판정했거나 Tier1 공통 컬럼이 2개 이상
+        # (동일 스키마는 구조적으로 확인된 병렬 근거)
+        natures = (result.get("table_a_nature"), result.get("table_b_nature"))
+        is_parallel = evidence_type == "parallel_schema" or tier1_common_columns >= 2
+        if natures == ("knowledge_content", "knowledge_content") and not is_parallel:
+            logger.info(f"[Tier3] {pair}: 콘텐츠성 데이터 간 주제 중첩 (evidence_type={evidence_type}), 저장 제외")
+            return False
+
+        confidence = result.get("confidence", 0.0)
+        if confidence < confidence_threshold:
+            logger.debug(f"[Tier3] {pair}: confidence={confidence:.2f} < threshold={confidence_threshold}")
+            return False
+
+        return True
 
     # ──────────────────────────────────────────────
     # Helper
