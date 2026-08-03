@@ -14,6 +14,8 @@ from app.schemas.dataset import (
     DatasetIngestRequest,
     DatasetRelation,
     DatasetSearchRequest,
+    IngestFromCatalogRequest,
+    RelationDecisionRequest,
     RunRelationPipelineRequest,
 )
 from app.schemas.response import APIResponseModel
@@ -23,8 +25,8 @@ from app.src.dataset.relation_pipeline import relation_pipeline
 router = APIRouter(prefix="/dataset", tags=["dataset"])
 logger = logging.getLogger(__name__)
 
-_pipeline_jobs: dict[str, dict] = {}
-_kv_jobs: dict[str, dict] = {}
+# job 상태는 SQLite(job_store)에 영속화 — 재시작에도 폴링 API가 상태 유지 (DAG 자동 트리거 전제)
+from app.src.dataset.job_store import get_job_store
 
 
 def _run_kv_build_sync(job_id: str, table_name: str) -> None:
@@ -87,20 +89,20 @@ def _run_kv_build_sync(job_id: str, table_name: str) -> None:
         # Value 정규화
         normalized = ClusteringNormalizer().normalize_all_keys()
 
-        _kv_jobs[job_id].update({
-            "status": "done",
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "records": len(records),
-            "documents_built": success,
-            "normalized": normalized.get("normalized_count", 0),
-        })
+        get_job_store().update(job_id,
+            status="done",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            records=len(records),
+            documents_built=success,
+            normalized=normalized.get("normalized_count", 0),
+        )
     except Exception as e:
         logger.error(f"[KVBuild] job={job_id} 실패: {e}")
-        _kv_jobs[job_id].update({
-            "status": "error",
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        })
+        get_job_store().update(job_id,
+            status="error",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            error=str(e),
+        )
 
 
 def _parse_upload(content: bytes, filename: str) -> list[dict]:
@@ -126,20 +128,23 @@ def _run_pipeline_sync(job_id: str, request: RunRelationPipelineRequest) -> None
             table_names=request.table_names,
             tier2_threshold=request.tier2_threshold,
             tier3_confidence_threshold=request.tier3_confidence_threshold,
+            refresh_table_names=request.refresh_table_names,
+            seed_table_names=request.seed_table_names,
         )
-        _pipeline_jobs[job_id].update({
-            "status": "done",
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "results": [r.model_dump() for r in results],
-            "total_saved": sum(len(r.saved_relations) for r in results),
-        })
+        get_job_store().update(job_id,
+            status="done",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            results=[r.model_dump() for r in results],
+            total_saved=sum(len(r.saved_relations) for r in results),
+            total_pending=sum(len(r.pending_relations) for r in results),
+        )
     except Exception as e:
         logger.error(f"[Pipeline] job={job_id} 실패: {e}")
-        _pipeline_jobs[job_id].update({
-            "status": "error",
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        })
+        get_job_store().update(job_id,
+            status="error",
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            error=str(e),
+        )
 
 
 @router.post(
@@ -151,9 +156,12 @@ def _run_pipeline_sync(job_id: str, request: RunRelationPipelineRequest) -> None
 async def ingest_dataset(
         file: Annotated[UploadFile, File(description="JSON / JSONL / CSV 파일")],
         table_name: Annotated[str, Body(embed=True, description="테이블명")],
-        domain: Annotated[str, Body(embed=True, description="도메인 (medical, broadcast, general 등)")],
+        domain: Annotated[str, Body(embed=True, description="도메인 (medical, broadcast 등). 생략 시 특징 기반 자동 분류")] = "",
         description: Annotated[str, Body(embed=True, description="짧은 설명")] = "",
         table_summary: Annotated[str, Body(embed=True, description="상세 요약 (비어있으면 description 사용)")] = "",
+        catalog_identifier: Annotated[str, Body(embed=True, description="통합 카탈로그 식별자 (catalog_entry.identifier)")] = "",
+        party: Annotated[str, Body(embed=True, description="데이터 파티 구분 (1st/3rd). 직접 업로드는 통상 1st")] = "",
+        provider: Annotated[str, Body(embed=True, description="제공 기관/발행처")] = "",
 ):
     """JSON / JSONL / CSV 파일을 업로드하면 메타데이터를 추출하여 Neptune Dataset 노드와 OpenSearch에 저장."""
     content = await file.read()
@@ -178,6 +186,9 @@ async def ingest_dataset(
         description=description,
         table_summary=table_summary,
         raw_storage_key=raw_storage_key,
+        catalog_identifier=catalog_identifier,
+        party=party,
+        provider=provider,
     )
 
     return APIResponseModel(
@@ -206,11 +217,62 @@ async def ingest_dataset_json(
         domain=request.domain,
         description=request.description,
         table_summary=request.table_summary,
+        catalog_identifier=request.catalog_identifier,
+        party=request.party,
+        provider=request.provider,
+        landing_page=request.landing_page,
     )
 
     return APIResponseModel(
         result=profile.model_dump(exclude={"table_embedding"}),
         description=f"Dataset '{request.table_name}' 등록 완료",
+    )
+
+
+@router.post(
+    "/ingest_from_catalog",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+    summary="① 통합 카탈로그 엔트리를 pull 하여 데이터셋 등록",
+)
+async def ingest_dataset_from_catalog(request: IngestFromCatalogRequest):
+    """catalog-service에서 엔트리 메타데이터를 가져와 재업로드 없이 데이터셋으로 등록.
+
+    - `catalog_entry_id`(숫자 PK) 또는 `catalog_identifier`(DCAT identifier) 중 하나 필수
+    - 매핑: identifier→catalog_identifier, title→table_name/description,
+      description→table_summary, keyword+theme→keywords(시드), theme[0]→domain
+    - `records`를 함께 주면 컬럼 프로파일링 포함, 없으면 메타데이터-only 등록
+    """
+    from app.clients.catalog_client import get_catalog_client, ingest_args_from_entry
+
+    if not request.catalog_entry_id and not request.catalog_identifier:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "catalog_entry_id 또는 catalog_identifier 중 하나는 필수입니다"},
+        )
+
+    client = get_catalog_client()
+    entry = (
+        client.get_entry(request.catalog_entry_id)
+        if request.catalog_entry_id
+        else client.find_entry_by_identifier(request.catalog_identifier)
+    )
+
+    args = ingest_args_from_entry(
+        entry,
+        table_name=request.table_name or None,
+        domain=request.domain or None,
+        party=request.party,
+    )
+    profile = dataset_service.ingest_table(records=request.records or [], **args)
+
+    return APIResponseModel(
+        result=profile.model_dump(exclude={"table_embedding", "keywords_embedding"}),
+        description=(
+            f"카탈로그 엔트리(identifier={args['catalog_identifier']}) → "
+            f"Dataset '{profile.table_name}' 등록 완료"
+            + ("" if request.records else " (메타데이터-only)")
+        ),
     )
 
 
@@ -238,6 +300,42 @@ async def save_relation(relation: DatasetRelation):
         description=(
             f"관계 저장 완료: {relation.table_a} --[{relation.relation_type}]--> {relation.table_b} "
             f"(score={relation.score}, method={relation.method})"
+        ),
+    )
+
+
+@router.post(
+    "/relation/decision",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+    summary="① 승인 워크플로우 결정 콜백 (내부 API)",
+)
+async def apply_relation_decision(request: RelationDecisionRequest):
+    """①의 데이터셋 관계 승인/반려 결정을 그래프에 반영합니다.
+
+    승인 SSOT는 ①(dataset_relation.status)입니다. 이 엔드포인트는 ①의 PATCH
+    /relation/datasets/{id} 승인 처리에서 호출되는 내부 콜백으로,
+    승인된 관계를 Neptune 지식그래프에 저장합니다 (재환류 없음). 반려는 no-op.
+    """
+    relation = dataset_service.apply_relation_decision(
+        source_identifier=request.source_identifier,
+        target_identifier=request.target_identifier,
+        relation_type=request.relation_type,
+        score=request.score,
+        method=request.method,
+        evidence=request.evidence,
+        approved=request.approved,
+    )
+    if relation is None:
+        return APIResponseModel(
+            result={"applied": False},
+            description="반려 결정 수신 — 그래프 미반영 (no-op)",
+        )
+    return APIResponseModel(
+        result={"applied": True, "relation": relation.model_dump()},
+        description=(
+            f"승인 관계 그래프 반영 완료: {relation.table_a} "
+            f"--[{relation.relation_type}]--> {relation.table_b}"
         ),
     )
 
@@ -306,11 +404,11 @@ async def build_dataset_graph(table_name: str):
     상태는 GET /dataset/build-graph/{job_id} 로 폴링.
     """
     job_id = str(uuid.uuid4())
-    _kv_jobs[job_id] = {
+    get_job_store().put(job_id, "kv_build", {
         "status": "running",
         "table_name": table_name,
         "started_at": datetime.now(timezone.utc).isoformat(),
-    }
+    })
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _run_kv_build_sync, job_id, table_name)
     return APIResponseModel(
@@ -327,7 +425,7 @@ async def build_dataset_graph(table_name: str):
 )
 async def get_build_graph_status(job_id: str):
     """job_id 의 KV 그래프 생성 상태를 반환. status: running | done | error"""
-    job = _kv_jobs.get(job_id)
+    job = get_job_store().get(job_id)
     if not job:
         return APIResponseModel(result=None, description="job을 찾을 수 없습니다")
     return APIResponseModel(result=job, description=f"status={job['status']}")
@@ -395,17 +493,23 @@ async def run_relation_pipeline(request: RunRelationPipelineRequest):
     결과는 GET /dataset/relation/pipeline/{job_id} 로 폴링.
     """
     job_id = str(uuid.uuid4())
-    _pipeline_jobs[job_id] = {
+    get_job_store().put(job_id, "relation_pipeline", {
         "status": "running",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "table_names": request.table_names,
-    }
+        "refresh_table_names": request.refresh_table_names,
+        "seed_table_names": request.seed_table_names,
+    })
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _run_pipeline_sync, job_id, request)
 
     return APIResponseModel(
         result={"job_id": job_id, "status": "running"},
-        description=f"파이프라인 시작: {len(request.table_names)}개 테이블",
+        description=(
+            f"파이프라인 시작: "
+            + (f"{len(request.table_names)}개 테이블" if request.table_names else "전체 테이블")
+            + (f" (재평가 {len(request.refresh_table_names)}개)" if request.refresh_table_names else "")
+        ),
     )
 
 
@@ -417,7 +521,62 @@ async def run_relation_pipeline(request: RunRelationPipelineRequest):
 )
 async def get_pipeline_status(job_id: str):
     """job_id 의 파이프라인 상태를 반환. status: running | done | error"""
-    job = _pipeline_jobs.get(job_id)
+    job = get_job_store().get(job_id)
+    if not job:
+        return APIResponseModel(result=None, description="job을 찾을 수 없습니다")
+    return APIResponseModel(result=job, description=f"status={job['status']}")
+
+
+@router.post(
+    "/sync_from_catalog",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+    summary="① 카탈로그 갱신분 동기화 + 관계 파이프라인 증분 실행 (액티브 루프 1회)",
+)
+async def sync_from_catalog(
+        date_from: Annotated[str | None, Body(embed=True, description="조회 시작일(YYYY-MM-DD) 재정의 — 백필용. 생략 시 watermark")] = None,
+):
+    """카탈로그 변경 감지 → 데이터셋 등록/재평가 표시 → 파이프라인 증분 실행을 백그라운드로 시작.
+
+    상태는 GET /dataset/sync_from_catalog/{job_id} 로 폴링.
+    CATALOG_SYNC_ENABLED=True 면 동일 사이클이 주기적으로 자동 실행된다.
+    """
+    from app.src.dataset.catalog_sync import get_catalog_sync_service
+
+    job_id = str(uuid.uuid4())
+    get_job_store().put(job_id, "catalog_sync", {
+        "status": "running",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "date_from": date_from,
+    })
+
+    def _run_sync(job_id: str, date_from: str | None) -> None:
+        try:
+            summary = get_catalog_sync_service().run_cycle(date_from=date_from)
+            get_job_store().update(job_id, status="done",
+                                   finished_at=datetime.now(timezone.utc).isoformat(), **summary)
+        except Exception as e:
+            logger.error(f"[CatalogSync] job={job_id} 실패: {e}")
+            get_job_store().update(job_id, status="error",
+                                   finished_at=datetime.now(timezone.utc).isoformat(), error=str(e))
+
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _run_sync, job_id, date_from)
+    return APIResponseModel(
+        result={"job_id": job_id, "status": "running"},
+        description="카탈로그 동기화 사이클 시작",
+    )
+
+
+@router.get(
+    "/sync_from_catalog/{job_id}",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+    summary="카탈로그 동기화 작업 상태 조회",
+)
+async def get_sync_from_catalog_status(job_id: str):
+    """job_id 의 동기화 사이클 상태를 반환. status: running | done | error"""
+    job = get_job_store().get(job_id)
     if not job:
         return APIResponseModel(result=None, description="job을 찾을 수 없습니다")
     return APIResponseModel(result=job, description=f"status={job['status']}")
@@ -491,7 +650,7 @@ async def list_relations():
     query = f"""
     PREFIX dm: <{dm}>
     PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-    SELECT ?tableA ?tableB ?score ?method ?relationType ?createdAt WHERE {{
+    SELECT ?tableA ?tableB ?catalogIdA ?catalogIdB ?score ?method ?relationType ?createdAt WHERE {{
         ?rel rdf:type rdf:Statement ;
              rdf:subject ?s ;
              rdf:predicate dm:relatedTo ;
@@ -502,6 +661,8 @@ async def list_relations():
              dm:createdAt ?createdAt .
         ?s dm:tableName ?tableA .
         ?o dm:tableName ?tableB .
+        OPTIONAL {{ ?s dm:catalogIdentifier ?catalogIdA }}
+        OPTIONAL {{ ?o dm:catalogIdentifier ?catalogIdB }}
     }}
     ORDER BY DESC(?createdAt)
     """
@@ -512,6 +673,8 @@ async def list_relations():
             {
                 "table_a": b["tableA"]["value"],
                 "table_b": b["tableB"]["value"],
+                "catalog_identifier_a": b.get("catalogIdA", {}).get("value", ""),
+                "catalog_identifier_b": b.get("catalogIdB", {}).get("value", ""),
                 "score": float(b["score"]["value"]),
                 "method": b["method"]["value"],
                 "relation_type": b["relationType"]["value"],

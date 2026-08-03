@@ -42,28 +42,52 @@ class DatasetService:
         self,
         records: list[dict[str, Any]],
         table_name: str,
-        domain: str,
+        domain: str = "",
         description: str = "",
         table_summary: str = "",
         raw_storage_key: str = "",
+        catalog_identifier: str = "",
+        keywords: list[str] | None = None,
+        party: str = "",
+        provider: str = "",
+        landing_page: str = "",
     ) -> DatasetProfile:
         """테이블 데이터 → 메타데이터 추출 → Neptune + OpenSearch 저장.
 
         Args:
-            records: 테이블의 전체 레코드 목록
-            table_name: 테이블명 (식별자)
-            domain: 도메인 (medical, broadcast, general 등)
+            records: 테이블의 전체 레코드 목록. 빈 목록이면 메타데이터-only 등록
+                (카탈로그 pull 등 요약 텍스트가 있는 경우)
+            table_name: 테이블명 (표시용)
+            domain: 도메인 (medical, broadcast 등). 빈 값이면 특징 기반 자동 분류
             description: 짧은 설명
             table_summary: 상세 요약 (비어있으면 description 사용)
+            raw_storage_key: 원본 파일 보관 키
+            catalog_identifier: 통합 카탈로그 식별자 (① catalog_entry.identifier)
+            keywords: 시드 키워드 (카탈로그 keyword/theme 등). 주어지면 LLM 추출 생략
+            party: 데이터 파티 구분 (1st: 기관 보유, 3rd: 외부 개방)
+            provider: 제공 기관/발행처 (DCAT publisher)
+            landing_page: 원본 제공처 URL (수집 단계 연결용)
 
         Returns:
             저장된 DatasetProfile
         """
-        if not records:
-            raise ValueError(f"'{table_name}': 레코드가 없습니다")
+        if not records and not (table_summary or description):
+            raise ValueError(f"'{table_name}': 레코드가 없고 요약 메타데이터도 없습니다")
 
-        profile = self._build_profile(records, table_name, domain, description, table_summary)
+        profile = self._build_profile(
+            records, table_name, domain, description, table_summary, seed_keywords=keywords
+        )
         profile.raw_storage_key = raw_storage_key
+        profile.catalog_identifier = catalog_identifier
+        profile.party = party  # type: ignore[assignment]
+        profile.provider = provider
+        profile.landing_page = landing_page
+
+        # 동일 table_name 재등록은 신규 생성이 아닌 기존 문서 대체 (중복 데이터셋 방지)
+        existing = self.dataset_repo.get(table_name)
+        if existing:
+            profile.dataset_id = existing.dataset_id
+            profile.created_at = existing.created_at
 
         try:
             self._save_to_neptune(profile)
@@ -85,11 +109,12 @@ class DatasetService:
     # 관계 저장
     # ──────────────────────────────────────────────
 
-    def save_relation(self, relation: DatasetRelation) -> None:
+    def save_relation(self, relation: DatasetRelation, push_to_catalog: bool = True) -> None:
         """두 Dataset 간 관계를 Neptune에 upsert (기존 관계 삭제 후 재저장).
 
         Args:
             relation: DatasetRelation 객체
+            push_to_catalog: ① 환류 여부 (① 승인 콜백 경로에서는 False — 재환류 방지)
         """
         subject_uri = self._dataset_uri(relation.table_a)
         object_uri = self._dataset_uri(relation.table_b)
@@ -131,6 +156,82 @@ class DatasetService:
             f"[Relation] {relation.table_a} --[{relation.relation_type}]--> {relation.table_b} "
             f"(score={relation.score}, method={relation.method})"
         )
+
+        if push_to_catalog and settings.CATALOG_PUSH_ENABLED:
+            self._push_relation_to_catalog(relation, status="APPROVED")
+
+    def propose_relation_to_catalog(self, relation: DatasetRelation) -> None:
+        """저신뢰 관계를 그래프 저장 없이 ①에 PENDING 으로 제안 (승인 SSOT = ①).
+
+        ① 검토자가 승인하면 /dataset/relation/decision 콜백으로 그래프에 반영된다.
+        """
+        logger.info(
+            f"[Relation] 승인 대기 제안: {relation.table_a} <-> {relation.table_b} "
+            f"(score={relation.score}, method={relation.method})"
+        )
+        self._push_relation_to_catalog(relation, status="PENDING")
+
+    def apply_relation_decision(
+        self,
+        source_identifier: str,
+        target_identifier: str,
+        relation_type: str,
+        score: float,
+        method: str,
+        evidence: dict | None,
+        approved: bool,
+    ) -> DatasetRelation | None:
+        """①의 승인/반려 결정을 그래프에 반영 (승인 워크플로우 콜백 전용).
+
+        승인: 관계를 Neptune에 저장 (재환류 없음 — 상태는 ①이 이미 보유).
+        반려: 그래프에 저장된 적 없으므로 no-op.
+
+        Returns:
+            승인 시 저장된 DatasetRelation, 반려 시 None
+
+        Raises:
+            ValueError: 식별자에 해당하는 데이터셋 프로파일이 없을 때
+        """
+        if not approved:
+            logger.info(f"[Relation] 반려 결정 수신 — 그래프 미반영: {source_identifier} <-> {target_identifier}")
+            return None
+
+        profile_a = self.dataset_repo.get_by_identifier(source_identifier)
+        profile_b = self.dataset_repo.get_by_identifier(target_identifier)
+        if not profile_a or not profile_b:
+            missing = source_identifier if not profile_a else target_identifier
+            raise ValueError(f"카탈로그 식별자에 해당하는 데이터셋이 없습니다: {missing}")
+
+        relation = DatasetRelation(
+            table_a=profile_a.table_name,
+            table_b=profile_b.table_name,
+            catalog_identifier_a=source_identifier,
+            catalog_identifier_b=target_identifier,
+            score=score,
+            method=method,
+            relation_type=relation_type,
+            evidence=evidence or {},
+        )
+        self.save_relation(relation, push_to_catalog=False)
+        return relation
+
+    def _push_relation_to_catalog(self, relation: DatasetRelation, status: str = "APPROVED") -> None:
+        """관계를 ①의 dataset_relation 으로 환류. 실패해도 관계 저장 자체는 유지 (graceful)."""
+        if not (relation.catalog_identifier_a and relation.catalog_identifier_b):
+            logger.debug(
+                f"[Relation] 카탈로그 식별자 없음 — 환류 생략: {relation.table_a} <-> {relation.table_b}"
+            )
+            return
+        try:
+            from app.clients.catalog_client import get_catalog_client
+
+            get_catalog_client().push_dataset_relation(relation, status=status)
+            logger.info(
+                f"[Relation] 카탈로그 환류 완료({status}): {relation.catalog_identifier_a} "
+                f"--[{relation.relation_type}]--> {relation.catalog_identifier_b}"
+            )
+        except Exception as e:
+            logger.warning(f"[Relation] 카탈로그 환류 실패 (Neptune 저장은 완료): {e}")
 
     def get_existing_relation_pairs(self) -> set[tuple[str, str]]:
         """Neptune에 저장된 관계 쌍을 (table_a, table_b) 집합으로 반환 (정렬된 튜플)."""
@@ -285,19 +386,38 @@ class DatasetService:
         domain: str,
         description: str,
         table_summary: str,
+        seed_keywords: list[str] | None = None,
     ) -> DatasetProfile:
-        column_names = list(records[0].keys())
+        column_names = list(records[0].keys()) if records else []
         sample_records = records[:_SAMPLE_SIZE]
         summary_text = table_summary or description or f"{table_name} 테이블"
         table_embedding = embedding_service.generate_embedding(summary_text)
 
-        keywords, keywords_embedding = self._extract_keywords(
-            table_name, column_names, sample_records
-        )
+        # 도메인 미지정 시 특징(요약 임베딩) 기반 자동 분류 (계획서 ②-1)
+        domain_confidence = None
+        if not domain:
+            from app.src.dataset.domain_classifier import DomainClassifier
+
+            domain, domain_confidence, scores = DomainClassifier(self.dataset_repo).classify(table_embedding)
+            logger.info(
+                f"[Dataset] '{table_name}' 도메인 자동 분류: {domain} "
+                f"(conf={domain_confidence}, scores={scores})"
+            )
+
+        # 표시명: LLM 경로에서 자동 생성. 시드 경로(카탈로그 pull)는 table_name이 이미 한글 title
+        display_name = ""
+        if seed_keywords:
+            keywords, keywords_embedding = seed_keywords, self._embed_keywords(seed_keywords)
+        else:
+            keywords, keywords_embedding, display_name = self._extract_keywords(
+                table_name, column_names, sample_records
+            )
 
         return DatasetProfile(
             table_name=table_name,
+            display_name=display_name,
             domain=domain,
+            domain_confidence=domain_confidence,
             record_count=len(records),
             column_count=len(column_names),
             column_names=column_names,
@@ -315,8 +435,8 @@ class DatasetService:
         table_name: str,
         column_names: list[str],
         sample_records: list[dict[str, Any]],
-    ) -> tuple[list[str], list[float]]:
-        """LLM으로 키워드 추출 후 평균 임베딩 반환."""
+    ) -> tuple[list[str], list[float], str]:
+        """LLM으로 키워드·한국어 표시명 추출 후 (키워드, 평균 임베딩, 표시명) 반환."""
         import json
         try:
             variables = {
@@ -326,24 +446,34 @@ class DatasetService:
                 "sample_records": json.dumps(sample_records[:3], ensure_ascii=False),
             }
             result = LLMResponse("table_metadata_extraction").generate_llm_response(variables)
-            keywords = result.get("keywords", []) if isinstance(result, dict) else []
+            if not isinstance(result, dict):
+                return [], [], ""
+            keywords = result.get("keywords", [])
+            display_name = (result.get("display_name") or "").strip()
             if not keywords:
-                return [], []
-            embeddings = [embedding_service.generate_embedding(kw) for kw in keywords]
-            dim = len(embeddings[0])
-            avg_embedding = [
-                sum(e[i] for e in embeddings) / len(embeddings) for i in range(dim)
-            ]
-            return keywords, avg_embedding
+                return [], [], display_name
+            return keywords, self._embed_keywords(keywords), display_name
         except Exception as e:
             logger.warning(f"[Dataset] '{table_name}' 키워드 추출 실패: {e}")
-            return [], []
+            return [], [], ""
+
+    @staticmethod
+    def _embed_keywords(keywords: list[str]) -> list[float]:
+        """키워드 목록의 평균 임베딩 벡터를 반환."""
+        from app.utils.vector import mean_vector
+
+        return mean_vector([embedding_service.generate_embedding(kw) for kw in keywords])
 
     def _save_to_neptune(self, profile: DatasetProfile) -> None:
         """Dataset 노드를 Neptune SPARQL INSERT로 저장 (upsert 효과)."""
         dataset_uri = self._dataset_uri(profile.table_name)
         description_escaped = profile.description.replace("\\", "\\\\").replace('"', '\\"')
 
+        catalog_id_triple = (
+            f' ;\n                dm:catalogIdentifier "{profile.catalog_identifier}"'
+            if profile.catalog_identifier
+            else ""
+        )
         update = f"""
         PREFIX dm: <{_DM}>
         PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
@@ -353,18 +483,20 @@ class DatasetService:
             {dataset_uri} dm:tableName ?tableName ;
                            dm:domain ?domain ;
                            dm:description ?desc .
+            {dataset_uri} dm:catalogIdentifier ?catalogId .
         }}
         WHERE {{
             OPTIONAL {{ {dataset_uri} dm:tableName ?tableName }}
             OPTIONAL {{ {dataset_uri} dm:domain ?domain }}
             OPTIONAL {{ {dataset_uri} dm:description ?desc }}
+            OPTIONAL {{ {dataset_uri} dm:catalogIdentifier ?catalogId }}
         }} ;
 
         INSERT DATA {{
             {dataset_uri} rdf:type dm:Dataset ;
                 dm:tableName "{profile.table_name}" ;
                 dm:domain "{profile.domain}" ;
-                dm:description "{description_escaped}" .
+                dm:description "{description_escaped}"{catalog_id_triple} .
         }}
         """
         self.neptune.execute_update(update)
