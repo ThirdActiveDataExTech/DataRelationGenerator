@@ -48,6 +48,9 @@ class DatasetService:
         raw_storage_key: str = "",
         catalog_identifier: str = "",
         keywords: list[str] | None = None,
+        party: str = "",
+        provider: str = "",
+        landing_page: str = "",
     ) -> DatasetProfile:
         """테이블 데이터 → 메타데이터 추출 → Neptune + OpenSearch 저장.
 
@@ -61,6 +64,9 @@ class DatasetService:
             raw_storage_key: 원본 파일 보관 키
             catalog_identifier: 통합 카탈로그 식별자 (① catalog_entry.identifier)
             keywords: 시드 키워드 (카탈로그 keyword/theme 등). 주어지면 LLM 추출 생략
+            party: 데이터 파티 구분 (1st: 기관 보유, 3rd: 외부 개방)
+            provider: 제공 기관/발행처 (DCAT publisher)
+            landing_page: 원본 제공처 URL (수집 단계 연결용)
 
         Returns:
             저장된 DatasetProfile
@@ -73,6 +79,15 @@ class DatasetService:
         )
         profile.raw_storage_key = raw_storage_key
         profile.catalog_identifier = catalog_identifier
+        profile.party = party  # type: ignore[assignment]
+        profile.provider = provider
+        profile.landing_page = landing_page
+
+        # 동일 table_name 재등록은 신규 생성이 아닌 기존 문서 대체 (중복 데이터셋 방지)
+        existing = self.dataset_repo.get(table_name)
+        if existing:
+            profile.dataset_id = existing.dataset_id
+            profile.created_at = existing.created_at
 
         try:
             self._save_to_neptune(profile)
