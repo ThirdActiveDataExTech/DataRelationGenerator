@@ -55,6 +55,7 @@ class RelationPipeline:
         tier2_threshold: float = 0.4,
         tier3_confidence_threshold: float = 0.8,
         refresh_table_names: list[str] | None = None,
+        seed_table_names: list[str] | None = None,
     ) -> list[RelationPipelineResult]:
         """모든 테이블 쌍에 대해 관계 생성 파이프라인 실행 (증분: 기존 쌍 스킵).
 
@@ -64,6 +65,8 @@ class RelationPipeline:
             tier3_confidence_threshold: Tier 3 확신도 임계값
             refresh_table_names: 메타데이터가 변동된 테이블 — 이 테이블이 낀 쌍은
                 기존 관계가 있어도 재평가 (save_relation 이 기존 관계를 대체)
+            seed_table_names: 기준 테이블 — 지정 시 이 테이블이 낀 쌍만 평가.
+                "1st 파티 데이터셋 기준 연계 가능한 3rd 파티 탐색" 시나리오용
 
         Returns:
             테이블 쌍별 RelationPipelineResult 리스트
@@ -91,6 +94,15 @@ class RelationPipeline:
 
         existing_pairs = self.dataset_service.get_existing_relation_pairs()
         all_pairs = list(itertools.combinations(profiles, 2))
+
+        # 기준(seed) 테이블 지정 시 해당 테이블이 낀 쌍만 평가 — 방향성 있는 연계 탐색
+        seeds = set(seed_table_names or [])
+        if seeds:
+            all_pairs = [
+                (a, b) for a, b in all_pairs
+                if a.table_name in seeds or b.table_name in seeds
+            ]
+
         refresh = set(refresh_table_names or [])
 
         new_pairs = [

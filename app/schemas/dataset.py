@@ -59,6 +59,13 @@ class DatasetProfile(BaseModel):
         default="",
         description="통합 카탈로그 식별자 (① catalog_entry.identifier, DCAT dct:identifier). 연동 시 필수 키",
     )
+    party: Literal["", "1st", "3rd"] = Field(
+        default="", description="데이터 파티 구분 — 1st(기관 보유 데이터) / 3rd(외부 개방 데이터). 빈 값은 미지정"
+    )
+    provider: str = Field(default="", description="제공 기관/발행처 (DCAT dct:publisher)")
+    landing_page: str = Field(
+        default="", description="원본 제공처 URL (DCAT dcat:landingPage/accessURL) — 사용자 시나리오 '수집' 단계 연결용"
+    )
     domain: str = Field(description="데이터 도메인 (medical, broadcast, general 등)")
     domain_confidence: float | None = Field(
         default=None, description="도메인 자동 분류 신뢰도 (None = 사용자/카탈로그 지정)"
@@ -100,6 +107,9 @@ class DatasetIngestRequest(BaseModel):
     catalog_identifier: str = Field(default="", description="통합 카탈로그 식별자 (catalog_entry.identifier)")
     description: str = Field(default="", description="짧은 설명")
     table_summary: str = Field(default="", description="상세 요약 (비어있으면 description 사용)")
+    party: Literal["", "1st", "3rd"] = Field(default="", description="데이터 파티 구분 (1st/3rd)")
+    provider: str = Field(default="", description="제공 기관/발행처")
+    landing_page: str = Field(default="", description="원본 제공처 URL")
 
 
 class IngestFromCatalogRequest(BaseModel):
@@ -109,6 +119,9 @@ class IngestFromCatalogRequest(BaseModel):
     catalog_identifier: str = Field(default="", description="DCAT 고유 식별자 (identifier)")
     table_name: str = Field(default="", description="테이블명 재정의 (기본: 카탈로그 title)")
     domain: str = Field(default="", description="도메인 재정의 (생략 시 특징 기반 자동 분류)")
+    party: Literal["", "1st", "3rd"] = Field(
+        default="3rd", description="데이터 파티 구분 — 카탈로그 개방 데이터는 기본 3rd"
+    )
     records: list[dict] | None = Field(
         default=None,
         description="선택: 실데이터 레코드. 있으면 컬럼 프로파일링 포함, 없으면 메타데이터-only 등록",
@@ -283,4 +296,8 @@ class RunRelationPipelineRequest(BaseModel):
     refresh_table_names: list[str] = Field(
         default_factory=list,
         description="메타데이터가 변동된 테이블 — 이 테이블이 낀 쌍은 기존 관계가 있어도 재평가 (증분 갱신)",
+    )
+    seed_table_names: list[str] = Field(
+        default_factory=list,
+        description="기준(1st 파티) 테이블 — 지정 시 이 테이블이 낀 쌍만 평가 (기준 데이터셋 연계 탐색)",
     )

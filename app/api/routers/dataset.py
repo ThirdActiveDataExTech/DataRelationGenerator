@@ -129,6 +129,7 @@ def _run_pipeline_sync(job_id: str, request: RunRelationPipelineRequest) -> None
             tier2_threshold=request.tier2_threshold,
             tier3_confidence_threshold=request.tier3_confidence_threshold,
             refresh_table_names=request.refresh_table_names,
+            seed_table_names=request.seed_table_names,
         )
         get_job_store().update(job_id,
             status="done",
@@ -159,6 +160,8 @@ async def ingest_dataset(
         description: Annotated[str, Body(embed=True, description="짧은 설명")] = "",
         table_summary: Annotated[str, Body(embed=True, description="상세 요약 (비어있으면 description 사용)")] = "",
         catalog_identifier: Annotated[str, Body(embed=True, description="통합 카탈로그 식별자 (catalog_entry.identifier)")] = "",
+        party: Annotated[str, Body(embed=True, description="데이터 파티 구분 (1st/3rd). 직접 업로드는 통상 1st")] = "",
+        provider: Annotated[str, Body(embed=True, description="제공 기관/발행처")] = "",
 ):
     """JSON / JSONL / CSV 파일을 업로드하면 메타데이터를 추출하여 Neptune Dataset 노드와 OpenSearch에 저장."""
     content = await file.read()
@@ -184,6 +187,8 @@ async def ingest_dataset(
         table_summary=table_summary,
         raw_storage_key=raw_storage_key,
         catalog_identifier=catalog_identifier,
+        party=party,
+        provider=provider,
     )
 
     return APIResponseModel(
@@ -213,6 +218,9 @@ async def ingest_dataset_json(
         description=request.description,
         table_summary=request.table_summary,
         catalog_identifier=request.catalog_identifier,
+        party=request.party,
+        provider=request.provider,
+        landing_page=request.landing_page,
     )
 
     return APIResponseModel(
@@ -254,6 +262,7 @@ async def ingest_dataset_from_catalog(request: IngestFromCatalogRequest):
         entry,
         table_name=request.table_name or None,
         domain=request.domain or None,
+        party=request.party,
     )
     profile = dataset_service.ingest_table(records=request.records or [], **args)
 
@@ -489,6 +498,7 @@ async def run_relation_pipeline(request: RunRelationPipelineRequest):
         "started_at": datetime.now(timezone.utc).isoformat(),
         "table_names": request.table_names,
         "refresh_table_names": request.refresh_table_names,
+        "seed_table_names": request.seed_table_names,
     })
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _run_pipeline_sync, job_id, request)

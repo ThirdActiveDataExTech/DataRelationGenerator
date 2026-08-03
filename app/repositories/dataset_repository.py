@@ -21,12 +21,15 @@ class DatasetRepository:
     def ensure_index(self, embedding_dim: int) -> None:
         """datasets 인덱스가 없으면 KNN 매핑으로 생성. 있으면 신규 필드 매핑만 보강."""
         if self.client.client.indices.exists(index=_DATASETS_INDEX):
-            # 기존 인덱스에 catalog_identifier 필드 매핑 보강 (idempotent)
+            # 기존 인덱스에 이후 추가된 필드 매핑 보강 (idempotent)
             self.client.client.indices.put_mapping(
                 index=_DATASETS_INDEX,
                 body={"properties": {
                     "catalog_identifier": {"type": "keyword"},
                     "display_name": {"type": "keyword"},
+                    "party": {"type": "keyword"},
+                    "provider": {"type": "keyword"},
+                    "landing_page": {"type": "keyword"},
                 }},
             )
             return
@@ -44,6 +47,9 @@ class DatasetRepository:
                     "table_name": {"type": "keyword"},
                     "display_name": {"type": "keyword"},
                     "catalog_identifier": {"type": "keyword"},
+                    "party": {"type": "keyword"},
+                    "provider": {"type": "keyword"},
+                    "landing_page": {"type": "keyword"},
                     "domain": {"type": "keyword"},
                     "record_count": {"type": "integer"},
                     "column_count": {"type": "integer"},
@@ -85,6 +91,9 @@ class DatasetRepository:
             "table_name": profile.table_name,
             "display_name": profile.display_name,
             "catalog_identifier": profile.catalog_identifier,
+            "party": profile.party,
+            "provider": profile.provider,
+            "landing_page": profile.landing_page,
             "domain_confidence": profile.domain_confidence,
             "domain": profile.domain,
             "record_count": profile.record_count,
