@@ -1,6 +1,6 @@
 from typing import Dict, List, Literal
 
-from openai import pydantic_function_tool
+from app.schemas.tool_utils import pydantic_function_tool
 from pydantic import BaseModel, Field
 
 

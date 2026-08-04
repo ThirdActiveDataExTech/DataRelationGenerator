@@ -4,7 +4,7 @@ import uuid
 from enum import Enum
 from typing import Any, Literal
 
-from openai import pydantic_function_tool
+from app.schemas.tool_utils import pydantic_function_tool
 from pydantic import BaseModel, Field
 
 
@@ -148,6 +148,8 @@ class DatasetSearchRequest(BaseModel):
 
     query: str = Field(description="검색 쿼리 텍스트")
     domain: str | None = Field(default=None, description="도메인 필터 (None이면 전체)")
+    party: Literal["", "1st", "3rd"] = Field(default="", description="파티 필터 (빈 값이면 전체)")
+    provider: str = Field(default="", description="제공 기관 필터 (빈 값이면 전체)")
     top_k: int = Field(default=5, ge=1, le=20, description="반환할 최대 결과 수")
 
 
@@ -160,6 +162,13 @@ class DatasetSearchResult(BaseModel):
     description: str
     table_summary: str
     score: float
+    party: str = ""
+    provider: str = ""
+    landing_page: str = ""
+    match_type: Literal["knn", "relation"] = Field(
+        default="knn", description="매칭 근거 — knn(임베딩 유사 후보) / relation(기존 확정 관계)"
+    )
+    relation_type: str = Field(default="", description="match_type=relation 일 때 관계 유형")
 
 
 # ── Tier 1 ──────────────────────────────────────────────────────────────────
@@ -246,12 +255,45 @@ class TableMetadataExtraction(BaseModel):
         default="",
         description="테이블의 한국어 표시명 — 사람이 한눈에 알아볼 간결한 명사구 (예: patient_info → '환자 기본정보'). 테이블명이 이미 자연스러운 한국어면 그대로 사용",
     )
+    domain: str = Field(
+        default="",
+        description="데이터 도메인 분류 (한국어 명사, 예: 보건의료, 교통및물류, 환경). 기존 도메인 목록이 주어지면 그중 가장 적합한 것을 우선 선택하고, 정말 맞는 것이 없을 때만 새 도메인을 제안",
+    )
 
 
 table_metadata_extraction_tool = pydantic_function_tool(
     TableMetadataExtraction,
     name="extract_table_metadata",
     description="테이블 메타데이터에서 설명과 키워드를 추출합니다.",
+)
+
+
+class DomainSelection(BaseModel):
+    """도메인 선택 결과 — 기존 도메인 우선, 신설은 최후 수단."""
+
+    domain: str = Field(
+        description="제시된 기존 도메인 중 하나 (우선). 정말 해당 없을 때만 대분류 수준의 새 도메인 명사"
+    )
+
+
+domain_selection_tool = pydantic_function_tool(
+    DomainSelection,
+    name="select_domain",
+    description="데이터셋 메타데이터를 도메인으로 분류합니다. 기존 도메인 재사용을 우선하고 신설은 지양합니다.",
+)
+
+
+class DatasetSearchIntent(BaseModel):
+    """자연어 질의 → 데이터셋 검색 의도 (임베딩 검색용 구문)."""
+
+    search_query: str = Field(description="데이터셋 요약문과 유사도 비교할 서술형 명사구 (한국어)")
+    keywords: list[str] = Field(default_factory=list, description="핵심 주제 키워드 (보조 신호)")
+
+
+dataset_search_intent_tool = pydantic_function_tool(
+    DatasetSearchIntent,
+    name="extract_dataset_search_intent",
+    description="자연어 질의에서 데이터셋 검색 의도를 추출합니다.",
 )
 
 
