@@ -578,7 +578,7 @@ class DatasetService:
         import json
         try:
             existing_domains = sorted({
-                d for d, _ in (self.dataset_repo.list_domain_embeddings() or []) if d and d != "general"
+                d for _, d, _ in (self.dataset_repo.list_domain_embeddings() or []) if d and d != "general"
             })
             variables = {
                 "table_name": table_name,

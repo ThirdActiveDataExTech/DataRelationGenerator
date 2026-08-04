@@ -2,7 +2,7 @@ import logging
 from functools import lru_cache
 from typing import Optional
 
-from langfuse import Langfuse
+from langfuse._client.client import Langfuse
 
 from app.config import settings
 
