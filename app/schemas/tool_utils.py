@@ -32,7 +32,7 @@ def pydantic_function_tool(
     *,
     name: Optional[str] = None,
     description: Optional[str] = None,
-) -> dict:
+) -> Any:
     """openai.pydantic_function_tool + Bedrock 호환 스키마 정리."""
     tool = _openai_pydantic_function_tool(model, name=name, description=description)
     _strip_number_bounds(tool["function"].get("parameters", {}))
