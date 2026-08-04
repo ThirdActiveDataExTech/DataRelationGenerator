@@ -359,6 +359,8 @@ async def search_datasets(request: DatasetSearchRequest):
         query=request.query,
         domain=request.domain,
         top_k=request.top_k,
+        party=request.party,
+        provider=request.provider,
     )
 
     return APIResponseModel(
@@ -376,12 +378,17 @@ async def search_datasets(request: DatasetSearchRequest):
 async def nl_search(
         query: Annotated[str, Body(embed=True, description="자연어 질의")],
         top_k: Annotated[int, Body(embed=True, description="상위 데이터셋 수")] = 5,
+        domain: Annotated[str, Body(embed=True, description="도메인 필터 (빈 값이면 전체)")] = "",
+        party: Annotated[str, Body(embed=True, description="파티 필터 1st/3rd (빈 값이면 전체)")] = "",
+        provider: Annotated[str, Body(embed=True, description="제공 기관 필터 (빈 값이면 전체)")] = "",
 ):
     """자연어 질의를 검색 의도로 변환하여 데이터셋 KNN 검색을 수행하고,
 
     상위 노드의 1-hop 이웃(Level 1 관계)을 묶은 부분 그래프를 함께 반환한다.
     """
-    result = dataset_service.nl_search(query=query, top_k=top_k)
+    result = dataset_service.nl_search(
+        query=query, top_k=top_k, domain=domain or None, party=party, provider=provider
+    )
     return APIResponseModel(
         result=result,
         description=(
@@ -389,6 +396,35 @@ async def nl_search(
             f"데이터셋 {len(result['datasets'])}개, "
             f"노드 {len(result['graph']['nodes'])}개 / 엣지 {len(result['graph']['edges'])}개"
         ),
+    )
+
+
+@router.get(
+    "/{table_name}/related",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+    summary="기준 데이터셋의 연계 가능 데이터셋 검색 (기존 관계 + KNN 후보)",
+)
+async def related_datasets(
+        table_name: str,
+        top_k: int = 5,
+        party: str = "3rd",
+        domain: str = "",
+        provider: str = "",
+):
+    """1st 파티 데이터셋을 기준으로 연계 활용 가능한 데이터셋을 검색한다.
+
+    기존 확정 관계(1-hop)를 우선 신호로, 임베딩 KNN 유사 후보로 보강.
+    party 기본값 3rd — 외부 개방 데이터 연계 탐색 시나리오.
+    """
+    result = dataset_service.related_search(
+        table_name=table_name, top_k=top_k, party=party, domain=domain or None, provider=provider
+    )
+    if result is None:
+        return JSONResponse(status_code=404, content={"detail": f"데이터셋 '{table_name}' 미등록"})
+    return APIResponseModel(
+        result=result,
+        description=f"'{table_name}' 연계 후보 {len(result['datasets'])}개",
     )
 
 
