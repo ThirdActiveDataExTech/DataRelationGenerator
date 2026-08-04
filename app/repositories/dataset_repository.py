@@ -121,8 +121,11 @@ class DatasetRepository:
         query_embedding: list[float],
         top_k: int = 5,
         domain: str | None = None,
+        party: str = "",
+        provider: str = "",
+        exclude_table_name: str = "",
     ) -> list[DatasetSearchResult]:
-        """table_embedding KNN 검색."""
+        """table_embedding KNN 검색 (도메인/파티/제공기관 조건 필터 지원)."""
         knn_query: dict[str, Any] = {
             "knn": {
                 "table_embedding": {
@@ -132,17 +135,21 @@ class DatasetRepository:
             }
         }
 
-        query_body: dict[str, Any] = {"size": top_k, "query": {}}
+        filters = [
+            {"term": {field: value}}
+            for field, value in (("domain", domain), ("party", party), ("provider", provider))
+            if value
+        ]
+        bool_query: dict[str, Any] = {"must": knn_query}
+        if filters:
+            bool_query["filter"] = filters
+        if exclude_table_name:
+            bool_query["must_not"] = [{"term": {"table_name": exclude_table_name}}]
 
-        if domain:
-            query_body["query"] = {
-                "bool": {
-                    "must": knn_query,
-                    "filter": [{"term": {"domain": domain}}],
-                }
-            }
-        else:
-            query_body["query"] = knn_query
+        query_body: dict[str, Any] = {
+            "size": top_k,
+            "query": knn_query if len(bool_query) == 1 else {"bool": bool_query},
+        }
 
         response = self.client.client.search(index=_DATASETS_INDEX, body=query_body)
 
@@ -154,6 +161,9 @@ class DatasetRepository:
                 description=hit["_source"].get("description", ""),
                 table_summary=hit["_source"].get("table_summary", ""),
                 score=hit["_score"],
+                party=hit["_source"].get("party", ""),
+                provider=hit["_source"].get("provider", ""),
+                landing_page=hit["_source"].get("landing_page", ""),
             )
             for hit in response["hits"]["hits"]
         ]
@@ -176,8 +186,8 @@ class DatasetRepository:
         except Exception:
             return None
 
-    def list_domain_embeddings(self) -> list[tuple[str, list[float]]]:
-        """도메인 분류 centroid 계산용 (domain, table_embedding) 목록."""
+    def list_domain_embeddings(self) -> list[tuple[str, str, list[float]]]:
+        """도메인 분류 centroid 계산용 (table_name, domain, table_embedding) 목록."""
         if not self.client.client.indices.exists(index=_DATASETS_INDEX):
             return []
         try:
@@ -186,11 +196,15 @@ class DatasetRepository:
                 body={
                     "size": 1000,
                     "query": {"match_all": {}},
-                    "_source": {"includes": ["domain", "table_embedding"]},
+                    "_source": {"includes": ["table_name", "domain", "table_embedding"]},
                 },
             )
             return [
-                (h["_source"].get("domain", ""), h["_source"].get("table_embedding") or [])
+                (
+                    h["_source"].get("table_name", ""),
+                    h["_source"].get("domain", ""),
+                    h["_source"].get("table_embedding") or [],
+                )
                 for h in resp["hits"]["hits"]
             ]
         except Exception:
