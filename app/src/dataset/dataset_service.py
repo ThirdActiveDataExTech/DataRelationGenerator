@@ -266,6 +266,8 @@ class DatasetService:
         query: str,
         domain: str | None = None,
         top_k: int = 5,
+        party: str = "",
+        provider: str = "",
     ) -> list[DatasetSearchResult]:
         """쿼리 임베딩으로 유사 테이블 KNN 검색.
 
@@ -273,14 +275,25 @@ class DatasetService:
             query: 검색 쿼리 텍스트
             domain: 도메인 필터 (None이면 전체)
             top_k: 반환할 최대 결과 수
+            party: 파티 필터 (1st/3rd, 빈 값이면 전체)
+            provider: 제공 기관 필터 (빈 값이면 전체)
 
         Returns:
             DatasetSearchResult 리스트 (유사도 내림차순)
         """
         query_embedding = embedding_service.generate_embedding(query)
-        return self.dataset_repo.search_knn(query_embedding, top_k=top_k, domain=domain)
+        return self.dataset_repo.search_knn(
+            query_embedding, top_k=top_k, domain=domain, party=party, provider=provider
+        )
 
-    def nl_search(self, query: str, top_k: int = 5) -> dict[str, Any]:
+    def nl_search(
+        self,
+        query: str,
+        top_k: int = 5,
+        domain: str | None = None,
+        party: str = "",
+        provider: str = "",
+    ) -> dict[str, Any]:
         """자연어 검색 + 그래프 시각화용 부분 그래프 반환 (§9).
 
         자연어 질의를 검색 의도로 변환(LLM, 가능 시)하여 데이터셋 KNN 검색을 수행하고,
@@ -289,12 +302,15 @@ class DatasetService:
         Args:
             query: 자연어 질의
             top_k: 상위 데이터셋 수
+            domain: 도메인 필터
+            party: 파티 필터 (1st/3rd)
+            provider: 제공 기관 필터
 
         Returns:
             {"intent": str, "datasets": [...], "graph": {"nodes": [...], "edges": [...]}}
         """
         intent = self._extract_search_intent(query)
-        results = self.search_datasets(intent, top_k=top_k)
+        results = self.search_datasets(intent, top_k=top_k, domain=domain, party=party, provider=provider)
         top_tables = [r.table_name for r in results]
         graph = self.get_dataset_subgraph(top_tables)
 
@@ -304,13 +320,86 @@ class DatasetService:
             "graph": graph,
         }
 
-    def _extract_search_intent(self, query: str) -> str:
-        """자연어 질의를 검색 의도(키워드/구문)로 변환.
+    def related_search(
+        self,
+        table_name: str,
+        top_k: int = 5,
+        party: str = "3rd",
+        domain: str | None = None,
+        provider: str = "",
+    ) -> dict[str, Any] | None:
+        """기준 데이터셋(1st 파티) 중심의 연계 가능 데이터셋 검색 (사용자 시나리오 1단계).
 
-        LLM(query_key_inference)을 시도하고 실패하면 원 질의를 그대로 사용한다.
+        기존 확정 관계(Neptune 1-hop)를 우선 신호로, 임베딩 KNN 유사 후보로 보강한다.
+        nl_search 와 동일한 응답 형태를 반환하여 UI 렌더링을 공유한다.
+
+        Args:
+            table_name: 기준 데이터셋명
+            top_k: KNN 후보 수
+            party: 결과 파티 필터 — 기본 3rd (연계 가능한 외부 개방 데이터 탐색)
+            domain: 도메인 필터
+            provider: 제공 기관 필터
+
+        Returns:
+            {"intent", "datasets", "graph"} — 기준 데이터셋 미등록 시 None
+        """
+        profile = self.dataset_repo.get(table_name)
+        if not profile:
+            return None
+
+        # 1) 기존 확정 관계 (1-hop) — 필터 조건에 맞는 이웃만 결과에 포함
+        graph = self.get_dataset_subgraph([table_name])
+        relation_by_neighbor: dict[str, dict[str, Any]] = {}
+        for edge in graph["edges"]:
+            neighbor = edge["target"] if edge["source"] == table_name else edge["source"]
+            relation_by_neighbor[neighbor] = edge
+
+        results: list[DatasetSearchResult] = []
+        for neighbor, edge in relation_by_neighbor.items():
+            p = self.dataset_repo.get(neighbor)
+            if not p:
+                continue
+            if (party and p.party != party) or (domain and p.domain != domain) or (provider and p.provider != provider):
+                continue
+            results.append(DatasetSearchResult(
+                table_name=p.table_name,
+                display_name=p.display_name,
+                domain=p.domain,
+                description=p.description,
+                table_summary=p.table_summary,
+                score=edge["score"],
+                party=p.party,
+                provider=p.provider,
+                landing_page=p.landing_page,
+                match_type="relation",
+                relation_type=edge["relation_type"],
+            ))
+
+        # 2) 임베딩 KNN 유사 후보로 보강 (기준 자신 제외, 관계로 이미 잡힌 것 제외)
+        if profile.table_embedding:
+            knn = self.dataset_repo.search_knn(
+                profile.table_embedding,
+                top_k=top_k,
+                domain=domain,
+                party=party,
+                provider=provider,
+                exclude_table_name=table_name,
+            )
+            results.extend(r for r in knn if r.table_name not in relation_by_neighbor)
+
+        return {
+            "intent": f"'{profile.display_name or table_name}' 기준 연계 가능 데이터셋",
+            "datasets": [r.model_dump() for r in results],
+            "graph": graph,
+        }
+
+    def _extract_search_intent(self, query: str) -> str:
+        """자연어 질의를 데이터셋 검색 의도(요약문 유사 서술형 구문)로 변환.
+
+        LLM(dataset_search_intent)을 시도하고 실패하면 원 질의를 그대로 사용한다.
         """
         try:
-            result = LLMResponse("query_key_inference").generate_llm_response(
+            result = LLMResponse("dataset_search_intent").generate_llm_response(
                 variables={"query": query}
             )
             if isinstance(result, dict):
@@ -379,6 +468,37 @@ class DatasetService:
     # Private helpers
     # ──────────────────────────────────────────────
 
+    def _select_domain_via_llm(self, table_name: str, summary_text: str, keywords: list[str]) -> str:
+        """분류기 폴백 시 LLM으로 도메인 결정 - 기존 도메인 재사용 우선.
+
+        Returns:
+            도메인 라벨. general 응답·호출 실패면 빈 값 (호출부에서 general 유지)
+        """
+        from app.src.dataset.domain_classifier import FALLBACK_DOMAIN, STANDARD_DOMAINS
+
+        existing = {
+            d for _, d, _ in (self.dataset_repo.list_domain_embeddings() or [])
+            if d and d != FALLBACK_DOMAIN
+        }
+        candidates = list(STANDARD_DOMAINS) + sorted(existing - set(STANDARD_DOMAINS))
+
+        try:
+            result = LLMResponse("domain_selection").generate_llm_response(variables={
+                "title": table_name,
+                "summary": summary_text,
+                "keywords": ", ".join(keywords[:15]),
+                "candidates": ", ".join(candidates),
+            })
+            picked = (result.get("domain") or "").strip() if isinstance(result, dict) else ""
+            if not picked or picked.lower() == FALLBACK_DOMAIN:
+                return ""
+            if picked not in candidates:
+                logger.info(f"[Dataset] '{table_name}' LLM 도메인 신설: {picked}")
+            return picked
+        except Exception as e:
+            logger.warning(f"[Dataset] '{table_name}' LLM 도메인 선택 실패 — general 유지: {e}")
+            return ""
+
     def _build_profile(
         self,
         records: list[dict[str, Any]],
@@ -393,24 +513,38 @@ class DatasetService:
         summary_text = table_summary or description or f"{table_name} 테이블"
         table_embedding = embedding_service.generate_embedding(summary_text)
 
-        # 도메인 미지정 시 특징(요약 임베딩) 기반 자동 분류 (계획서 ②-1)
-        domain_confidence = None
-        if not domain:
-            from app.src.dataset.domain_classifier import DomainClassifier
-
-            domain, domain_confidence, scores = DomainClassifier(self.dataset_repo).classify(table_embedding)
-            logger.info(
-                f"[Dataset] '{table_name}' 도메인 자동 분류: {domain} "
-                f"(conf={domain_confidence}, scores={scores})"
-            )
-
         # 표시명: LLM 경로에서 자동 생성. 시드 경로(카탈로그 pull)는 table_name이 이미 한글 title
         display_name = ""
+        llm_domain = ""
         if seed_keywords:
             keywords, keywords_embedding = seed_keywords, self._embed_keywords(seed_keywords)
         else:
-            keywords, keywords_embedding, display_name = self._extract_keywords(
+            keywords, keywords_embedding, display_name, llm_domain = self._extract_keywords(
                 table_name, column_names, sample_records
+            )
+
+        domain_confidence = None
+        if not domain:
+            from app.src.dataset.domain_classifier import (
+                FALLBACK_DOMAIN,
+                STANDARD_DOMAINS,
+                DomainClassifier,
+            )
+
+            domain, domain_confidence, scores = DomainClassifier(self.dataset_repo).classify(
+                table_embedding, exclude_table_name=table_name
+            )
+            if domain == FALLBACK_DOMAIN:
+                llm_pick = (
+                    llm_domain
+                    if llm_domain in STANDARD_DOMAINS
+                    else self._select_domain_via_llm(table_name, summary_text, keywords)
+                )
+                if llm_pick:
+                    domain, domain_confidence = llm_pick, None
+            logger.info(
+                f"[Dataset] '{table_name}' 도메인 자동 분류: {domain} "
+                f"(conf={domain_confidence}, llm_domain={llm_domain or '-'}, scores={scores})"
             )
 
         return DatasetProfile(
@@ -435,27 +569,36 @@ class DatasetService:
         table_name: str,
         column_names: list[str],
         sample_records: list[dict[str, Any]],
-    ) -> tuple[list[str], list[float], str]:
-        """LLM으로 키워드·한국어 표시명 추출 후 (키워드, 평균 임베딩, 표시명) 반환."""
+    ) -> tuple[list[str], list[float], str, str]:
+        """LLM으로 키워드·표시명·도메인 추출 후 (키워드, 평균 임베딩, 표시명, 도메인) 반환.
+
+        도메인은 기존 등록 도메인 목록을 프롬프트에 제공해 표기 통일을 유도하고,
+        centroid 분류가 폴백될 때(콜드스타트 등)만 사용된다.
+        """
         import json
         try:
+            existing_domains = sorted({
+                d for d, _ in (self.dataset_repo.list_domain_embeddings() or []) if d and d != "general"
+            })
             variables = {
                 "table_name": table_name,
                 "columns": ", ".join(column_names),
                 "column_descriptions": ", ".join(column_names),
                 "sample_records": json.dumps(sample_records[:3], ensure_ascii=False),
+                "existing_domains": ", ".join(existing_domains),
             }
             result = LLMResponse("table_metadata_extraction").generate_llm_response(variables)
             if not isinstance(result, dict):
-                return [], [], ""
+                return [], [], "", ""
             keywords = result.get("keywords", [])
             display_name = (result.get("display_name") or "").strip()
+            llm_domain = (result.get("domain") or "").strip()
             if not keywords:
-                return [], [], display_name
-            return keywords, self._embed_keywords(keywords), display_name
+                return [], [], display_name, llm_domain
+            return keywords, self._embed_keywords(keywords), display_name, llm_domain
         except Exception as e:
             logger.warning(f"[Dataset] '{table_name}' 키워드 추출 실패: {e}")
-            return [], [], ""
+            return [], [], "", ""
 
     @staticmethod
     def _embed_keywords(keywords: list[str]) -> list[float]:
