@@ -1,7 +1,7 @@
 """관계 발굴을 위한 스키마 정의"""
 
 from pydantic import BaseModel, Field
-from openai import pydantic_function_tool
+from app.schemas.tool_utils import pydantic_function_tool
 
 
 class KeyImportance(BaseModel):

@@ -1,6 +1,6 @@
 from typing import Dict, List, Literal, Union, Any
 
-from openai import pydantic_function_tool
+from app.schemas.tool_utils import pydantic_function_tool
 from pydantic import BaseModel, Field
 DocumentRelationType = Literal[
     "SIMILAR_TO",  # 유사한 내용/주제
