@@ -25,7 +25,12 @@ from app.schemas.keyvalue_graph import (
     field_type_classification_tool,
     proper_noun_labeling_tool
 )
-from app.schemas.dataset import table_metadata_extraction_tool, table_relation_verification_tool
+from app.schemas.dataset import (
+    dataset_search_intent_tool,
+    domain_selection_tool,
+    table_metadata_extraction_tool,
+    table_relation_verification_tool,
+)
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 
 
@@ -45,6 +50,8 @@ class LLMResponse:
         "proper_noun_labeling": ("proper_noun_labeling", "production"),
         "table_relation_verification": ("table_relation_verification", "production"),
         "table_metadata_extraction": ("table_metadata_extraction", "production"),
+        "dataset_search_intent": ("dataset_search_intent", "production"),
+        "domain_selection": ("domain_selection", "production"),
     }
 
     def __init__(self, task: str):
@@ -120,6 +127,10 @@ class LLMResponse:
             tools = [table_relation_verification_tool]
         elif self.task == "table_metadata_extraction":
             tools = [table_metadata_extraction_tool]
+        elif self.task == "dataset_search_intent":
+            tools = [dataset_search_intent_tool]
+        elif self.task == "domain_selection":
+            tools = [domain_selection_tool]
         else:
             tools = []
 
