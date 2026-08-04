@@ -861,6 +861,12 @@ Key-Value 메타데이터:
 - 다른 테이블과 연결될 수 있는 개념어 우선 (예: "병원", "환자", "질환명")
 - 한국어로 작성
 
+## 3. domain
+테이블의 데이터 도메인을 분류하세요.
+- 현재 등록된 도메인 목록: [{existing_domains}]
+- **목록에 적합한 도메인이 있으면 반드시 그중에서 선택** (표기 통일 — 유사어로 새로 만들지 말 것)
+- 목록이 비어있거나 정말 맞는 것이 없을 때만 새 도메인을 제안 (한국어 명사, 공공데이터 분류체계 수준의 대분류: 보건의료, 교통및물류, 환경, 교육 등)
+
 # 출력
 반드시 extract_table_metadata function tool을 호출하세요.
 """
@@ -888,6 +894,57 @@ Key-Value 메타데이터:
 - KBS → 방송사 (없으면 기타)
 """
 
+    DOMAIN_SELECTION: str = """**반드시 select_domain tool을 사용하여 응답할 것.**
+
+당신은 데이터셋을 도메인 분류체계로 분류하는 전문가입니다.
+도메인의 목적은 여러 데이터셋을 같은 분야로 **묶는 것**입니다.
+
+# 임무
+데이터셋 메타데이터를 보고 가장 적합한 도메인 **하나**를 정하세요.
+
+## 기존 도메인
+{candidates}
+
+## 규칙
+1. 기존 도메인으로 분류할 수 있으면 **반드시 기존 도메인을 선택**하세요.
+   해석이 조금 넓어지더라도 기존 도메인 재사용이 우선입니다.
+2. 정말 어느 기존 도메인에도 속하지 않을 때만 새 도메인 이름을 제안하세요.
+   신설은 최후 수단이며 최대한 지양합니다.
+3. 새 도메인을 제안할 때는 이 데이터셋 하나가 아니라 같은 분야의 다른 데이터셋들도
+   담을 수 있는 **대분류 수준의 짧은 명사**여야 합니다 (예: "우주항공").
+   데이터셋 제목을 되풀이하거나 특정 데이터셋에만 맞는 이름은 금지합니다.
+
+# 데이터셋
+- 제목: {title}
+- 요약: {summary}
+- 키워드: {keywords}
+"""
+
+    DATASET_SEARCH_INTENT: str = """**반드시 extract_dataset_search_intent tool을 사용하여 응답할 것.**
+
+당신은 자연어 질의를 데이터셋 카탈로그 검색 질의로 변환하는 전문가입니다.
+
+# 임무
+사용자 질의에서 **찾으려는 데이터의 주제**를 추출하여 임베딩 검색용 구문으로 변환하세요.
+
+## 당신의 답변이 사용되는 방식 (중요!)
+1. search_query 를 임베딩하여 등록된 데이터셋의 **요약문(table_summary) 임베딩과 코사인 유사도 검색**을 수행합니다
+2. 따라서 search_query 는 질문·요청 형태가 아니라, **데이터셋 설명문과 닮은 서술형 명사구**여야 합니다
+
+예시:
+- 질의: "서울 지역 대형 병원의 장비 현황과 연결되는 데이터 찾아줘"
+  → search_query: "병원 의료장비 보유 현황 및 의료기관 기본정보", keywords: ["병원", "의료장비", "의료기관"]
+- 질의: "우리 회사 물류 데이터랑 같이 분석할만한 공공데이터 있어?"
+  → search_query: "화물 운송 물류 현황 및 교통 인프라 정보", keywords: ["물류", "화물운송", "교통"]
+
+## 규칙
+- 지시·요청 표현("찾아줘", "연계 가능한", "~할만한", "데이터") 은 제거
+- 핵심 주제 개념은 유지하고, 데이터셋 설명에 쓰일 법한 동의어·상위어로 보강
+- search_query 는 한국어 한 문장(명사구) 이내로 간결하게
+
+사용자 질의: {query}
+"""
+
     @classmethod
     def get_prompt(cls, task: str) -> str:
         """Get fallback prompt by task name."""
@@ -903,6 +960,8 @@ Key-Value 메타데이터:
             "proper_noun_labeling": cls.PROPER_NOUN_LABELING,
             "table_relation_verification": cls.TABLE_RELATION_VERIFICATION,
             "table_metadata_extraction": cls.TABLE_METADATA_EXTRACTION,
+            "dataset_search_intent": cls.DATASET_SEARCH_INTENT,
+            "domain_selection": cls.DOMAIN_SELECTION,
         }
 
         if task not in prompt_map:
