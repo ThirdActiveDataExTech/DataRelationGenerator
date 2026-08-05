@@ -22,7 +22,7 @@ from app.schemas.response import APIResponseModel
 from app.src.dataset.dataset_service import dataset_service
 from app.src.dataset.relation_pipeline import relation_pipeline
 
-router = APIRouter(prefix="/dataset", tags=["dataset"])
+router = APIRouter(prefix="/dataset")
 logger = logging.getLogger(__name__)
 
 # job 상태는 SQLite(job_store)에 영속화 — 재시작에도 폴링 API가 상태 유지 (DAG 자동 트리거 전제)
@@ -149,6 +149,7 @@ def _run_pipeline_sync(job_id: str, request: RunRelationPipelineRequest) -> None
 
 @router.post(
     "/ingest",
+    tags=["Datasets"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="테이블 메타데이터 추출 및 Neptune/OpenSearch 적재",
@@ -202,6 +203,7 @@ async def ingest_dataset(
 
 @router.post(
     "/ingest_json",
+    tags=["Datasets"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="JSON 바디로 테이블 메타데이터 적재",
@@ -231,6 +233,7 @@ async def ingest_dataset_json(
 
 @router.post(
     "/ingest_from_catalog",
+    tags=["Catalog"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="① 통합 카탈로그 엔트리를 pull 하여 데이터셋 등록",
@@ -278,6 +281,7 @@ async def ingest_dataset_from_catalog(request: IngestFromCatalogRequest):
 
 @router.post(
     "/relation",
+    tags=["Relations"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="테이블 간 관계 Neptune 저장",
@@ -306,6 +310,7 @@ async def save_relation(relation: DatasetRelation):
 
 @router.post(
     "/relation/decision",
+    tags=["Catalog"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="① 승인 워크플로우 결정 콜백 (내부 API)",
@@ -342,6 +347,7 @@ async def apply_relation_decision(request: RelationDecisionRequest):
 
 @router.post(
     "/search",
+    tags=["Search"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="쿼리로 유사 테이블 검색 (KNN)",
@@ -371,6 +377,7 @@ async def search_datasets(request: DatasetSearchRequest):
 
 @router.post(
     "/nl_search",
+    tags=["Search"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="자연어 검색 + 그래프 시각화용 부분 그래프 반환 (§9)",
@@ -401,6 +408,7 @@ async def nl_search(
 
 @router.get(
     "/{table_name}/related",
+    tags=["Search"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="기준 데이터셋의 연계 가능 데이터셋 검색 (기존 관계 + KNN 후보)",
@@ -430,6 +438,7 @@ async def related_datasets(
 
 @router.post(
     "/{table_name}/build-graph",
+    tags=["KeyValue Graph"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="등록된 데이터셋의 KV 그래프 생성 (재업로드 없이)",
@@ -455,6 +464,7 @@ async def build_dataset_graph(table_name: str):
 
 @router.get(
     "/build-graph/{job_id}",
+    tags=["KeyValue Graph"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="KV 그래프 생성 작업 상태 조회",
@@ -469,6 +479,7 @@ async def get_build_graph_status(job_id: str):
 
 @router.post(
     "/subgraph",
+    tags=["Search"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="데이터셋 1-hop 부분 그래프 조회 (노드 확장용, §9)",
@@ -486,6 +497,7 @@ async def get_subgraph(
 
 @router.get(
     "/list",
+    tags=["Datasets"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="등록된 Dataset 목록 조회",
@@ -519,6 +531,7 @@ async def list_datasets():
 
 @router.post(
     "/relation/pipeline",
+    tags=["Relations"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="3-Tier 관계 생성 파이프라인 비동기 실행",
@@ -551,6 +564,7 @@ async def run_relation_pipeline(request: RunRelationPipelineRequest):
 
 @router.get(
     "/relation/pipeline/{job_id}",
+    tags=["Relations"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="파이프라인 실행 상태 조회",
@@ -565,6 +579,7 @@ async def get_pipeline_status(job_id: str):
 
 @router.post(
     "/sync_from_catalog",
+    tags=["Catalog"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="① 카탈로그 갱신분 동기화 + 관계 파이프라인 증분 실행 (액티브 루프 1회)",
@@ -606,6 +621,7 @@ async def sync_from_catalog(
 
 @router.get(
     "/sync_from_catalog/{job_id}",
+    tags=["Catalog"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="카탈로그 동기화 작업 상태 조회",
@@ -620,6 +636,7 @@ async def get_sync_from_catalog_status(job_id: str):
 
 @router.get(
     "/sync-status",
+    tags=["Datasets"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="OpenSearch ↔ Neptune Dataset 노드 동기화 상태 확인",
@@ -672,6 +689,7 @@ async def get_sync_status():
 
 @router.get(
     "/relations",
+    tags=["Relations"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="Neptune에 저장된 관계 목록 조회",
@@ -729,6 +747,7 @@ async def list_relations():
 
 @router.get(
     "/stats",
+    tags=["Datasets"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="데이터셋 현황 요약",
@@ -782,6 +801,7 @@ async def get_stats():
 
 @router.delete(
     "/{table_name}",
+    tags=["Datasets"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
     summary="Dataset 삭제",

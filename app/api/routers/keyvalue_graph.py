@@ -1,97 +1,26 @@
 import json
 import logging
-from datetime import datetime
 from typing import Annotated
-from uuid import uuid4
 
 from fastapi import APIRouter, Body, UploadFile, File
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
 
 from app.schemas.response import APIResponseModel
 from app.src.keyvalue_graph.clustering_normalizer import ClusteringNormalizer
-from app.src.keyvalue_graph.data_loader import DataRecord
-from app.src.keyvalue_graph.neptune_graph_builder import NeptuneGraphBuilder
 from app.src.keyvalue_graph.llm_based_loader import LLMBasedKeyValueLoader
-from app.src.keyvalue_graph.rdf_graph_builder import RdfGraphBuilder
 from app.src.keyvalue_graph.relation_candidate_finder import RelationCandidateFinder
 from app.src.keyvalue_graph.schema_analyzer import SchemaAnalyzer
 
-router = APIRouter(prefix="/keyvalue", tags=["keyvalue-graph"])
+router = APIRouter(prefix="/keyvalue", tags=["KeyValue Graph"])
 logger = logging.getLogger(__name__)
 
 
-# ===== 온디맨드 관계 워크플로우 =====
-
-
-class RelationProposal(BaseModel):
-    """관계 제안 모델"""
-
-    proposal_id: str = Field(description="제안 ID (UUID)")
-    source_doc_id: str = Field(description="출발 문서 ID")
-    target_doc_id: str = Field(description="도착 문서 ID")
-    relation_type: str = Field(description="관계 타입")
-    confidence: float = Field(ge=0.0, le=1.0, description="신뢰도 (0~1)")
-    reason: str = Field(description="관계 추론 근거")
-    approved: bool = Field(default=False, description="승인 여부")
-
-
-# ===== [TMP] 임시 승인 저장소 (테스트용) =====
-# NOTE: 승인 워크플로우는 별도 시스템에서 개발 예정
-# 현재 구현은 API 테스트 목적으로만 사용
-# TODO: 실제 승인 시스템과 연동 시 이 부분 제거
-pending_proposals: dict[str, RelationProposal] = {}
-
-
-@router.post("/extract", tags=["keyvalue-graph"], response_model=APIResponseModel, response_class=JSONResponse)
-async def extract_key_value_and_build_graph(
-        data: Annotated[str, Body(embed=True)],
-        centrality_name: Annotated[str, Body(embed=True)] = "병원현황"
-):
-    """데이터에서 LLM으로 Key-Value를 추출하고 그래프 생성.
-
-    Args:
-        data: 원본 데이터 (JSON 문자열)
-        centrality_name: 중심 노드 이름 (예: "병원현황", "판례정보")
-
-    Flow:
-        1. LLM으로 Key-Value 추출 (원본 필드명)
-        2. 한글 매핑 (FIELD_NAME_MAPPING)
-        3. GraphDB에 저장:
-           - Centrality 노드 (중심 노드)
-           - Document 노드
-           - Key 노드 (한글)
-           - Value 노드
-           - NormalizedValue 노드
-           - Centrality -[HAS_KEY]-> Key
-           - Key -[HAS_VALUE]-> Value
-           - Value -[EXTRACTED_FROM]-> Document
-           - Value -[SAME_AS]-> NormalizedValue
-
-    Returns:
-        그래프 생성 결과
-    """
-    loader = LLMBasedKeyValueLoader()
-    result = loader.extract_and_build_graph(
-        data.strip(),
-        centrality_name=centrality_name,
-        source_file="api_request",
-        record_index=0
-    )
-
-    if result["success"]:
-        return APIResponseModel(
-            result=result,
-            description=f"Key-Value 그래프 생성 완료 (Centrality: {centrality_name}, Document ID: {result['document_id']})"
-        )
-    else:
-        return APIResponseModel(
-            result=result,
-            description=f"Key-Value 그래프 생성 실패: {result.get('error', 'Unknown error')}"
-        )
-
-
-@router.post("/batch_extract", tags=["keyvalue-graph"], response_model=APIResponseModel, response_class=JSONResponse)
+@router.post(
+    "/batch_extract",
+    summary="레코드 배치 Key-Value 추출 및 그래프 생성",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+)
 async def batch_extract_key_value_from_json(
         file: Annotated[UploadFile, File()],
         centrality_name: str = "병원현황",
@@ -110,8 +39,6 @@ async def batch_extract_key_value_from_json(
     Returns:
         배치 처리 결과 (성공/실패 통계)
     """
-    import json
-
     content = await file.read()
     data_list = json.loads(content.decode("utf-8"))
 
@@ -259,7 +186,12 @@ async def batch_extract_key_value_from_json(
     )
 
 
-@router.post("/normalize", tags=["keyvalue-graph"], response_model=APIResponseModel, response_class=JSONResponse)
+@router.post(
+    "/normalize",
+    summary="클러스터링 기반 Value 자동 정규화",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+)
 async def normalize_key_values(
         key_name: Annotated[str | None, Body(embed=True)] = None,
         similarity_threshold: Annotated[float, Body(embed=True)] = 0.85,
@@ -310,7 +242,12 @@ async def normalize_key_values(
         )
 
 
-@router.post("/analyze_schema", tags=["keyvalue-graph"], response_model=APIResponseModel, response_class=JSONResponse)
+@router.post(
+    "/analyze_schema",
+    summary="데이터 스키마 자동 분석 (LLM)",
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+)
 async def analyze_data_schema(
         file: Annotated[UploadFile, File()],
         sample_size: Annotated[int, Body(embed=True)] = 5
@@ -328,25 +265,7 @@ async def analyze_data_schema(
         2. 샘플링 (균등 분포)
         3. 필드별 통계 수집 (unique 개수, null 비율, 샘플 값)
         4. LLM으로 스키마 추론 (도메인, 필드 한글명, 데이터 타입)
-
-    Returns:
-        {
-            "domain": "법률",
-            "centrality_name": "판례정보",
-            "fields": {
-                "CASE_NO": {
-                    "korean_name": "사건번호",
-                    "description": "법원 사건 고유 번호",
-                    "data_type": "text"
-                },
-                ...
-            },
-            "confidence": 0.95
-        }
     """
-    import json
-
-    # 파일 읽기
     content = await file.read()
     data_list = json.loads(content.decode("utf-8"))
 
@@ -398,98 +317,9 @@ async def analyze_data_schema(
     )
 
 
-# ===== RDF (JSON-LD) 엔드포인트 =====
-
-
-@router.post(
-    "/rdf/extract",
-    tags=["keyvalue-graph"],
-    summary="단건 Key-Value 추출 후 RDF(JSON-LD) 변환",
-    response_model=APIResponseModel,
-    response_class=JSONResponse,
-)
-async def extract_key_value_as_rdf(
-    data: Annotated[str, Body(embed=True, description="원본 데이터 (JSON 문자열)")],
-    centrality_name: Annotated[
-        str, Body(embed=True, description="중심 노드 이름 (예: '병원현황', '판례정보')")
-    ] = "병원현황",
-    namespace: Annotated[str | None, Body(embed=True, description="RDF 네임스페이스 URI (미지정 시 config 기본값)")] = None,
-    namespace_prefix: Annotated[
-        str | None, Body(embed=True, description="RDF 네임스페이스 접두사 (미지정 시 config 기본값)")
-    ] = None,
-):
-    """데이터에서 Key-Value를 추출하고 RDF(JSON-LD)로 변환."""
-    raw_data = json.loads(data.strip())
-    record = DataRecord(source_file="api_request", record_index=0, raw_data=raw_data)
-    record.extract_key_values()
-
-    rdf_kwargs = {k: v for k, v in {"namespace": namespace, "namespace_prefix": namespace_prefix}.items() if v is not None}
-    builder = RdfGraphBuilder(**rdf_kwargs)
-    result = builder.build_from_record(record, centrality_name=centrality_name)
-
-    if result.success:
-        return APIResponseModel(
-            result={"document_id": result.document_id, "json_ld": result.json_ld},
-            description=f"RDF(JSON-LD) 변환 완료 (Centrality: {centrality_name}, Document ID: {result.document_id})",
-        )
-    else:
-        return APIResponseModel(
-            result={"document_id": result.document_id, "error": result.message},
-            description=f"RDF 변환 실패: {result.message}",
-        )
-
-
-@router.post(
-    "/rdf/batch_extract",
-    tags=["keyvalue-graph"],
-    summary="배치 Key-Value 추출 후 RDF(JSON-LD) 변환",
-    response_model=APIResponseModel,
-    response_class=JSONResponse,
-)
-async def batch_extract_as_rdf(
-    file: Annotated[UploadFile, File(description="JSON 배열 파일 [{...}, {...}, ...]")],
-    centrality_name: Annotated[str, Body(description="중심 노드 이름")] = "병원현황",
-    namespace: Annotated[str | None, Body(description="RDF 네임스페이스 URI (미지정 시 config 기본값)")] = None,
-    namespace_prefix: Annotated[str | None, Body(description="RDF 네임스페이스 접두사 (미지정 시 config 기본값)")] = None,
-):
-    """JSON 배열 파일에서 Key-Value를 추출하고 RDF(JSON-LD)로 배치 변환."""
-
-    content = await file.read()
-    data_list = json.loads(content.decode("utf-8"))
-
-    if not isinstance(data_list, list):
-        data_list = [data_list]
-
-    rdf_kwargs = {k: v for k, v in {"namespace": namespace, "namespace_prefix": namespace_prefix}.items() if v is not None}
-    builder = RdfGraphBuilder(**rdf_kwargs)
-    records = []
-    for idx, raw_data in enumerate(data_list):
-        record = DataRecord(
-            source_file=file.filename or "batch_upload",
-            record_index=idx,
-            raw_data=raw_data,
-        )
-        record.extract_key_values()
-        records.append(record)
-
-    batch_result = builder.build_batch(records, centrality_name=centrality_name)
-
-    return APIResponseModel(
-        result=batch_result,
-        description=(
-            f"RDF 배치 변환 완료 (Centrality: {centrality_name}): "
-            f"{batch_result['success']}건 성공, {batch_result['failed']}건 실패"
-        ),
-    )
-
-
-# ===== 온디맨드 관계 워크플로우 엔드포인트 =====
-
-
 @router.post(
     "/discover_relation_candidates",
-    tags=["keyvalue-graph"],
-    summary="관계 후보 Document 발굴 (추천)",
+    summary="레코드 간 관계 후보 발굴 (Level 2, 온디맨드)",
     response_model=APIResponseModel,
     response_class=JSONResponse,
 )
@@ -508,20 +338,6 @@ async def discover_relation_candidates(
     Args:
         source_doc_id: 기준 Document ID
         top_k: 반환할 후보 개수 (기본 10개)
-
-    Returns:
-        {
-            "candidates": [
-                {
-                    "doc_id": "xxx_0002",
-                    "score": 0.85,
-                    "common_keys": ["지역", "병원규모"],
-                    "common_values": {"지역": "서울", "병원규모": "대형"}
-                },
-                ...
-            ],
-            "search_strategy": "같은 지역의 대형병원 찾기"
-        }
     """
     from app.config import settings
     from app.repositories.opensearch_repository import get_opensearch_repository
@@ -609,165 +425,4 @@ async def discover_relation_candidates(
     return APIResponseModel(
         result=result_payload,
         description=f"관계 후보 {len(candidates)}개 발견 (전략: {search_strategy})",
-    )
-
-
-@router.post(
-    "/propose_relation",
-    tags=["keyvalue-graph"],
-    summary="[Legacy] 두 데이터 간 관계 제안",
-    response_model=APIResponseModel,
-    response_class=JSONResponse,
-)
-async def propose_relation(
-    source_doc_id: Annotated[str, Body(embed=True, description="출발 문서 ID")],
-    target_doc_id: Annotated[str, Body(embed=True, description="도착 문서 ID")],
-):
-    """두 Document 간 관계 분석 및 제안 (§8.5)
-
-    두 레코드의 공유 Key를 타입별로 비교하여 종합 점수와 Level 2 관계 유형
-    (SAME_AS / RELATED_TO / REFERENCES)을 산출하고 사용자 검토용 제안을 생성합니다.
-    제안은 승인 전까지 임시 보관되며, approve_relation 으로 수락 시 Neptune에 영구 저장됩니다.
-
-    Args:
-        source_doc_id: 출발 문서 ID (예: "hospital_info_0001")
-        target_doc_id: 도착 문서 ID (예: "patient_info_0002")
-
-    Returns:
-        RelationProposal (사용자 검토용)
-    """
-    finder = RelationCandidateFinder()
-    candidate = finder.score_pair(source_doc_id, target_doc_id)
-
-    if candidate is None:
-        return APIResponseModel(
-            result={"error": "두 문서 간 공통 Key가 없어 관계를 산출할 수 없습니다"},
-            description=f"관계 제안 실패: '{source_doc_id}' ↔ '{target_doc_id}' 공통 Key 없음",
-        )
-
-    proposal_id = str(uuid4())
-    reason = (
-        f"공통 Key {candidate.matched_keys} 기반 비교 — "
-        f"정렬 {candidate.aligned_attribute_score:.2f}, 값 일치 {candidate.typed_value_match_score:.2f}"
-    )
-    proposal = RelationProposal(
-        proposal_id=proposal_id,
-        source_doc_id=source_doc_id,
-        target_doc_id=target_doc_id,
-        relation_type=candidate.relation_type,
-        confidence=round(candidate.final_score, 3),
-        reason=reason,
-        approved=False,
-    )
-    pending_proposals[proposal_id] = proposal
-
-    logger.info(
-        f"관계 제안 생성: {source_doc_id} -> {target_doc_id} "
-        f"({candidate.relation_type}, score={candidate.final_score:.3f}, ID={proposal_id})"
-    )
-
-    return APIResponseModel(
-        result={**proposal.model_dump(), "breakdown": candidate.to_dict()["breakdown"],
-                "matched_values": candidate.matched_values},
-        description=f"관계 제안 완료 (ID: {proposal_id}): {candidate.relation_type} (score={candidate.final_score:.3f})",
-    )
-
-
-@router.post(
-    "/approve_relation",
-    tags=["keyvalue-graph"],
-    summary="[TMP] 관계 승인 및 저장 (테스트용)",
-    response_model=APIResponseModel,
-    response_class=JSONResponse,
-)
-async def approve_relation(
-    proposal_id: Annotated[str, Body(embed=True, description="제안 ID")],
-    approved: Annotated[bool, Body(embed=True, description="승인 여부")],
-):
-    """[TMP] 관계 제안 승인 및 그래프DB 저장 (테스트용)
-
-    NOTE: 승인 워크플로우는 별도 시스템에서 개발 예정
-    현재 구현은 온디맨드 관계 저장 기능을 테스트하기 위한 임시 엔드포인트
-
-    Args:
-        proposal_id: 제안 ID (propose_relation에서 반환)
-        approved: 승인 여부 (True: 저장, False: 거부)
-
-    Returns:
-        저장 결과
-
-    TODO: 실제 승인 시스템과 연동 시 이 엔드포인트 제거 또는 통합
-    """
-    # 1. 임시 저장소에서 제안 조회
-    if proposal_id not in pending_proposals:
-        return APIResponseModel(
-            result={"error": "제안을 찾을 수 없습니다"},
-            description=f"승인 실패: 제안 ID '{proposal_id}'를 찾을 수 없습니다",
-        )
-
-    proposal = pending_proposals[proposal_id]
-
-    # 2. 승인 여부 확인
-    if not approved:
-        # 거부: 임시 저장소에서 제거
-        del pending_proposals[proposal_id]
-        logger.info(f"관계 제안 거부: {proposal.source_doc_id} -> {proposal.target_doc_id}")
-        return APIResponseModel(
-            result={"approved": False, "proposal_id": proposal_id},
-            description="관계 제안이 거부되었습니다",
-        )
-
-    # 3. 승인: Neptune에 Level 2 관계를 RDF Reification 으로 영구 저장 (§8.5)
-    from app.repositories.graph_repository import GraphRepository
-
-    proposal.approved = True
-    try:
-        graph_repo = GraphRepository()
-        rel_id = graph_repo.create_document_relation(
-            source_doc_id=proposal.source_doc_id,
-            target_doc_id=proposal.target_doc_id,
-            relation_type=proposal.relation_type,
-            score=proposal.confidence,
-            method="llm",
-            reason=proposal.reason,
-        )
-    except Exception as e:
-        logger.error(f"관계 저장 실패: {e}")
-        return APIResponseModel(
-            result={"success": False, "error": str(e)},
-            description=f"관계 저장 실패: {e}",
-        )
-
-    # 저장 성공 시 임시 저장소에서 제거
-    del pending_proposals[proposal_id]
-    logger.info(f"관계 저장 완료: {proposal.source_doc_id} -> {proposal.target_doc_id} ({proposal.relation_type})")
-    return APIResponseModel(
-        result={"success": True, "relation_id": rel_id, "relation_type": proposal.relation_type},
-        description=f"관계 저장 완료 (ID: {rel_id}): {proposal.relation_type}",
-    )
-
-
-@router.get(
-    "/pending_proposals",
-    tags=["keyvalue-graph"],
-    summary="[TMP] 승인 대기 중인 관계 목록 (테스트용)",
-    response_model=APIResponseModel,
-    response_class=JSONResponse,
-)
-async def get_pending_proposals():
-    """[TMP] 승인 대기 중인 관계 제안 목록 조회 (테스트용)
-
-    NOTE: 승인 워크플로우는 별도 시스템에서 개발 예정
-    현재 구현은 테스트 목적으로만 사용
-
-    Returns:
-        RelationProposal 리스트
-
-    TODO: 실제 승인 시스템과 연동 시 이 엔드포인트 제거
-    """
-    proposals_list = [p.model_dump() for p in pending_proposals.values()]
-
-    return APIResponseModel(
-        result={"proposals": proposals_list, "count": len(proposals_list)},
-        description=f"승인 대기 중인 관계 {len(proposals_list)}건",
     )
