@@ -6,18 +6,11 @@ from langfuse.model import PromptClient
 from openai import APIError
 
 from app.config import langfuse_handler
-from app.constants import (
-    DOCUMENT_RELATION_INFERENCE_PROMPT_NAME,
-    DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL
-)
 from app.dependencies import chatopenai_client, get_langfuse_prompt
 from app.exceptions.base import ApplicationError
 from app.schemas.meta import (
-    document_relation_tool,
-    document_relevance_tool,
     key_value_extraction_tool,
     cluster_normalization_tool,
-    query_key_inference_tool
 )
 from app.schemas.relation_discovery import relation_search_condition_tool
 from app.schemas.schema_analysis import schema_analysis_tool
@@ -25,35 +18,39 @@ from app.schemas.keyvalue_graph import (
     field_type_classification_tool,
     proper_noun_labeling_tool
 )
-from app.schemas.dataset import table_metadata_extraction_tool, table_relation_verification_tool
+from app.schemas.dataset import (
+    dataset_search_intent_tool,
+    domain_selection_tool,
+    table_metadata_extraction_tool,
+    table_relation_verification_tool,
+)
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 
 
 class LLMResponse:
     """LLM 응답 처리 클래스 - 메타데이터 추출용"""
 
-    PROMPT_CONFIG = {
-        "document_relation_inference": (
-            DOCUMENT_RELATION_INFERENCE_PROMPT_NAME, DOCUMENT_RELATION_INFERENCE_PROMPT_LABEL),
-        "document_relevance_verification": ("document_relevance_verification", "production"),
-        "key_value_extract": ("key_value_extract", "production"),
-        "cluster_normalize": ("cluster_normalize", "production"),
-        "schema_analysis": ("schema_analysis", "production"),
-        "query_key_inference": ("query_key_inference", "production"),
-        "relation_key_analysis": ("relation_key_analysis", "production"),
-        "field_type_classification": ("field_type_classification", "production"),
-        "proper_noun_labeling": ("proper_noun_labeling", "production"),
-        "table_relation_verification": ("table_relation_verification", "production"),
-        "table_metadata_extraction": ("table_metadata_extraction", "production"),
+    PROMPT_LABEL = "production"
+
+    # task 이름 == Langfuse 프롬프트 이름. 각 task 가 사용할 function tool 매핑.
+    TASK_TOOLS = {
+        "key_value_extract": key_value_extraction_tool,
+        "cluster_normalize": cluster_normalization_tool,
+        "schema_analysis": schema_analysis_tool,
+        "relation_key_analysis": relation_search_condition_tool,
+        "field_type_classification": field_type_classification_tool,
+        "proper_noun_labeling": proper_noun_labeling_tool,
+        "table_relation_verification": table_relation_verification_tool,
+        "table_metadata_extraction": table_metadata_extraction_tool,
+        "dataset_search_intent": dataset_search_intent_tool,
+        "domain_selection": domain_selection_tool,
     }
 
     def __init__(self, task: str):
         """Init 매서드"""
-        self.task = task
-        config = self.PROMPT_CONFIG.get(task)
-        if config is None:
+        if task not in self.TASK_TOOLS:
             raise ValueError(f"Unknown task: {task}")
-        self.prompt_name, self.prompt_label = config
+        self.task = task
 
     def generate_llm_response(self, variables: Any) -> Dict[str, Any]:
         """통합 LLM 응답 처리"""
@@ -90,7 +87,7 @@ class LLMResponse:
 
     def _get_prompt(self) -> Union[PromptClient, str]:
         """통합 프롬프트 가져오기 - Langfuse 실패 시 폴백 프롬프트 반환"""
-        prompt = get_langfuse_prompt(prompt_name=self.prompt_name, prompt_label=self.prompt_label)
+        prompt = get_langfuse_prompt(prompt_name=self.task, prompt_label=self.PROMPT_LABEL)
         if prompt is None:
             logging.warning(f"LLM Response: {self.task} 프롬프트 폴백")
             prompt = FallbackPrompts.get_prompt(self.task)
@@ -98,32 +95,7 @@ class LLMResponse:
 
     def _invoke_llm_unified(self, compiled_prompt: str) -> Any:
         """통합 LLM 호출"""
-        if self.task == "document_relation_inference":
-            tools = [document_relation_tool]
-        elif self.task == "document_relevance_verification":
-            tools = [document_relevance_tool]
-        elif self.task == "key_value_extract":
-            tools = [key_value_extraction_tool]
-        elif self.task == "cluster_normalize":
-            tools = [cluster_normalization_tool]
-        elif self.task == "schema_analysis":
-            tools = [schema_analysis_tool]
-        elif self.task == "query_key_inference":
-            tools = [query_key_inference_tool]
-        elif self.task == "relation_key_analysis":
-            tools = [relation_search_condition_tool]
-        elif self.task == "field_type_classification":
-            tools = [field_type_classification_tool]
-        elif self.task == "proper_noun_labeling":
-            tools = [proper_noun_labeling_tool]
-        elif self.task == "table_relation_verification":
-            tools = [table_relation_verification_tool]
-        elif self.task == "table_metadata_extraction":
-            tools = [table_metadata_extraction_tool]
-        else:
-            tools = []
-
-        llm = chatopenai_client.bind_tools(tools)
+        llm = chatopenai_client.bind_tools([self.TASK_TOOLS[self.task]])
         for attempt in range(2):
             try:
                 return llm.invoke(

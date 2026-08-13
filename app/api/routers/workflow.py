@@ -11,7 +11,7 @@ from app.src.keyvalue_graph.schema_analyzer import SchemaAnalyzer
 from app.src.keyvalue_graph.llm_based_loader import LLMBasedKeyValueLoader
 from app.src.keyvalue_graph.clustering_normalizer import ClusteringNormalizer
 
-router = APIRouter(prefix="/workflow", tags=["workflow"])
+router = APIRouter(prefix="/workflow", tags=["KeyValue Graph"])
 logger = logging.getLogger(__name__)
 
 
@@ -189,7 +189,7 @@ async def workflow_stream(
         })
 
 
-@router.post("/execute")
+@router.post("/execute", summary="파일 업로드 → KV 그래프 워크플로우 실행 (SSE)")
 async def execute_workflow(
     file: Annotated[UploadFile, File()],
     auto_detect_schema: Annotated[bool, Form()] = True,
