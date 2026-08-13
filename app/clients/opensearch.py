@@ -4,6 +4,7 @@ import logging
 import uuid
 from typing import Optional
 from opensearchpy import OpenSearch
+from opensearchpy.exceptions import NotFoundError
 
 from app.config import settings
 from app.exceptions.service import ApplicationError
@@ -151,6 +152,10 @@ class OpenSearchClient:
                 body=body
             )
             return response
+        except NotFoundError:
+            # 지연 생성 인덱스(KV 그래프 등)가 아직 없는 정상 상태 — 빈 결과로 처리
+            logger.debug(f"인덱스 미존재 — 빈 결과 반환: {index}")
+            return {"hits": {"hits": [], "total": {"value": 0}}}
         except Exception as e:
             logger.error(f"문서 검색 실패: {e}")
             raise ApplicationError(

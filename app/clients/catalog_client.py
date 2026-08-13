@@ -128,7 +128,9 @@ def ingest_args_from_entry(
         keyword + theme → keywords (시드 키워드, LLM 추출 대체)
         publisher       → provider (제공 기관)
         landing_page/access_url → landing_page (수집 단계 원본 제공처 링크)
-        domain          → 미지정 시 빈 값 → ingest_table 의 특징 기반 자동 분류에 위임
+        domain          → 명시 재정의만 사용. 미지정 시 빈 값 → 특징 기반 자동 분류
+                          (소스별 theme 어휘는 도메인 라벨로 쓰지 않는다 — 그룹핑 목적상
+                          표준 분류체계로 수렴시켜야 하며, theme 은 keywords 신호로만 사용)
         party           → 기본 3rd (카탈로그 개방 데이터)
     """
     identifier = entry.get("identifier", "")

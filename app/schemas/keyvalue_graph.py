@@ -173,7 +173,7 @@ class FieldTypeClassification(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0, description="분류 신뢰도 (0.0~1.0)")
 
 
-from openai import pydantic_function_tool
+from app.schemas.tool_utils import pydantic_function_tool
 
 field_type_classification_tool = pydantic_function_tool(
     FieldTypeClassification,

@@ -1,10 +1,10 @@
 # Docstrings
 
-## Heroes Schema
-::: app.schemas.heroes
+## Dataset Schema
+::: app.schemas.dataset
 
-## Heroes Interface
-::: app.src.heroes.hero_repository
+## Dataset Repository
+::: app.repositories.dataset_repository
 
-## Heroes Service
-::: app.src.heroes.hero_service
+## Dataset Service
+::: app.src.dataset.dataset_service

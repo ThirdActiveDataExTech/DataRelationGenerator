@@ -444,10 +444,12 @@ class RelationPipeline:
             logger.info(f"[Tier3] {pair}: 데이터 근거 없음 (evidence_type={evidence_type}), 저장 제외")
             return False
 
-        # LLM이 공통 키를 주장하지만 규칙 엔진(Tier1)이 공통 컬럼을 찾지 못한 경우 → 환각
         if evidence_type == "shared_key" and tier1_common_columns == 0:
-            logger.info(f"[Tier3] {pair}: shared_key 주장이나 공통 컬럼 없음 (환각), 저장 제외")
-            return False
+            if a.column_names and b.column_names:
+                logger.info(f"[Tier3] {pair}: shared_key 주장이나 공통 컬럼 없음 (환각), 저장 제외")
+                return False
+            result["evidence_type"] = "same_entity"
+            logger.info(f"[Tier3] {pair}: 메타데이터-only — shared_key 검증 불가, same_entity로 강등")
 
         # 지식·콘텐츠성 데이터끼리의 값·주제 중첩은 관계로 보지 않음.
         # 예외: LLM이 동종 병렬 데이터셋으로 판정했거나 Tier1 공통 컬럼이 2개 이상
