@@ -11,6 +11,7 @@ from fastapi import APIRouter, Body, UploadFile, File
 from fastapi.responses import JSONResponse
 
 from app.schemas.dataset import (
+    migrate_stored_type,
     DatasetIngestRequest,
     DatasetRelation,
     DatasetSearchRequest,
@@ -267,14 +268,23 @@ async def ingest_dataset_from_catalog(request: IngestFromCatalogRequest):
         domain=request.domain or None,
         party=request.party,
     )
-    profile = dataset_service.ingest_table(records=request.records or [], **args)
+
+    records = request.records or []
+    raw_key = ""
+    if not records:
+        from app.src.dataset.data_fetcher import fetch_and_store
+
+        records, raw_key = fetch_and_store(entry.get("access_url") or "", args["table_name"])
+
+    profile = dataset_service.ingest_table(records=records, raw_storage_key=raw_key, **args)
 
     return APIResponseModel(
         result=profile.model_dump(exclude={"table_embedding", "keywords_embedding"}),
         description=(
             f"카탈로그 엔트리(identifier={args['catalog_identifier']}) → "
             f"Dataset '{profile.table_name}' 등록 완료"
-            + ("" if request.records else " (메타데이터-only)")
+            + ("" if records else " (메타데이터-only)")
+            + (f" (access_url 실데이터 {len(records)}건 수집)" if raw_key else "")
         ),
     )
 
@@ -402,6 +412,7 @@ async def nl_search(
             f"'{query}' → 의도='{result['intent']}', "
             f"데이터셋 {len(result['datasets'])}개, "
             f"노드 {len(result['graph']['nodes'])}개 / 엣지 {len(result['graph']['edges'])}개"
+            + ("" if result["answer"] else " (답변 생성 실패)")
         ),
     )
 
@@ -731,7 +742,7 @@ async def list_relations():
                 "catalog_identifier_b": b.get("catalogIdB", {}).get("value", ""),
                 "score": float(b["score"]["value"]),
                 "method": b["method"]["value"],
-                "relation_type": b["relationType"]["value"],
+                "relation_type": migrate_stored_type(b["relationType"]["value"]),
                 "created_at": b["createdAt"]["value"],
             }
             for b in bindings
