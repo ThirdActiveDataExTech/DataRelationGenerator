@@ -16,6 +16,7 @@ class FetchedData:
     """access_url 수집 결과 — 파싱된 레코드와 원본 보관용 바이트."""
 
     def __init__(self, records: list[dict], content: bytes, filename: str):
+        """Access url 수집 결과 초기화."""
         self.records = records
         self.content = content
         self.filename = filename
