@@ -9,39 +9,140 @@ from pydantic import BaseModel, Field
 
 
 class Level1RelationType(str, Enum):
-    """Level 1 (데이터셋 간) 관계 유형 — "최소 필수" 3종 (§7.4, §10.1).
+    """데이터셋 간 관계 유형 4종 (관계 유형 정의서 0항).
 
-    - JOINABLE: 공통 키/식별자로 직접 결합 가능 (주로 rule/Tier1)
-    - SEMANTICALLY_RELATED: 같은 주제·도메인을 다루어 함께 분석할 가치 (embedding/llm)
-    - COMPLEMENTARY: 한쪽이 다른 쪽을 보강·확장 (llm)
+    - DETAIL_FOR: 같은 개체에 앵커가 갖지 않은 속성을 공급
+    - STATISTIC_FOR: 다른 입도의 집계·지수로 앵커 값에 맥락을 제공
+    - ADJACENT_TO: 같은 맥락의 다른 개체 (대체재·다음 단계·주제 인접)
+    - SAME_KIND: 같은 표준을 따르는 다른 지역·유형·판본
 
-    도메인별 세분 유형은 relation_type 문자열의 하위 라벨로 확장 가능(개방형 스키마).
+    하위라벨은 relation_type 문자열에 `:` 로 이어 붙인다 (개방형 스키마).
     """
 
-    JOINABLE = "JOINABLE"
-    SEMANTICALLY_RELATED = "SEMANTICALLY_RELATED"
-    COMPLEMENTARY = "COMPLEMENTARY"
+    DETAIL_FOR = "DETAIL_FOR"
+    STATISTIC_FOR = "STATISTIC_FOR"
+    ADJACENT_TO = "ADJACENT_TO"
+    SAME_KIND = "SAME_KIND"
 
 
-def canonicalize_level1_type(raw_type: str, has_common_columns: bool) -> str:
-    """LLM/규칙이 산출한 자유 텍스트 관계 유형을 Level 1 표준 3종으로 정규화.
+# 컬럼 자카드가 이 값 이상이면 같은 종류로 본다.
+# ponytail: 파일럿 6종 표본 추정값. 표준 준수 쌍으로 재측정 예정 (정의서 9항 1번)
+SAME_KIND_JACCARD_THRESHOLD = 0.6
 
-    원본 라벨은 하위 라벨로 보존한다 (예: "COMPLEMENTARY:병원기본-병원장비").
+# 4종 이전에 저장된 값 → 현행 유형. 원본은 하위라벨로 보존한다.
+_LEGACY_TYPE_MAP = {
+    "JOINABLE": Level1RelationType.DETAIL_FOR,
+    "COMPLEMENTARY": Level1RelationType.DETAIL_FOR,
+    "SEMANTICALLY_RELATED": Level1RelationType.ADJACENT_TO,
+}
+
+_AGGREGATE_HINTS = ("통계", "집계", "지표", "현황 통계", "statistic", "aggregate")
+
+
+def column_jaccard(columns_a: list[str], columns_b: list[str]) -> float:
+    """두 컬럼 목록의 자카드 유사도. 공백·대소문자 차이는 무시한다."""
+    norm = lambda cols: {c.strip().lower().replace(" ", "") for c in cols if c and c.strip()}
+    a, b = norm(columns_a), norm(columns_b)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+# 집계표는 시점을 행의 구분자로 갖고 수치 측정값을 나른다. 개체 목록은 시점을
+# 개체의 사건 일자(인허가일자 등)로만 가지므로 구분된다.
+# ponytail: dataset_metadata.is_aggregate 가 채워지면 이 추정을 대체한다 (정의서 9항)
+_PERIOD_COLUMNS = ("연도", "년도", "기준연월", "기준년월", "기준시점", "시점", "기간", "year", "month")
+_MEASURE_TAILS = ("수", "건수", "명", "율", "률", "액", "합계", "평균", "count", "total", "sum", "avg", "rate")
+
+
+def looks_aggregate(columns: list[str]) -> bool:
+    """컬럼 구성으로 집계표인지 추정한다.
+
+    시점 구분 컬럼과 수치 측정 컬럼을 함께 가지면 집계표로 본다. 개체 목록은
+    시점을 행 구분자로 쓰지 않으므로 이 조합이 나오지 않는다.
+    """
+    norm = [c.strip().lower().replace(" ", "") for c in columns if c and c.strip()]
+    has_period = any(tok in c for c in norm for tok in _PERIOD_COLUMNS)
+    has_measure = any(c.endswith(tail) for c in norm for tail in _MEASURE_TAILS)
+    return has_period and has_measure
+
+
+def migrate_stored_type(stored: str) -> str:
+    """저장된 관계 유형을 현행 4종으로 옮긴다 (조회 시점).
+
+    정규화는 쓰기 시점에만 걸리므로 그 이전에 적재된 관계는 구 유형을 그대로
+    갖고 있다. 조회 응답이 구 유형을 노출하지 않도록 앞 토큰만 바꾸고
+    설명 하위라벨은 보존한다. 백필 없이 구·신 데이터를 함께 다룬다.
+    """
+    head, _, sub = (stored or "").partition(":")
+    migrated = _LEGACY_TYPE_MAP.get(head.strip().upper())
+    if migrated is None:
+        return stored
+    return f"{migrated.value}:{sub}" if sub else migrated.value
+
+
+def _as_level1_type(value: str | None) -> "Level1RelationType | None":
+    """LLM이 준 유형 문자열을 enum 으로. 알 수 없는 값은 무시한다."""
+    try:
+        return Level1RelationType(str(value).strip().upper())
+    except ValueError:
+        return None
+
+
+def canonicalize_level1_type(
+    raw_type: str,
+    has_common_columns: bool,
+    *,
+    jaccard: float | None = None,
+    conforms_to_match: bool = False,
+    is_aggregate: bool = False,
+    llm_type: str | None = None,
+) -> str:
+    """관계 유형을 4종으로 정규화. 원본 라벨은 하위라벨로 보존한다.
+
+    판정 순서 (정의서 5항) — 앞선 조건이 성립하면 뒤는 보지 않는다.
+
+    1. 같은 표준을 따르거나 컬럼 자카드가 임계 이상 → SAME_KIND
+    2. 상대가 집계표 → STATISTIC_FOR
+    3. LLM 판정 (구조 신호가 결론을 내지 못한 경우)
+    4. 공통 컬럼이 있다 (같은 개체) → DETAIL_FOR
+    5. 그 외 → ADJACENT_TO
+
+    구조 신호(1·2)는 확인 가능하므로 LLM 판정보다 우선한다. 카탈로그 메타데이터만
+    있어 컬럼이 비면 구조 신호가 아예 없는데, 그때 LLM 판정이 유일한 근거가 된다.
 
     Args:
-        raw_type: 원본 관계 유형 텍스트
-        has_common_columns: Tier1 공통 컬럼 존재 여부 (조인 가능성 신호)
+        raw_type: LLM/규칙이 산출한 원본 관계 유형 텍스트
+        has_common_columns: 공통 컬럼 존재 여부 (Tier1/Tier1.5)
+        jaccard: 컬럼 자카드. None 이면 SAME_KIND 판정을 건너뛴다
+        conforms_to_match: 양측이 같은 개방표준을 따르는지
+        is_aggregate: 상대가 집계표인지. dataset_metadata 확보 후 채워진다
+        llm_type: LLM이 판정한 4종 유형. 구프롬프트 응답이면 빈 값
 
     Returns:
-        "<표준유형>" 또는 "<표준유형>:<원본라벨>"
+        "<유형>" 또는 "<유형>:<원본라벨>"
     """
     text = (raw_type or "").lower()
-    if has_common_columns or any(k in text for k in ("join", "조인", "fk", "공통", "식별자", "key")):
-        canonical = Level1RelationType.JOINABLE
-    elif any(k in text for k in ("complement", "보완", "보강", "확장", "extend")):
-        canonical = Level1RelationType.COMPLEMENTARY
+    legacy = _LEGACY_TYPE_MAP.get((raw_type or "").strip().upper())
+
+    judged = _as_level1_type(llm_type)
+
+    if conforms_to_match or (jaccard is not None and jaccard >= SAME_KIND_JACCARD_THRESHOLD):
+        canonical = Level1RelationType.SAME_KIND
+    elif is_aggregate:
+        canonical = Level1RelationType.STATISTIC_FOR
+    elif legacy is not None:
+        # 4종 이전 값은 텍스트 키워드보다 매핑을 우선한다
+        canonical = legacy
+    elif judged is not None:
+        canonical = judged
+    elif any(k in text for k in _AGGREGATE_HINTS):
+        # 구프롬프트 응답 대비 — 라벨 문구로 집계를 추정한다
+        canonical = Level1RelationType.STATISTIC_FOR
+    elif has_common_columns:
+        canonical = Level1RelationType.DETAIL_FOR
     else:
-        canonical = Level1RelationType.SEMANTICALLY_RELATED
+        canonical = Level1RelationType.ADJACENT_TO
 
     raw_clean = (raw_type or "").strip()
     if raw_clean and raw_clean.upper() not in {t.value for t in Level1RelationType}:
@@ -215,26 +316,38 @@ class Tier2Candidate(BaseModel):
 
 # ── Tier 3 ──────────────────────────────────────────────────────────────────
 
-EvidenceType = Literal[
-    "shared_key", "value_overlap", "same_entity", "parallel_schema", "usage_dependency", "none"
-]
-
-
 TableNature = Literal["record", "knowledge_content"]
 
 
 class TableRelationVerification(BaseModel):
-    """LLM 관계 검증 결과 (tool call 스키마)."""
+    """LLM 관계 검증 결과 (tool call 스키마).
+
+    유형은 4종 하나만 쓴다. 근거는 별도 분류를 받지 않고 **인용**으로 받아
+    코드가 실제 컬럼·샘플에 대조 검증한다 (자기신고 분류는 검증이 불가능했다).
+    """
 
     related: bool = Field(description="두 테이블이 의미적으로 연관되어 있는가")
     table_a_nature: TableNature = Field(
         description="테이블 A의 성격 (record: 실세계 개체·사건의 기록 / knowledge_content: 지식·콘텐츠 자체가 행의 대상)"
     )
     table_b_nature: TableNature = Field(description="테이블 B의 성격")
-    evidence_type: EvidenceType = Field(
-        description="관계 근거 유형 — 근거가 테이블 데이터 안에 존재해야 함 (related=false면 none)"
+    level1_type: Level1RelationType = Field(
+        description=(
+            "관계 유형 4종 — DETAIL_FOR(같은 개체에 앵커가 없는 속성을 공급) / "
+            "STATISTIC_FOR(다른 입도의 집계·지수로 맥락 제공) / "
+            "SAME_KIND(같은 표준·구조의 다른 지역·판본) / "
+            "ADJACENT_TO(같은 맥락의 다른 개체)"
+        )
     )
-    relation_type: str = Field(description="관계 유형 설명 (예: 진단명-건강정보, 환자-병원)")
+    evidence_columns: list[str] = Field(
+        default_factory=list,
+        description="근거로 삼은 컬럼명 — 양쪽 테이블에 모두 존재하는 이름만. 없으면 빈 배열",
+    )
+    evidence_values: list[str] = Field(
+        default_factory=list,
+        description="근거로 삼은 값 — 양쪽 샘플 레코드에 모두 등장하는 값만. 없으면 빈 배열",
+    )
+    relation_type: str = Field(description="관계를 한 줄로 설명 (예: 어린이집-교직원 1:N 참조)")
     confidence: float = Field(ge=0.0, le=1.0, description="확신도")
     reason: str = Field(description="판단 근거 (2~3문장)")
 
@@ -290,6 +403,25 @@ class DatasetSearchIntent(BaseModel):
     keywords: list[str] = Field(default_factory=list, description="핵심 주제 키워드 (보조 신호)")
 
 
+class DatasetSearchAnswer(BaseModel):
+    """검색 결과와 관계 구조를 근거로 한 자연어 답변."""
+
+    answer: str = Field(
+        description="질의에 대한 답변. 검색된 데이터셋과 그 관계만 근거로 삼는다 (한국어 3~5문장)"
+    )
+    suggested_next: list[str] = Field(
+        default_factory=list,
+        description="이어서 볼 만한 데이터셋명 — 반드시 제시된 목록 안에서만 고른다",
+    )
+
+
+dataset_search_answer_tool = pydantic_function_tool(
+    DatasetSearchAnswer,
+    name="answer_dataset_search",
+    description="검색된 데이터셋과 관계 구조를 근거로 질의에 답합니다.",
+)
+
+
 dataset_search_intent_tool = pydantic_function_tool(
     DatasetSearchIntent,
     name="extract_dataset_search_intent",
@@ -303,7 +435,9 @@ class Tier3Result(BaseModel):
     table_a: str
     table_b: str
     relation_type: str
-    evidence_type: str = Field(default="", description="LLM이 분류한 관계 근거 유형")
+    level1_type: str = Field(default="", description="LLM이 판정한 4종 유형 (구프롬프트 응답이면 빈 값)")
+    evidence_columns: list[str] = Field(default_factory=list, description="LLM이 인용한 근거 컬럼")
+    evidence_values: list[str] = Field(default_factory=list, description="LLM이 인용한 근거 값")
     confidence: float
     reason: str
     embedding_score: float = Field(description="Tier 2 유사도 (참고용)")

@@ -9,7 +9,7 @@ from urllib.parse import quote
 from app.clients.neptune import NeptuneClient, get_neptune_client
 from app.config import settings
 from app.repositories.dataset_repository import DatasetRepository, get_dataset_repository
-from app.schemas.dataset import DatasetProfile, DatasetRelation, DatasetSearchResult
+from app.schemas.dataset import DatasetProfile, DatasetRelation, DatasetSearchResult, migrate_stored_type
 from app.src.embedding.embedding_service import embedding_service
 from app.src.meta_extract.llm_response import LLMResponse
 from app.src.ontology.ontology_service import OntologyService
@@ -312,13 +312,61 @@ class DatasetService:
         intent = self._extract_search_intent(query)
         results = self.search_datasets(intent, top_k=top_k, domain=domain, party=party, provider=provider)
         top_tables = [r.table_name for r in results]
-        graph = self.get_dataset_subgraph(top_tables)
+        # 1위를 앵커로 삼아 엣지를 정리한다 (seed 전체의 1-hop 합집합은 읽을 수 없다)
+        anchor = top_tables[0] if top_tables else None
+        graph = self.get_dataset_subgraph(top_tables, anchor=anchor)
+        answer, suggested = self._compose_search_answer(query, results, graph, anchor)
 
         return {
             "intent": intent,
+            "answer": answer,
+            "suggested_next": suggested,
             "datasets": [r.model_dump() for r in results],
             "graph": graph,
         }
+
+    def _compose_search_answer(
+        self,
+        query: str,
+        results: list[DatasetSearchResult],
+        graph: dict[str, Any],
+        anchor: str | None,
+    ) -> tuple[str, list[str]]:
+        """검색 결과와 관계 구조를 근거로 자연어 답변을 만든다.
+
+        LLM 이 목록 밖 데이터셋을 지어내지 못하게 후보명을 대조해 걸러낸다.
+        실패하면 빈 답변을 반환한다 — 검색 결과 자체는 그대로 쓸 수 있어야 한다.
+        """
+        if not results:
+            return "", []
+
+        names = {r.table_name for r in results}
+        dataset_lines = "\n".join(
+            f"- {r.table_name} (유사도 {r.score:.2f}, 제공기관 {r.provider or '미상'}): "
+            f"{r.table_summary or r.description or '설명 없음'}"
+            for r in results
+        )
+        relation_lines = "\n".join(
+            f"- {e['source']} ─[{e['relation_type']}]→ {e['target']}" for e in graph["edges"]
+        ) or "- (확정된 관계 없음 — 모두 유사도로만 검색됨)"
+
+        try:
+            result = LLMResponse("dataset_search_answer").generate_llm_response(
+                variables={
+                    "query": query,
+                    "datasets": dataset_lines,
+                    "relations": relation_lines,
+                    "anchor": anchor or "없음",
+                }
+            )
+        except Exception as e:
+            logger.warning(f"[NL Search] 답변 생성 실패: {e}")
+            return "", []
+
+        if not isinstance(result, dict):
+            return "", []
+        suggested = [n for n in (result.get("suggested_next") or []) if n in names]
+        return str(result.get("answer") or ""), suggested
 
     def related_search(
         self,
@@ -413,11 +461,20 @@ class DatasetService:
             logger.debug(f"[NL Search] LLM 의도 추출 실패, 원 질의 사용: {e}")
         return query
 
-    def get_dataset_subgraph(self, table_names: list[str]) -> dict[str, Any]:
+    def get_dataset_subgraph(
+        self, table_names: list[str], anchor: str | None = None
+    ) -> dict[str, Any]:
         """주어진 데이터셋들과 그 1-hop 이웃을 부분 그래프로 반환 (§9).
+
+        seed 가 여러 개면 seed 끼리도 서로 연결돼 있어 엣지가 급격히 늘고 읽을 수
+        없게 된다(검색 상위 5건에서 노드 11·엣지 34). anchor 를 주면 그 데이터셋에
+        직접 걸린 엣지만 남겨 "기준 데이터셋을 중심에 두고 거리로 표현한다"는
+        설계(7항 화면 5)에 맞춘다. 노드는 그대로 두므로 앵커와 연결되지 않은
+        검색 결과는 고립 노드로 보인다 — 유사도로만 잡혔다는 사실이 그대로 드러난다.
 
         Args:
             table_names: 중심 데이터셋명 목록 (검색 상위 노드)
+            anchor: 엣지를 남길 기준 데이터셋. None 이면 seed 전체의 1-hop 을 합친다
 
         Returns:
             {"nodes": [{"id", "type", "seed"}], "edges": [{"source","target","relation_type","score"}]}
@@ -448,15 +505,23 @@ class DatasetService:
         """
         try:
             resp = self.neptune.execute_query(query)
+            # 양끝이 모두 seed인 관계는 VALUES 절에 두 번 매칭되므로 쌍 단위로 중복을 제거한다
+            seen: set[frozenset[str]] = set()
             for b in resp.get("results", {}).get("bindings", []):
                 ta, tb = b["tableA"]["value"], b["tableB"]["value"]
+                pair = frozenset((ta, tb))
+                if pair in seen:
+                    continue
+                seen.add(pair)
+                if anchor and anchor not in pair:
+                    continue
                 for t in (ta, tb):
                     if t not in nodes:
                         nodes[t] = {"id": t, "type": "Dataset", "seed": False}
                 edges.append({
                     "source": ta,
                     "target": tb,
-                    "relation_type": b["relationType"]["value"],
+                    "relation_type": migrate_stored_type(b["relationType"]["value"]),
                     "score": float(b["score"]["value"]),
                 })
         except Exception as e:
