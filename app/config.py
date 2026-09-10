@@ -184,6 +184,14 @@ class Settings(BaseSettings):
     CATALOG_SYNC_ENABLED: bool = False
     CATALOG_SYNC_INTERVAL_MINUTES: int = 60
 
+    # 카탈로그 access_url 실데이터 수집
+    CATALOG_FETCH_DATA_ENABLED: bool = True
+    DATA_FETCH_TIMEOUT_SECONDS: int = 30
+    DATA_FETCH_MAX_BYTES: int = 50 * 1024 * 1024
+    DATA_FETCH_MAX_RECORDS: int = 5000
+
+    KV_BUILD_ON_SYNC: bool = False
+
     # Dataset RDF Namespace
     DATASET_RDF_NAMESPACE: str = "http://datarelation.wisenet.co.kr/ontology#"
     DATASET_RDF_NAMESPACE_PREFIX: str = "dm"
