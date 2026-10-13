@@ -17,6 +17,8 @@ OPENAPI_TAGS = [
     {"name": "Search", "description": "유사 테이블 검색, 자연어 검색, 연계 데이터셋 탐색, 부분 그래프 조회"},
     {"name": "Relations", "description": "데이터셋 간 관계 생성(3-Tier 파이프라인)·저장·조회"},
     {"name": "Catalog", "description": "① 통합 카탈로그 연동 — 엔트리 등록, 변경 동기화, 승인 결정 콜백"},
+    {"name": "Explore", "description": "데이터 찾기 — 분야 탐색(디지털 집현전 분류)·검색·상세·함께 쓸 수 있는 데이터·관계 생성"},
+    {"name": "Pilot", "description": "실증 기관(SBSi·연세의료원)별 보유 데이터 목록"},
     {"name": "KeyValue Graph", "description": "레코드 수준 Key-Value 그래프 생성·정규화·관계 후보 발굴 (Level 2)"},
     {"name": "System", "description": "헬스체크·버전 정보"},
 ]
