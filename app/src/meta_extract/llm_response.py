@@ -10,8 +10,8 @@ from app.dependencies import chatopenai_client, get_langfuse_prompt
 from app.exceptions.base import ApplicationError
 from app.schemas.dataset import (
     dataset_search_answer_tool,
+    dataset_category_classification_tool,
     dataset_search_intent_tool,
-    domain_selection_tool,
     table_metadata_extraction_tool,
     table_relation_verification_tool,
 )
@@ -46,7 +46,7 @@ class LLMResponse:
         "table_metadata_extraction": table_metadata_extraction_tool,
         "dataset_search_intent": dataset_search_intent_tool,
         "dataset_search_answer": dataset_search_answer_tool,
-        "domain_selection": domain_selection_tool,
+        "dataset_category_classification": dataset_category_classification_tool,
     }
 
     def __init__(self, task: str):

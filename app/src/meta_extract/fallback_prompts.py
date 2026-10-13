@@ -669,12 +669,6 @@ A와 B 모두 개별 개체 기록이면 STATISTIC_FOR가 아닙니다.
 - 다른 테이블과 연결될 수 있는 개념어 우선 (예: "병원", "환자", "질환명")
 - 한국어로 작성
 
-## 3. domain
-테이블의 데이터 도메인을 분류하세요.
-- 현재 등록된 도메인 목록: [{existing_domains}]
-- **목록에 적합한 도메인이 있으면 반드시 그중에서 선택** (표기 통일 — 유사어로 새로 만들지 말 것)
-- 목록이 비어있거나 정말 맞는 것이 없을 때만 새 도메인을 제안 (한국어 명사, 공공데이터 분류체계 수준의 대분류: 보건의료, 교통및물류, 환경, 교육 등)
-
 # 출력
 반드시 extract_table_metadata function tool을 호출하세요.
 """
@@ -702,30 +696,28 @@ A와 B 모두 개별 개체 기록이면 STATISTIC_FOR가 아닙니다.
 - KBS → 방송사 (없으면 기타)
 """
 
-    DOMAIN_SELECTION: str = """**반드시 select_domain tool을 사용하여 응답할 것.**
+    DATASET_CATEGORY_CLASSIFICATION: str = """**반드시 classify_dataset_categories tool을 사용하여 응답할 것.**
 
-당신은 데이터셋을 도메인 분류체계로 분류하는 전문가입니다.
-도메인의 목적은 여러 데이터셋을 같은 분야로 **묶는 것**입니다.
+당신은 데이터셋을 주제 분야로 분류하는 전문가입니다.
+분류의 목적은 여러 데이터셋을 같은 분야로 **묶어** 사용자가 분야별로 찾게 하는 것입니다.
+
+# 분류표 (국가지식정보 통합플랫폼 디지털 집현전 — 대분류: 중분류)
+{taxonomy}
 
 # 임무
-데이터셋 메타데이터를 보고 가장 적합한 도메인 **하나**를 정하세요.
-
-## 기존 도메인
-{candidates}
+데이터셋을 위 분류표의 '대분류 > 중분류'로 1~3개 분류하세요.
 
 ## 규칙
-1. 기존 도메인으로 분류할 수 있으면 **반드시 기존 도메인을 선택**하세요.
-   해석이 조금 넓어지더라도 기존 도메인 재사용이 우선입니다.
-2. 정말 어느 기존 도메인에도 속하지 않을 때만 새 도메인 이름을 제안하세요.
-   신설은 최후 수단이며 최대한 지양합니다.
-3. 새 도메인을 제안할 때는 이 데이터셋 하나가 아니라 같은 분야의 다른 데이터셋들도
-   담을 수 있는 **대분류 수준의 짧은 명사**여야 합니다 (예: "우주항공").
-   데이터셋 제목을 되풀이하거나 특정 데이터셋에만 맞는 이름은 금지합니다.
+1. 반드시 분류표에 있는 '대분류 > 중분류' 그대로 쓰세요 (예: "의료 > 공중보건"). 새 분류를 만들지 마세요.
+2. 데이터가 **무엇에 관한 것인지**(대상·주제)로 분류하세요. 제공 형식이나 제공기관 이름만 보고 정하지 마세요.
+   - 병원·약국 현황 → 의료, 시청률·방송 프로그램 → 문화 > 방송·미디어, 인구·출생 통계 → 사회
+3. 가장 대표적인 분류를 맨 앞에 두세요. 두 번째·세 번째는 분명히 걸쳐 있을 때만 붙이세요.
 
 # 데이터셋
 - 제목: {title}
 - 요약: {summary}
 - 키워드: {keywords}
+- 컬럼: {columns}
 """
 
     DATASET_SEARCH_ANSWER: str = """**반드시 answer_dataset_search tool을 사용하여 응답할 것.**
@@ -803,7 +795,7 @@ suggested_next 에는 사용자가 이어서 볼 만한 데이터셋명을 **제
             "table_metadata_extraction": cls.TABLE_METADATA_EXTRACTION,
             "dataset_search_intent": cls.DATASET_SEARCH_INTENT,
             "dataset_search_answer": cls.DATASET_SEARCH_ANSWER,
-            "domain_selection": cls.DOMAIN_SELECTION,
+            "dataset_category_classification": cls.DATASET_CATEGORY_CLASSIFICATION,
         }
 
         if task not in prompt_map:
