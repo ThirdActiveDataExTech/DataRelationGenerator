@@ -1,116 +1,112 @@
-"""데이터 특징 기반 도메인 자동 분류 (계획서 ②-1 "데이터 특징 기반 분류 기술").
+"""데이터 특징 기반 분야 분류 .
 
-도메인의 목적은 데이터셋을 같은 분야로 **묶는 것**이다. 따라서 소스마다 제각각인
-어휘(카탈로그 theme 문자열, 분류코드 등)를 라벨로 쓰지 않고, 항상 이 분류기가
-표준 어휘로 수렴시킨다.
+분류의 목적은 데이터셋을 같은 분야로 **묶는 것**(분야별 탐색·필터)이므로 소스마다 다른
+어휘(카탈로그 theme, 기관 분류코드)를 라벨로 쓰지 않고 항상 이 분류표로 수렴시킨다.
 
-특징 추출: 요약 텍스트 임베딩 — 데이터 의미 특징의 저차원 표현 (차원축소 대응)
-분류 후보 두 층위:
-  1. 표준 도메인 분류체계(STANDARD_DOMAINS, 공공데이터포털 국가 분류 기반) 라벨
-     임베딩 — zero-shot. 등록 데이터가 없어도(콜드스타트) 표준 도메인으로 분류된다.
-  2. 등록 데이터셋들의 도메인별 임베딩 중심점(centroid) — 사용자 지정 도메인 등
-     분류체계 밖 도메인도 데이터가 쌓이면 후보가 된다.
-
-- 최고 유사도가 DOMAIN_CLASSIFY_THRESHOLD 미만이면 "general" 폴백
-- "general"(미분류) 데이터셋은 centroid 후보에서 제외 — 폴백이 스스로를 강화하지 않게
-- 재등록(갱신) 시 자기 자신의 기존 문서는 centroid 에서 제외 — 이전 라벨이
-  자기 자신과 매칭되는 순환 방지 (exclude_table_name)
+- 데이터셋 하나에 '대분류 > 중분류'를 1~3개 붙인다.
+  첫 번째가 대표 분류이며 그 대분류가 DatasetProfile.domain 이 된다.
+- 1차: LLM 이 분류표 전체를 보고 그 안에서만 고른다. 분류표 밖 값은 버린다.
+- 폴백: LLM 이 실패하면 요약 임베딩과 중분류 라벨 임베딩의 코사인이 가장 큰 중분류 하나.
 """
 
 import logging
 
-from app.config import settings
-from app.utils.vector import cosine_similarity, mean_vector
+from openai import APIError
+
+from app.exceptions.base import ApplicationError
+from app.utils.vector import cosine_similarity
 
 logger = logging.getLogger(__name__)
 
-FALLBACK_DOMAIN = "general"
+TAXONOMY: dict[str, tuple[str, ...]] = {
+    "과학": ("수학", "통계학", "물리학", "천문학", "화학", "생물학", "지구과학", "지질학", "대기과학", "생활과학"),
+    "기술": (
+        "기계공학", "재료공학", "화학공학", "전기·전자", "정보·통신", "인공지능·컴퓨팅", "에너지·자원",
+        "원자력", "환경공학", "토목·건설·교통", "도시공학", "항공우주공학", "조선·해양",
+    ),
+    "인문": ("문학", "언어", "철학", "종교", "심리", "역사", "지리"),
+    "사회": (
+        "공공질서·안전", "복지", "사회문제", "인권", "국토·지역개발", "일반공공행정", "외교", "안보국방",
+        "경제·경영", "산업", "정치",
+    ),
+    "교육": ("유아", "초등학교", "중학교", "고등학교", "고등(대학)", "해외유학", "특수교육", "직업·평생", "자격", "교양"),
+    "의료": (
+        "의학", "치의학", "한의학", "약학", "간호학", "공중보건", "질병관리", "건강검진", "재활", "요양",
+        "의료공학", "의약품",
+    ),
+    "문화": (
+        "미술", "방송·미디어", "공예", "게임·오락", "축제·전시", "연극", "무용", "영상·영화", "음악",
+        "디자인", "사진", "만화", "스포츠",
+    ),
+} # 분류 체계는 국가지식정보 통합플랫폼 「디지털 집현전」의 주제 분류를 따른다.
 
-# 공공데이터포털 국가데이터 분류체계 기반 표준 도메인.
-# 값은 라벨 의미를 임베딩하기 위한 키워드 설명문 — 분류 결과 라벨은 key 를 사용한다.
-STANDARD_DOMAINS: dict[str, str] = {
-    "보건의료": "보건, 의료, 병원, 약국, 질병, 진료, 건강보험, 요양기관, 응급의료, 의약품",
-    "사회복지": "복지, 노인, 아동, 장애인, 요양시설, 보육, 기초생활보장, 돌봄, 연금",
-    "교통물류": "교통, 도로, 철도, 버스, 물류, 화물, 운송, 항공, 주차, 자동차",
-    "농축수산": "농업, 축산, 수산, 임업, 작물, 곡물, 농산물, 가축, 어획, 양식",
-    "환경기상": "환경, 대기, 수질, 폐기물, 기상, 기후, 미세먼지, 재활용, 오염",
-    "재난안전": "재난, 안전, 소방, 경보, 지진, 홍수, 사고, 예방, 대피, 구조",
-    "교육": "학교, 학생, 교육과정, 입시, 도서관, 평생교육, 학원, 강좌",
-    "문화관광": "문화, 관광, 공연, 축제, 문화재, 박물관, 방송, 미디어, 콘텐츠, 체육",
-    "산업고용": "산업, 기업, 고용, 일자리, 창업, 공장, 제조, 노동, 에너지, 발전",
-    "재정금융": "재정, 세금, 예산, 금융, 물가, 가격, 경제지표, 보조금, 조달",
-    "국토관리": "국토, 도시계획, 건축, 부동산, 토지, 주택, 지적, 상하수도",
-    "공공행정": "행정, 민원, 인허가, 조직, 법령, 정책, 선거, 통계",
-    "과학기술": "과학, 기술, 연구개발, 특허, 정보통신, 데이터, 인공지능, 소프트웨어",
-    "식품건강": "식품, 위생, 영양, 급식, 외식, 식중독, 원산지, 축산물 검사",
-    "법률": "법률, 판례, 소송, 범죄, 교정, 법원, 검찰, 계약",
-    "통일외교안보": "통일, 외교, 안보, 국방, 북한, 출입국, 재외국민, 병무",
-}
+SEPARATOR = " > "
+CATEGORIES: tuple[str, ...] = tuple(f"{major}{SEPARATOR}{minor}" for major, minors in TAXONOMY.items() for minor in minors)
+MAX_CATEGORIES = 3
 
 
-class DomainClassifier:
-    """표준 분류체계 + 도메인별 centroid 기반 분류기 (모델 파일 없음)."""
+def major_of(category: str) -> str:
+    """'의료 > 공중보건' → '의료'."""
+    return category.split(SEPARATOR, 1)[0]
 
-    # 표준 라벨 임베딩 프로세스 캐시 (라벨은 불변)
+
+def normalize_categories(values: list[str]) -> list[str]:
+    """분류표에 있는 값만 순서대로, 중복 없이 최대 3개."""
+    valid = [v.strip() for v in values if v and v.strip() in CATEGORIES]
+    return list(dict.fromkeys(valid))[:MAX_CATEGORIES]
+
+
+def taxonomy_prompt_text() -> str:
+    """프롬프트에 넣을 분류표 ('대분류: 중분류, 중분류 ...' 한 줄씩)."""
+    return "\n".join(f"- {major}: {', '.join(minors)}" for major, minors in TAXONOMY.items())
+
+
+class CategoryClassifier:
+    """디지털 집현전 분류표 기반 분류기 (LLM 판정 + 임베딩 폴백)."""
+
+    # 중분류 라벨 임베딩 프로세스 캐시 (분류표는 불변)
     _label_embeddings: dict[str, list[float]] | None = None
 
-    def __init__(self, dataset_repo):
-        """도메인별 임베딩 조회에 사용할 DatasetRepository 를 주입받는다."""
-        self.dataset_repo = dataset_repo
-
     @classmethod
-    def _taxonomy_embeddings(cls) -> dict[str, list[float]]:
+    def _category_embeddings(cls) -> dict[str, list[float]]:
         if cls._label_embeddings is None:
             from app.src.embedding.embedding_service import embedding_service
 
-            cls._label_embeddings = {
-                label: embedding_service.generate_embedding(f"{label}: {desc}")
-                for label, desc in STANDARD_DOMAINS.items()
-            }
+            cls._label_embeddings = {c: embedding_service.generate_embedding(c) for c in CATEGORIES}
         return cls._label_embeddings
 
-    def classify(
-        self, embedding: list[float], exclude_table_name: str = ""
-    ) -> tuple[str, float, dict[str, float]]:
-        """특징 임베딩을 도메인으로 분류.
+    def nearest(self, embedding: list[float]) -> str:
+        """특징 임베딩과 가장 가까운 중분류 (폴백)."""
+        scores = {
+            category: cosine_similarity(embedding, label)
+            for category, label in self._category_embeddings().items()
+            if label and len(label) == len(embedding)
+        }
+        return max(scores, key=scores.get)
 
-        Args:
-            embedding: 분류할 특징 임베딩 (table_summary 임베딩)
-            exclude_table_name: 재등록 중인 데이터셋명 — 자기 자신의 기존 문서를
-                centroid 후보에서 제외
+    def classify(
+        self, title: str, summary: str, keywords: list[str], columns: list[str], embedding: list[float]
+    ) -> list[str]:
+        """데이터셋을 '대분류 > 중분류' 1~3개로 분류한다. 대표 분류가 맨 앞.
 
         Returns:
-            (도메인, 신뢰도(최고 코사인 유사도), 도메인별 유사도) —
-            분류 불가(임베딩 없음/후보 없음)면 ("general", 0.0, {})
+            분류 목록. LLM·임베딩 모두 쓸 수 없으면 빈 목록 (미분류)
         """
-        if not embedding:
-            return FALLBACK_DOMAIN, 0.0, {}
+        from app.src.meta_extract.llm_response import LLMResponse
 
-        # 1) 등록 데이터셋 도메인 중심점 (자기 자신·general 제외)
-        groups: dict[str, list[list[float]]] = {}
-        for table_name, domain, emb in (self.dataset_repo.list_domain_embeddings() or []):
-            if exclude_table_name and table_name == exclude_table_name:
-                continue
-            if domain and domain != FALLBACK_DOMAIN and emb and len(emb) == len(embedding):
-                groups.setdefault(domain, []).append(emb)
+        try:
+            result = LLMResponse("dataset_category_classification").generate_llm_response({
+                "title": title,
+                "summary": summary,
+                "keywords": ", ".join(keywords[:15]),
+                "columns": ", ".join(columns[:40]),
+                "taxonomy": taxonomy_prompt_text(),
+            })
+            picked = normalize_categories(result.get("categories") or [])
+            if picked:
+                return picked
+            logger.info(f"[Category] '{title}' LLM 응답에 분류표 값 없음 — 임베딩 폴백: {result}")
+        except (APIError, ApplicationError) as e:
+            logger.warning(f"[Category] '{title}' LLM 분류 실패 — 임베딩 폴백: {e}")
 
-        scores: dict[str, float] = {
-            domain: round(cosine_similarity(embedding, mean_vector(embs)), 4)
-            for domain, embs in groups.items()
-        }
-
-        # 2) 표준 분류체계 라벨 (zero-shot) — 소스별 어휘와 무관하게 표준 도메인으로 수렴
-        for label, label_emb in self._taxonomy_embeddings().items():
-            if not label_emb or len(label_emb) != len(embedding):
-                continue
-            score = round(cosine_similarity(embedding, label_emb), 4)
-            if score > scores.get(label, -1.0):
-                scores[label] = score
-
-        if not scores:
-            return FALLBACK_DOMAIN, 0.0, {}
-
-        best_domain, best_score = max(scores.items(), key=lambda kv: kv[1])
-        if best_score < settings.DOMAIN_CLASSIFY_THRESHOLD:
-            return FALLBACK_DOMAIN, best_score, scores
-        return best_domain, best_score, scores
+        return [self.nearest(embedding)] if embedding else []
