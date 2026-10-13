@@ -545,7 +545,7 @@ class RelationPipeline:
     # ──────────────────────────────────────────────
 
     def _load_profiles(self, table_names: list[str]) -> list[DatasetProfile]:
-        """OpenSearch에서 테이블 프로파일 로드."""
+        """원장에서 테이블 프로파일 로드."""
         profiles = []
         for name in table_names:
             profile = self.dataset_repo.get(name)
