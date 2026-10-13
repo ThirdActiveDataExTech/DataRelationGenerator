@@ -59,7 +59,7 @@ class LinkableItem(BaseModel):
     sub_label: str = Field(default="", description="관계 유형 하위라벨")
     score: float = Field(description="관계 신뢰도 (판정 전 후보는 의미 유사도)")
     join_keys: list[str] = Field(default_factory=list, description="결합 컬럼 (기준 컬럼 = 상대 컬럼)")
-    reason: str = Field(default="", description="관계 판정 이유")
+    reason: str = Field(default="", description="두 데이터를 함께 쓰는 상황 설명 (없으면 관계 판정 이유)")
 
 
 class LinkableGroup(BaseModel):

@@ -27,16 +27,16 @@ from app.src.embedding.embedding_service import embedding_service
 
 # (유형, 묶음 이름, 사용자 안내) — 화면 배치 순서
 _GROUPS = (
-    (Level1RelationType.DETAIL_FOR, "속성 보완", "같은 대상에 대해 이 데이터에 없는 항목을 채워줍니다"),
-    (Level1RelationType.STATISTIC_FOR, "집계 맥락", "이 데이터의 값이 큰지 작은지 판단할 기준(인구·지수 등)을 줍니다"),
-    (Level1RelationType.ADJACENT_TO, "인접 맥락", "같은 맥락에서 이어서 볼 만한 다른 대상의 데이터입니다"),
-    (Level1RelationType.SAME_KIND, "동종 판본", "같은 종류의 데이터를 다른 지역·기관·판본으로 제공합니다"),
+    (Level1RelationType.DETAIL_FOR, "속성 보완", "같은 대상의 다른 정보"),
+    (Level1RelationType.STATISTIC_FOR, "집계 맥락", "비교 기준이 되는 통계"),
+    (Level1RelationType.ADJACENT_TO, "인접 맥락", "이어서 보면 좋은 관련 데이터"),
+    (Level1RelationType.SAME_KIND, "동종 판본", "같은 종류의 다른 지역·기관 데이터"),
 )
 
 _CANDIDATE_COUNT = 10
 _POOL_SIZE = 20
 
-_CSV_HEADER = ["기준 데이터", "관계 유형", "관계 묶음", "하위라벨", "연계 데이터", "제공기관", "신뢰도", "결합 키", "판정 이유", "원본 URL"]
+_CSV_HEADER = ["기준 데이터", "관계 유형", "관계 묶음", "하위라벨", "연계 데이터", "제공기관", "신뢰도", "결합 키", "활용 설명", "원본 URL"]
 
 
 def to_card(profile: DatasetProfile, relation_count: int = 0) -> DatasetCard:
@@ -174,7 +174,7 @@ class ExploreService:
                 sub_label=sub,
                 score=e["score"],
                 join_keys=_join_keys(e["evidence"], anchor_is_a),
-                reason=str(e["evidence"].get("reason") or ""),
+                reason=str(e["evidence"].get("usage") or e["evidence"].get("reason") or ""),
             ))
 
         related = {e["source"] for e in edges} | {e["target"] for e in edges}

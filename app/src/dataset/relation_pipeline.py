@@ -225,6 +225,7 @@ class RelationPipeline:
                 relation_type=canonical_type,
                 evidence={
                     "reason": tier3.reason,
+                    "usage": tier3.usage,
                     "evidence_columns": tier3.evidence_columns,
                     "evidence_values": tier3.evidence_values,
                     "embedding_score": tier3.embedding_score,
@@ -448,6 +449,7 @@ class RelationPipeline:
                 evidence_values=result.get("evidence_values") or [],
                 confidence=confidence,
                 reason=result.get("reason", ""),
+                usage=result.get("usage", ""),
                 embedding_score=embedding_score,
             )
 
