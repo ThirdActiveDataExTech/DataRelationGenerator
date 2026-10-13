@@ -364,6 +364,12 @@ class TableRelationVerification(BaseModel):
     relation_type: str = Field(description="관계를 한 줄로 설명 (예: 어린이집-교직원 1:N 참조)")
     confidence: float = Field(ge=0.0, le=1.0, description="확신도")
     reason: str = Field(description="판단 근거 (2~3문장)")
+    usage: str = Field(
+        description=(
+            "데이터를 찾는 사용자에게 보여줄 활용 설명 1~2문장 — 누가 어떤 상황에서 두 데이터를 함께 쓰면 "
+            "무엇을 할 수 있는지. 짧은 데이터 이름으로 쓰고 'A/B·테이블'·판정 과정은 쓰지 않는다. 관계가 없으면 빈 문자열"
+        )
+    )
 
 
 table_relation_verification_tool = pydantic_function_tool(
@@ -451,6 +457,7 @@ class Tier3Result(BaseModel):
     evidence_values: list[str] = Field(default_factory=list, description="LLM이 인용한 근거 값")
     confidence: float
     reason: str
+    usage: str = Field(default="", description="사용자에게 보여줄 활용 설명")
     embedding_score: float = Field(description="Tier 2 유사도 (참고용)")
     method: Literal["llm"] = "llm"
 
