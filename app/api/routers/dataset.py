@@ -11,7 +11,6 @@ from fastapi import APIRouter, Body, UploadFile, File
 from fastapi.responses import JSONResponse
 
 from app.schemas.dataset import (
-    migrate_stored_type,
     DatasetIngestRequest,
     DatasetRelation,
     DatasetSearchRequest,
@@ -153,7 +152,7 @@ def _run_pipeline_sync(job_id: str, request: RunRelationPipelineRequest) -> None
     tags=["Datasets"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
-    summary="테이블 메타데이터 추출 및 Neptune/OpenSearch 적재",
+    summary="테이블 메타데이터 추출 및 원장 적재",
 )
 async def ingest_dataset(
         file: Annotated[UploadFile, File(description="JSON / JSONL / CSV 파일")],
@@ -165,7 +164,7 @@ async def ingest_dataset(
         party: Annotated[str, Body(embed=True, description="데이터 파티 구분 (1st/3rd). 직접 업로드는 통상 1st")] = "",
         provider: Annotated[str, Body(embed=True, description="제공 기관/발행처")] = "",
 ):
-    """JSON / JSONL / CSV 파일을 업로드하면 메타데이터를 추출하여 Neptune Dataset 노드와 OpenSearch에 저장."""
+    """JSON / JSONL / CSV 파일을 업로드하면 메타데이터를 추출하여 데이터셋 원장(PostgreSQL)에 저장."""
     content = await file.read()
     records = _parse_upload(content, file.filename or "upload.json")
 
@@ -224,6 +223,7 @@ async def ingest_dataset_json(
         party=request.party,
         provider=request.provider,
         landing_page=request.landing_page,
+        column_names=request.column_names,
     )
 
     return APIResponseModel(
@@ -294,10 +294,10 @@ async def ingest_dataset_from_catalog(request: IngestFromCatalogRequest):
     tags=["Relations"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
-    summary="테이블 간 관계 Neptune 저장",
+    summary="테이블 간 관계 저장",
 )
 async def save_relation(relation: DatasetRelation):
-    """두 테이블 간 관계를 Neptune RDF Reification으로 저장.
+    """두 테이블 간 관계를 확정(APPROVED)으로 저장 (같은 쌍의 기존 관계는 대체).
 
     Args:
         relation: DatasetRelation (table_a, table_b, score, method, relation_type)
@@ -330,7 +330,7 @@ async def apply_relation_decision(request: RelationDecisionRequest):
 
     승인 SSOT는 ①(dataset_relation.status)입니다. 이 엔드포인트는 ①의 PATCH
     /relation/datasets/{id} 승인 처리에서 호출되는 내부 콜백으로,
-    승인된 관계를 Neptune 지식그래프에 저장합니다 (재환류 없음). 반려는 no-op.
+    결정을 관계 상태(APPROVED / REJECTED)로 기록합니다 (재환류 없음).
     """
     relation = dataset_service.apply_relation_decision(
         source_identifier=request.source_identifier,
@@ -514,7 +514,7 @@ async def get_subgraph(
     summary="등록된 Dataset 목록 조회",
 )
 async def list_datasets():
-    """OpenSearch에 등록된 모든 Dataset 목록을 반환.
+    """원장에 등록된 모든 Dataset 목록을 반환.
 
     각 데이터셋에 KV 그래프 처리 상태(kv_document_count, kv_processed)를 함께 반환하여
     '데이터셋 관리' 화면에서 처리 여부 배지/트리거를 표시할 수 있게 한다.
@@ -646,110 +646,29 @@ async def get_sync_from_catalog_status(job_id: str):
 
 
 @router.get(
-    "/sync-status",
-    tags=["Datasets"],
-    response_model=APIResponseModel,
-    response_class=JSONResponse,
-    summary="OpenSearch ↔ Neptune Dataset 노드 동기화 상태 확인",
-)
-async def get_sync_status():
-    """OpenSearch에 등록된 테이블 목록 vs Neptune Dataset 노드를 비교해 동기화 상태를 반환."""
-    from app.repositories.dataset_repository import get_dataset_repository
-    from app.clients.neptune import get_neptune_client
-    from app.config import settings
-
-    repo = get_dataset_repository()
-    profiles = repo.list_all()
-    os_names = {p.table_name for p in profiles}
-
-    neptune = get_neptune_client()
-    dm = settings.DATASET_RDF_NAMESPACE
-    query = f"""
-    PREFIX dm: <{dm}>
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-    SELECT ?tableName WHERE {{
-        ?s rdf:type dm:Dataset ;
-           dm:tableName ?tableName .
-    }}
-    """
-    try:
-        resp = neptune.execute_query(query)
-        neptune_names = {
-            b["tableName"]["value"]
-            for b in resp.get("results", {}).get("bindings", [])
-        }
-    except Exception:
-        neptune_names = set()
-
-    items = [
-        {
-            "table_name": name,
-            "in_opensearch": name in os_names,
-            "in_neptune": name in neptune_names,
-            "synced": name in os_names and name in neptune_names,
-        }
-        for name in os_names | neptune_names
-    ]
-    items.sort(key=lambda x: x["table_name"])
-
-    return APIResponseModel(
-        result=items,
-        description=f"총 {len(items)}개, 동기화={sum(1 for i in items if i['synced'])}개",
-    )
-
-
-@router.get(
     "/relations",
     tags=["Relations"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
-    summary="Neptune에 저장된 관계 목록 조회",
+    summary="확정된 데이터셋 간 관계 목록 조회",
 )
-async def list_relations():
-    """Neptune에 저장된 모든 Dataset 간 관계를 반환."""
-    from app.clients.neptune import get_neptune_client
-    from app.config import settings
+def list_relations():
+    """확정(APPROVED)된 모든 Dataset 간 관계를 최신 순으로 반환."""
+    from app.repositories.relation_repository import get_relation_repository
 
-    neptune = get_neptune_client()
-    dm = settings.DATASET_RDF_NAMESPACE
-    query = f"""
-    PREFIX dm: <{dm}>
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-    SELECT ?tableA ?tableB ?catalogIdA ?catalogIdB ?score ?method ?relationType ?createdAt WHERE {{
-        ?rel rdf:type rdf:Statement ;
-             rdf:subject ?s ;
-             rdf:predicate dm:relatedTo ;
-             rdf:object ?o ;
-             dm:relationScore ?score ;
-             dm:relationMethod ?method ;
-             dm:relationType ?relationType ;
-             dm:createdAt ?createdAt .
-        ?s dm:tableName ?tableA .
-        ?o dm:tableName ?tableB .
-        OPTIONAL {{ ?s dm:catalogIdentifier ?catalogIdA }}
-        OPTIONAL {{ ?o dm:catalogIdentifier ?catalogIdB }}
-    }}
-    ORDER BY DESC(?createdAt)
-    """
-    try:
-        resp = neptune.execute_query(query)
-        bindings = resp.get("results", {}).get("bindings", [])
-        relations = [
-            {
-                "table_a": b["tableA"]["value"],
-                "table_b": b["tableB"]["value"],
-                "catalog_identifier_a": b.get("catalogIdA", {}).get("value", ""),
-                "catalog_identifier_b": b.get("catalogIdB", {}).get("value", ""),
-                "score": float(b["score"]["value"]),
-                "method": b["method"]["value"],
-                "relation_type": migrate_stored_type(b["relationType"]["value"]),
-                "created_at": b["createdAt"]["value"],
-            }
-            for b in bindings
-        ]
-    except Exception:
-        relations = []
-
+    relations = [
+        {
+            "table_a": e["source"],
+            "table_b": e["target"],
+            "catalog_identifier_a": e["catalog_identifier_a"],
+            "catalog_identifier_b": e["catalog_identifier_b"],
+            "score": e["score"],
+            "method": e["method"],
+            "relation_type": e["relation_type"],
+            "created_at": e["created_at"],
+        }
+        for e in get_relation_repository().edges()
+    ]
     return APIResponseModel(
         result=relations,
         description=f"관계 {len(relations)}개",
@@ -763,50 +682,23 @@ async def list_relations():
     response_class=JSONResponse,
     summary="데이터셋 현황 요약",
 )
-async def get_stats():
-    """데이터셋 수, 관계 수, Tier별 분포 등 현황 요약을 반환."""
-    from app.clients.neptune import get_neptune_client
-    from app.config import settings
+def get_stats():
+    """데이터셋 수, 확정 관계 수, 도메인·생성 방법별 분포를 반환."""
+    from collections import Counter
+
     from app.repositories.dataset_repository import get_dataset_repository
+    from app.repositories.relation_repository import get_relation_repository
 
-    repo = get_dataset_repository()
-    profiles = repo.list_all()
-    dataset_count = len(profiles)
-    domain_counts: dict[str, int] = {}
-    for p in profiles:
-        domain_counts[p.domain] = domain_counts.get(p.domain, 0) + 1
-
-    neptune = get_neptune_client()
-    dm = settings.DATASET_RDF_NAMESPACE
-    query = f"""
-    PREFIX dm: <{dm}>
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-    SELECT ?method (COUNT(?rel) AS ?cnt) WHERE {{
-        ?rel rdf:type rdf:Statement ;
-             rdf:predicate dm:relatedTo ;
-             dm:relationMethod ?method .
-    }}
-    GROUP BY ?method
-    """
-    try:
-        resp = neptune.execute_query(query)
-        method_counts = {
-            b["method"]["value"]: int(b["cnt"]["value"])
-            for b in resp.get("results", {}).get("bindings", [])
-        }
-    except Exception:
-        method_counts = {}
-
-    total_relations = sum(method_counts.values())
-
+    profiles = get_dataset_repository().list_all()
+    edges = get_relation_repository().edges()
     return APIResponseModel(
         result={
-            "dataset_count": dataset_count,
-            "relation_count": total_relations,
-            "domain_counts": domain_counts,
-            "method_counts": method_counts,
+            "dataset_count": len(profiles),
+            "relation_count": len(edges),
+            "domain_counts": dict(Counter(p.domain for p in profiles)),
+            "method_counts": dict(Counter(e["method"] for e in edges)),
         },
-        description=f"데이터셋 {dataset_count}개, 관계 {total_relations}개",
+        description=f"데이터셋 {len(profiles)}개, 관계 {len(edges)}개",
     )
 
 
@@ -818,7 +710,7 @@ async def get_stats():
     summary="Dataset 삭제",
 )
 async def delete_dataset(table_name: str):
-    """OpenSearch + Neptune에서 Dataset 및 연관 관계를 삭제."""
+    """Dataset 과 그 파일·임베딩·관계를 원장에서 삭제."""
     from app.src.dataset.dataset_service import DatasetService
     ok = DatasetService().delete_table(table_name)
     return APIResponseModel(

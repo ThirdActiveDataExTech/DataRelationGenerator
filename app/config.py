@@ -130,7 +130,8 @@ class Settings(BaseSettings):
     OPENSEARCH_DOCUMENTS_INDEX: str = "third-party-graph-documents"
     OPENSEARCH_KEYS_INDEX: str = "third-party-graph-keys"
     OPENSEARCH_VALUES_INDEX: str = "third-party-graph-values"
-    OPENSEARCH_DATASETS_INDEX: str = "third-party-datasets"
+
+    POSTGRES_DSN: str = "postgresql://wisenut"
 
     # 원본 업로드 파일(blob) 보관 백엔드 선택 (§3.2): filesystem | minio | none
     #   - filesystem: 로컬 디스크(또는 PVC 마운트 경로)에 저장 — active-metadata 프로젝트와 동일 방식
