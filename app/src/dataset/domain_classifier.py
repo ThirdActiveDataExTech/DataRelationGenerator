@@ -82,7 +82,7 @@ class CategoryClassifier:
             for category, label in self._category_embeddings().items()
             if label and len(label) == len(embedding)
         }
-        return max(scores, key=scores.get)
+        return max(scores, key=scores.__getitem__)
 
     def classify(
         self, title: str, summary: str, keywords: list[str], columns: list[str], embedding: list[float]
