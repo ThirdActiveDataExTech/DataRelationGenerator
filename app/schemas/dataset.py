@@ -340,36 +340,16 @@ class TableRelationVerification(BaseModel):
     코드가 실제 컬럼·샘플에 대조 검증한다 (자기신고 분류는 검증이 불가능했다).
     """
 
-    related: bool = Field(description="두 테이블이 의미적으로 연관되어 있는가")
-    table_a_nature: TableNature = Field(
-        description="테이블 A의 성격 (record: 실세계 개체·사건의 기록 / knowledge_content: 지식·콘텐츠 자체가 행의 대상)"
-    )
-    table_b_nature: TableNature = Field(description="테이블 B의 성격")
-    level1_type: Level1RelationType = Field(
-        description=(
-            "관계 유형 4종 — DETAIL_FOR(같은 개체에 앵커가 없는 속성을 공급) / "
-            "STATISTIC_FOR(다른 입도의 집계·지수로 맥락 제공) / "
-            "SAME_KIND(같은 표준·구조의 다른 지역·판본) / "
-            "ADJACENT_TO(같은 맥락의 다른 개체)"
-        )
-    )
-    evidence_columns: list[str] = Field(
-        default_factory=list,
-        description="근거로 삼은 컬럼명 — 양쪽 테이블에 모두 존재하는 이름만. 없으면 빈 배열",
-    )
-    evidence_values: list[str] = Field(
-        default_factory=list,
-        description="근거로 삼은 값 — 양쪽 샘플 레코드에 모두 등장하는 값만. 없으면 빈 배열",
-    )
-    relation_type: str = Field(description="관계를 한 줄로 설명 (예: 어린이집-교직원 1:N 참조)")
+    related: bool = Field(description="근거가 있는 관계인가")
+    table_a_nature: TableNature = Field(description="A의 성격")
+    table_b_nature: TableNature = Field(description="B의 성격")
+    level1_type: Level1RelationType = Field(description="관계 유형")
+    evidence_columns: list[str] = Field(default_factory=list, description="양쪽에 모두 있는 근거 컬럼명")
+    evidence_values: list[str] = Field(default_factory=list, description="양쪽 샘플에 모두 나오는 근거 값")
+    relation_type: str = Field(description="두 데이터가 어떻게 이어지는지 한 줄")
     confidence: float = Field(ge=0.0, le=1.0, description="확신도")
-    reason: str = Field(description="판단 근거 (2~3문장)")
-    usage: str = Field(
-        description=(
-            "데이터를 찾는 사용자에게 보여줄 활용 설명 1~2문장 — 누가 어떤 상황에서 두 데이터를 함께 쓰면 "
-            "무엇을 할 수 있는지. 짧은 데이터 이름으로 쓰고 'A/B·테이블'·판정 과정은 쓰지 않는다. 관계가 없으면 빈 문자열"
-        )
-    )
+    reason: str = Field(description="판정 근거 (검토자용)")
+    usage: str = Field(description="두 데이터를 합치면 무엇을 알게 되는지 한 문장 (관계가 없으면 빈 문자열)")
 
 
 table_relation_verification_tool = pydantic_function_tool(

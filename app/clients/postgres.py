@@ -3,17 +3,17 @@
 from collections.abc import Sequence
 
 import psycopg
-from psycopg.rows import dict_row
+from psycopg.rows import DictRow, dict_row
 
 from app.config import settings
 
 
-def connect() -> psycopg.Connection:
+def connect() -> psycopg.Connection[DictRow]:
     """원장 접속. `with connect() as conn:` 블록이 끝나면 커밋(예외 시 롤백) 후 닫힌다.
 
     ponytail: 호출마다 새 접속. 동시 요청이 늘면 psycopg_pool.ConnectionPool 로 교체
     """
-    return psycopg.connect(settings.POSTGRES_DSN, row_factory=dict_row)
+    return psycopg.Connection[DictRow].connect(settings.POSTGRES_DSN, row_factory=dict_row)
 
 
 def to_vector(values: Sequence[float]) -> str | None:

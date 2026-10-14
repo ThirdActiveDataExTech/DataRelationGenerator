@@ -174,7 +174,7 @@ class ExploreService:
                 sub_label=sub,
                 score=e["score"],
                 join_keys=_join_keys(e["evidence"], anchor_is_a),
-                reason=str(e["evidence"].get("usage") or e["evidence"].get("reason") or ""),
+                reason=str(e["evidence"].get("usage") or ""),
             ))
 
         related = {e["source"] for e in edges} | {e["target"] for e in edges}
