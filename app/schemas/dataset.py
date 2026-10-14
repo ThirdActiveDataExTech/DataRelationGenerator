@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any, Literal
 
 from app.schemas.tool_utils import pydantic_function_tool
+from app.src.dataset.domain_classifier import CATEGORIES
 from pydantic import BaseModel, Field
 
 
@@ -167,9 +168,13 @@ class DatasetProfile(BaseModel):
     landing_page: str = Field(
         default="", description="원본 제공처 URL (DCAT dcat:landingPage/accessURL) — 사용자 시나리오 '수집' 단계 연결용"
     )
-    domain: str = Field(description="데이터 도메인 (medical, broadcast, general 등)")
-    domain_confidence: float | None = Field(
-        default=None, description="도메인 자동 분류 신뢰도 (None = 사용자/카탈로그 지정)"
+    source: str = Field(
+        default="", description="원천 포털 코드 (DATA_GO_KR / KOSIS / HIRA / FIRST_PARTY / OTHER) — 원장이 제공처로 정한다"
+    )
+    domain: str = Field(description="대표 대분류 (디지털 집현전 7대분류 — 과학·기술·인문·사회·교육·의료·문화). 미분류면 빈 값")
+    categories: list[str] = Field(
+        default_factory=list,
+        description="분야 분류 '대분류 > 중분류' 1~3개 (디지털 집현전 분류표). 첫 번째가 대표 분류",
     )
     record_count: int = Field(description="레코드 수")
     column_count: int = Field(description="컬럼 수")
@@ -204,13 +209,19 @@ class DatasetIngestRequest(BaseModel):
     """테이블 메타데이터 적재 요청."""
 
     table_name: str = Field(description="테이블명")
-    domain: str = Field(default="", description="도메인 (medical, broadcast 등). 빈 값이면 특징 기반 자동 분류")
+    domain: str = Field(
+        default="", description="분야 분류 '대분류 > 중분류' (디지털 집현전 분류표). 생략하거나 분류표 밖 값이면 자동 분류"
+    )
     catalog_identifier: str = Field(default="", description="통합 카탈로그 식별자 (catalog_entry.identifier)")
     description: str = Field(default="", description="짧은 설명")
     table_summary: str = Field(default="", description="상세 요약 (비어있으면 description 사용)")
     party: Literal["", "1st", "3rd"] = Field(default="", description="데이터 파티 구분 (1st/3rd)")
     provider: str = Field(default="", description="제공 기관/발행처")
     landing_page: str = Field(default="", description="원본 제공처 URL")
+    column_names: list[str] = Field(
+        default_factory=list,
+        description="레코드 없이 스키마만 공개된 데이터의 컬럼 목록 (테이블명세서·API 응답 명세). records가 있으면 무시",
+    )
 
 
 class IngestFromCatalogRequest(BaseModel):
@@ -270,6 +281,9 @@ class DatasetSearchResult(BaseModel):
         default="knn", description="매칭 근거 — knn(임베딩 유사 후보) / relation(기존 확정 관계)"
     )
     relation_type: str = Field(default="", description="match_type=relation 일 때 관계 유형")
+    evidence: dict[str, Any] = Field(
+        default_factory=dict, description="match_type=relation 일 때 생성 근거 (결합 컬럼·LLM 판정 이유)"
+    )
 
 
 # ── Tier 1 ──────────────────────────────────────────────────────────────────
@@ -326,30 +340,16 @@ class TableRelationVerification(BaseModel):
     코드가 실제 컬럼·샘플에 대조 검증한다 (자기신고 분류는 검증이 불가능했다).
     """
 
-    related: bool = Field(description="두 테이블이 의미적으로 연관되어 있는가")
-    table_a_nature: TableNature = Field(
-        description="테이블 A의 성격 (record: 실세계 개체·사건의 기록 / knowledge_content: 지식·콘텐츠 자체가 행의 대상)"
-    )
-    table_b_nature: TableNature = Field(description="테이블 B의 성격")
-    level1_type: Level1RelationType = Field(
-        description=(
-            "관계 유형 4종 — DETAIL_FOR(같은 개체에 앵커가 없는 속성을 공급) / "
-            "STATISTIC_FOR(다른 입도의 집계·지수로 맥락 제공) / "
-            "SAME_KIND(같은 표준·구조의 다른 지역·판본) / "
-            "ADJACENT_TO(같은 맥락의 다른 개체)"
-        )
-    )
-    evidence_columns: list[str] = Field(
-        default_factory=list,
-        description="근거로 삼은 컬럼명 — 양쪽 테이블에 모두 존재하는 이름만. 없으면 빈 배열",
-    )
-    evidence_values: list[str] = Field(
-        default_factory=list,
-        description="근거로 삼은 값 — 양쪽 샘플 레코드에 모두 등장하는 값만. 없으면 빈 배열",
-    )
-    relation_type: str = Field(description="관계를 한 줄로 설명 (예: 어린이집-교직원 1:N 참조)")
+    related: bool = Field(description="근거가 있는 관계인가")
+    table_a_nature: TableNature = Field(description="A의 성격")
+    table_b_nature: TableNature = Field(description="B의 성격")
+    level1_type: Level1RelationType = Field(description="관계 유형")
+    evidence_columns: list[str] = Field(default_factory=list, description="양쪽에 모두 있는 근거 컬럼명")
+    evidence_values: list[str] = Field(default_factory=list, description="양쪽 샘플에 모두 나오는 근거 값")
+    relation_type: str = Field(description="두 데이터가 어떻게 이어지는지 한 줄")
     confidence: float = Field(ge=0.0, le=1.0, description="확신도")
-    reason: str = Field(description="판단 근거 (2~3문장)")
+    reason: str = Field(description="판정 근거 (검토자용)")
+    usage: str = Field(description="두 데이터를 합치면 무엇을 알게 되는지 한 문장 (관계가 없으면 빈 문자열)")
 
 
 table_relation_verification_tool = pydantic_function_tool(
@@ -368,10 +368,6 @@ class TableMetadataExtraction(BaseModel):
         default="",
         description="테이블의 한국어 표시명 — 사람이 한눈에 알아볼 간결한 명사구 (예: patient_info → '환자 기본정보'). 테이블명이 이미 자연스러운 한국어면 그대로 사용",
     )
-    domain: str = Field(
-        default="",
-        description="데이터 도메인 분류 (한국어 명사, 예: 보건의료, 교통및물류, 환경). 기존 도메인 목록이 주어지면 그중 가장 적합한 것을 우선 선택하고, 정말 맞는 것이 없을 때만 새 도메인을 제안",
-    )
 
 
 table_metadata_extraction_tool = pydantic_function_tool(
@@ -381,18 +377,19 @@ table_metadata_extraction_tool = pydantic_function_tool(
 )
 
 
-class DomainSelection(BaseModel):
-    """도메인 선택 결과 — 기존 도메인 우선, 신설은 최후 수단."""
+class DatasetCategoryClassification(BaseModel):
+    """분야 분류 결과 — 디지털 집현전 분류표 안에서만 고른다."""
 
-    domain: str = Field(
-        description="제시된 기존 도메인 중 하나 (우선). 정말 해당 없을 때만 대분류 수준의 새 도메인 명사"
+    # Bedrock 은 배열 minItems/maxItems 를 거부한다 — 개수는 프롬프트로 지시하고 normalize_categories 가 자른다
+    categories: list[Literal[CATEGORIES]] = Field(  # type: ignore[valid-type]
+        description="'대분류 > 중분류' 1~3개. 가장 대표적인 분류를 맨 앞에. 확실한 것만 고르고 억지로 채우지 말 것",
     )
 
 
-domain_selection_tool = pydantic_function_tool(
-    DomainSelection,
-    name="select_domain",
-    description="데이터셋 메타데이터를 도메인으로 분류합니다. 기존 도메인 재사용을 우선하고 신설은 지양합니다.",
+dataset_category_classification_tool = pydantic_function_tool(
+    DatasetCategoryClassification,
+    name="classify_dataset_categories",
+    description="데이터셋을 디지털 집현전 주제 분류(대분류 > 중분류)로 분류합니다.",
 )
 
 
@@ -440,6 +437,7 @@ class Tier3Result(BaseModel):
     evidence_values: list[str] = Field(default_factory=list, description="LLM이 인용한 근거 값")
     confidence: float
     reason: str
+    usage: str = Field(default="", description="사용자에게 보여줄 활용 설명")
     embedding_score: float = Field(description="Tier 2 유사도 (참고용)")
     method: Literal["llm"] = "llm"
 

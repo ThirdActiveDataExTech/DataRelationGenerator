@@ -37,3 +37,7 @@ database.db
 
 # 원본 업로드 보관(로컬 파일시스템 백엔드)
 raw_uploads/
+
+# 원장 시드
+/db/.env
+/db/seed/

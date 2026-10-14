@@ -1,38 +1,34 @@
-"""Dataset 메타데이터 추출 및 Neptune/OpenSearch 적재 서비스."""
+"""Dataset 메타데이터 추출 및 원장(PostgreSQL) 적재 서비스."""
 
+import json
 import logging
-import uuid
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote
 
-from app.clients.neptune import NeptuneClient, get_neptune_client
 from app.config import settings
 from app.repositories.dataset_repository import DatasetRepository, get_dataset_repository
-from app.schemas.dataset import DatasetProfile, DatasetRelation, DatasetSearchResult, migrate_stored_type
+from app.repositories.relation_repository import RelationRepository, get_relation_repository
+from app.schemas.dataset import DatasetProfile, DatasetRelation, DatasetSearchResult
+from app.src.dataset.domain_classifier import CategoryClassifier, major_of, normalize_categories
 from app.src.embedding.embedding_service import embedding_service
 from app.src.meta_extract.llm_response import LLMResponse
-from app.src.ontology.ontology_service import OntologyService
 
 logger = logging.getLogger(__name__)
 
-_DM = settings.DATASET_RDF_NAMESPACE
 _SAMPLE_SIZE = 10
 
 
 class DatasetService:
-    """테이블 메타데이터 추출 → Neptune Dataset 노드 + OpenSearch 적재."""
+    """테이블 메타데이터 추출 → 데이터셋 원장 적재, 데이터셋 간 관계 기록."""
 
     def __init__(
         self,
-        neptune_client: NeptuneClient | None = None,
         dataset_repo: DatasetRepository | None = None,
-        ontology_service: OntologyService | None = None,
+        relation_repo: RelationRepository | None = None,
     ):
-        """Neptune·OpenSearch 클라이언트 및 온톨로지 서비스를 주입받아 초기화."""
-        self.neptune = neptune_client or get_neptune_client()
+        """데이터셋·관계 저장소를 주입받아 초기화."""
         self.dataset_repo = dataset_repo or get_dataset_repository()
-        self.ontology = ontology_service or OntologyService(neptune_client=self.neptune)
+        self.relation_repo = relation_repo or get_relation_repository()
 
     # ──────────────────────────────────────────────
     # 테이블 등록
@@ -51,8 +47,9 @@ class DatasetService:
         party: str = "",
         provider: str = "",
         landing_page: str = "",
+        column_names: list[str] | None = None,
     ) -> DatasetProfile:
-        """테이블 데이터 → 메타데이터 추출 → Neptune + OpenSearch 저장.
+        """테이블 데이터 → 메타데이터 추출 → 원장 저장.
 
         Args:
             records: 테이블의 전체 레코드 목록. 빈 목록이면 메타데이터-only 등록
@@ -67,6 +64,7 @@ class DatasetService:
             party: 데이터 파티 구분 (1st: 기관 보유, 3rd: 외부 개방)
             provider: 제공 기관/발행처 (DCAT publisher)
             landing_page: 원본 제공처 URL (수집 단계 연결용)
+            column_names: 레코드 없이 스키마만 공개된 데이터의 컬럼 목록. records 가 있으면 무시
 
         Returns:
             저장된 DatasetProfile
@@ -75,7 +73,8 @@ class DatasetService:
             raise ValueError(f"'{table_name}': 레코드가 없고 요약 메타데이터도 없습니다")
 
         profile = self._build_profile(
-            records, table_name, domain, description, table_summary, seed_keywords=keywords
+            records, table_name, domain, description, table_summary,
+            seed_keywords=keywords, column_names=column_names,
         )
         profile.raw_storage_key = raw_storage_key
         profile.catalog_identifier = catalog_identifier
@@ -88,13 +87,6 @@ class DatasetService:
         if existing:
             profile.dataset_id = existing.dataset_id
             profile.created_at = existing.created_at
-
-        try:
-            self._save_to_neptune(profile)
-            # 온톨로지 의미 계층: 데이터셋을 도메인 개념에 자동 연결
-            self.ontology.link_dataset_to_domain(profile.table_name, profile.domain)
-        except Exception as e:
-            logger.warning(f"[Dataset] Neptune 저장 실패 (OpenSearch는 계속 진행): {e}")
 
         self.dataset_repo.upsert(profile)
 
@@ -110,48 +102,13 @@ class DatasetService:
     # ──────────────────────────────────────────────
 
     def save_relation(self, relation: DatasetRelation, push_to_catalog: bool = True) -> None:
-        """두 Dataset 간 관계를 Neptune에 upsert (기존 관계 삭제 후 재저장).
+        """두 Dataset 간 관계를 확정(APPROVED)으로 기록 — 같은 쌍의 기존 관계는 대체.
 
         Args:
             relation: DatasetRelation 객체
             push_to_catalog: ① 환류 여부 (① 승인 콜백 경로에서는 False — 재환류 방지)
         """
-        subject_uri = self._dataset_uri(relation.table_a)
-        object_uri = self._dataset_uri(relation.table_b)
-        created_at = datetime.now(timezone.utc).isoformat()
-        relation_type_escaped = relation.relation_type.replace('"', '\\"')
-
-        # 두 테이블 간 기존 관계(양방향) 삭제 후 새로 INSERT
-        update = f"""
-        PREFIX dm: <{_DM}>
-        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-        PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
-
-        DELETE {{
-            ?rel ?p ?o .
-        }}
-        WHERE {{
-            ?rel rdf:type rdf:Statement ;
-                 ?p ?o .
-            FILTER (
-                (EXISTS {{ ?rel rdf:subject {subject_uri} . ?rel rdf:object {object_uri} }}) ||
-                (EXISTS {{ ?rel rdf:subject {object_uri} . ?rel rdf:object {subject_uri} }})
-            )
-        }} ;
-
-        INSERT DATA {{
-            <{_DM}relation/{quote(relation.table_a)}-{quote(relation.table_b)}>
-                rdf:type rdf:Statement ;
-                rdf:subject {subject_uri} ;
-                rdf:predicate dm:relatedTo ;
-                rdf:object {object_uri} ;
-                dm:relationScore "{relation.score}"^^xsd:float ;
-                dm:relationMethod "{relation.method}" ;
-                dm:relationType "{relation_type_escaped}" ;
-                dm:createdAt "{created_at}"^^xsd:dateTime .
-        }}
-        """
-        self.neptune.execute_update(update)
+        self.relation_repo.replace(relation, "APPROVED")
         logger.info(
             f"[Relation] {relation.table_a} --[{relation.relation_type}]--> {relation.table_b} "
             f"(score={relation.score}, method={relation.method})"
@@ -161,10 +118,12 @@ class DatasetService:
             self._push_relation_to_catalog(relation, status="APPROVED")
 
     def propose_relation_to_catalog(self, relation: DatasetRelation) -> None:
-        """저신뢰 관계를 그래프 저장 없이 ①에 PENDING 으로 제안 (승인 SSOT = ①).
+        """저신뢰 관계를 승인 대기(PENDING)로 기록하고 ① 검토 화면에 제안한다.
 
-        ① 검토자가 승인하면 /dataset/relation/decision 콜백으로 그래프에 반영된다.
+        ① 검토자가 결정하면 /dataset/relation/decision 콜백으로 상태가 바뀐다.
+        확정 관계만 조회·탐색에 쓰이므로 대기 중에는 노출되지 않는다.
         """
+        self.relation_repo.replace(relation, "PENDING")
         logger.info(
             f"[Relation] 승인 대기 제안: {relation.table_a} <-> {relation.table_b} "
             f"(score={relation.score}, method={relation.method})"
@@ -181,21 +140,16 @@ class DatasetService:
         evidence: dict | None,
         approved: bool,
     ) -> DatasetRelation | None:
-        """①의 승인/반려 결정을 그래프에 반영 (승인 워크플로우 콜백 전용).
+        """①의 승인/반려 결정을 관계 상태에 반영 (승인 워크플로우 콜백 전용, 재환류 없음).
 
-        승인: 관계를 Neptune에 저장 (재환류 없음 — 상태는 ①이 이미 보유).
-        반려: 그래프에 저장된 적 없으므로 no-op.
+        반려도 REJECTED 로 남겨 다음 파이프라인 실행에서 같은 쌍을 다시 제안하지 않게 한다.
 
         Returns:
-            승인 시 저장된 DatasetRelation, 반려 시 None
+            승인 시 기록된 DatasetRelation, 반려 시 None
 
         Raises:
             ValueError: 식별자에 해당하는 데이터셋 프로파일이 없을 때
         """
-        if not approved:
-            logger.info(f"[Relation] 반려 결정 수신 — 그래프 미반영: {source_identifier} <-> {target_identifier}")
-            return None
-
         profile_a = self.dataset_repo.get_by_identifier(source_identifier)
         profile_b = self.dataset_repo.get_by_identifier(target_identifier)
         if not profile_a or not profile_b:
@@ -212,8 +166,12 @@ class DatasetService:
             relation_type=relation_type,
             evidence=evidence or {},
         )
-        self.save_relation(relation, push_to_catalog=False)
-        return relation
+        self.relation_repo.replace(relation, "APPROVED" if approved else "REJECTED")
+        logger.info(
+            f"[Relation] ① 결정 반영({'승인' if approved else '반려'}): "
+            f"{source_identifier} <-> {target_identifier}"
+        )
+        return relation if approved else None
 
     def _push_relation_to_catalog(self, relation: DatasetRelation, status: str = "APPROVED") -> None:
         """관계를 ①의 dataset_relation 으로 환류. 실패해도 관계 저장 자체는 유지 (graceful)."""
@@ -231,31 +189,11 @@ class DatasetService:
                 f"--[{relation.relation_type}]--> {relation.catalog_identifier_b}"
             )
         except Exception as e:
-            logger.warning(f"[Relation] 카탈로그 환류 실패 (Neptune 저장은 완료): {e}")
+            logger.warning(f"[Relation] 카탈로그 환류 실패 (원장 기록은 완료): {e}")
 
     def get_existing_relation_pairs(self) -> set[tuple[str, str]]:
-        """Neptune에 저장된 관계 쌍을 (table_a, table_b) 집합으로 반환 (정렬된 튜플)."""
-        query = f"""
-        PREFIX dm: <{_DM}>
-        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-
-        SELECT ?tableA ?tableB WHERE {{
-            ?rel rdf:type rdf:Statement ;
-                 rdf:subject ?s ;
-                 rdf:object  ?o .
-            ?s dm:tableName ?tableA .
-            ?o dm:tableName ?tableB .
-        }}
-        """
-        try:
-            rows = self.neptune.execute_query(query)
-            return {
-                tuple(sorted([r["tableA"]["value"], r["tableB"]["value"]]))
-                for r in rows.get("results", {}).get("bindings", [])
-            }
-        except Exception as e:
-            logger.warning(f"[Dataset] 기존 관계 쌍 조회 실패: {e}")
-            return set()
+        """판정 이력이 있는 쌍(확정·대기·반려) — 증분 실행에서 다시 평가하지 않는다."""
+        return self.relation_repo.pairs()
 
     # ──────────────────────────────────────────────
     # 검색
@@ -378,7 +316,7 @@ class DatasetService:
     ) -> dict[str, Any] | None:
         """기준 데이터셋(1st 파티) 중심의 연계 가능 데이터셋 검색 (사용자 시나리오 1단계).
 
-        기존 확정 관계(Neptune 1-hop)를 우선 신호로, 임베딩 KNN 유사 후보로 보강한다.
+        기존 확정 관계(1-hop)를 우선 신호로, 임베딩 KNN 유사 후보로 보강한다.
         nl_search 와 동일한 응답 형태를 반환하여 UI 렌더링을 공유한다.
 
         Args:
@@ -421,6 +359,7 @@ class DatasetService:
                 landing_page=p.landing_page,
                 match_type="relation",
                 relation_type=edge["relation_type"],
+                evidence=edge.get("evidence", {}),
             ))
 
         # 2) 임베딩 KNN 유사 후보로 보강 (기준 자신 제외, 관계로 이미 잡힌 것 제외)
@@ -477,92 +416,27 @@ class DatasetService:
             anchor: 엣지를 남길 기준 데이터셋. None 이면 seed 전체의 1-hop 을 합친다
 
         Returns:
-            {"nodes": [{"id", "type", "seed"}], "edges": [{"source","target","relation_type","score"}]}
+            {"nodes": [{"id", "type", "seed"}], "edges": [{"source","target","relation_type","score","evidence"}]}
         """
+        if not table_names:
+            return {"nodes": [], "edges": []}
         nodes: dict[str, dict[str, Any]] = {
             name: {"id": name, "type": "Dataset", "seed": True} for name in table_names
         }
-        edges: list[dict[str, Any]] = []
-        if not table_names:
-            return {"nodes": [], "edges": []}
-
-        values_filter = " ".join(f'"{t.replace(chr(34), "")}"' for t in table_names)
-        query = f"""
-        PREFIX dm: <{_DM}>
-        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-        SELECT ?tableA ?tableB ?relationType ?score WHERE {{
-            ?rel rdf:type rdf:Statement ;
-                 rdf:subject ?s ;
-                 rdf:predicate dm:relatedTo ;
-                 rdf:object ?o ;
-                 dm:relationType ?relationType ;
-                 dm:relationScore ?score .
-            ?s dm:tableName ?tableA .
-            ?o dm:tableName ?tableB .
-            VALUES ?seed {{ {values_filter} }}
-            FILTER (?tableA = ?seed || ?tableB = ?seed)
-        }}
-        """
-        try:
-            resp = self.neptune.execute_query(query)
-            # 양끝이 모두 seed인 관계는 VALUES 절에 두 번 매칭되므로 쌍 단위로 중복을 제거한다
-            seen: set[frozenset[str]] = set()
-            for b in resp.get("results", {}).get("bindings", []):
-                ta, tb = b["tableA"]["value"], b["tableB"]["value"]
-                pair = frozenset((ta, tb))
-                if pair in seen:
-                    continue
-                seen.add(pair)
-                if anchor and anchor not in pair:
-                    continue
-                for t in (ta, tb):
-                    if t not in nodes:
-                        nodes[t] = {"id": t, "type": "Dataset", "seed": False}
-                edges.append({
-                    "source": ta,
-                    "target": tb,
-                    "relation_type": migrate_stored_type(b["relationType"]["value"]),
-                    "score": float(b["score"]["value"]),
-                })
-        except Exception as e:
-            logger.warning(f"[NL Search] 부분 그래프 조회 실패: {e}")
+        edges = [
+            {k: e[k] for k in ("source", "target", "relation_type", "score", "evidence")}
+            for e in self.relation_repo.edges(table_names)
+            if not anchor or anchor in (e["source"], e["target"])
+        ]
+        for e in edges:
+            for t in (e["source"], e["target"]):
+                nodes.setdefault(t, {"id": t, "type": "Dataset", "seed": False})
 
         return {"nodes": list(nodes.values()), "edges": edges}
 
     # ──────────────────────────────────────────────
     # Private helpers
     # ──────────────────────────────────────────────
-
-    def _select_domain_via_llm(self, table_name: str, summary_text: str, keywords: list[str]) -> str:
-        """분류기 폴백 시 LLM으로 도메인 결정 - 기존 도메인 재사용 우선.
-
-        Returns:
-            도메인 라벨. general 응답·호출 실패면 빈 값 (호출부에서 general 유지)
-        """
-        from app.src.dataset.domain_classifier import FALLBACK_DOMAIN, STANDARD_DOMAINS
-
-        existing = {
-            d for _, d, _ in (self.dataset_repo.list_domain_embeddings() or [])
-            if d and d != FALLBACK_DOMAIN
-        }
-        candidates = list(STANDARD_DOMAINS) + sorted(existing - set(STANDARD_DOMAINS))
-
-        try:
-            result = LLMResponse("domain_selection").generate_llm_response(variables={
-                "title": table_name,
-                "summary": summary_text,
-                "keywords": ", ".join(keywords[:15]),
-                "candidates": ", ".join(candidates),
-            })
-            picked = (result.get("domain") or "").strip() if isinstance(result, dict) else ""
-            if not picked or picked.lower() == FALLBACK_DOMAIN:
-                return ""
-            if picked not in candidates:
-                logger.info(f"[Dataset] '{table_name}' LLM 도메인 신설: {picked}")
-            return picked
-        except Exception as e:
-            logger.warning(f"[Dataset] '{table_name}' LLM 도메인 선택 실패 — general 유지: {e}")
-            return ""
 
     def _build_profile(
         self,
@@ -572,51 +446,32 @@ class DatasetService:
         description: str,
         table_summary: str,
         seed_keywords: list[str] | None = None,
+        column_names: list[str] | None = None,
     ) -> DatasetProfile:
-        column_names = list(records[0].keys()) if records else []
+        column_names = list(records[0].keys()) if records else list(column_names or [])
         sample_records = records[:_SAMPLE_SIZE]
         summary_text = table_summary or description or f"{table_name} 테이블"
         table_embedding = embedding_service.generate_embedding(summary_text)
 
         # 표시명: LLM 경로에서 자동 생성. 시드 경로(카탈로그 pull)는 table_name이 이미 한글 title
         display_name = ""
-        llm_domain = ""
         if seed_keywords:
             keywords, keywords_embedding = seed_keywords, self._embed_keywords(seed_keywords)
         else:
-            keywords, keywords_embedding, display_name, llm_domain = self._extract_keywords(
+            keywords, keywords_embedding, display_name = self._extract_keywords(
                 table_name, column_names, sample_records
             )
 
-        domain_confidence = None
-        if not domain:
-            from app.src.dataset.domain_classifier import (
-                FALLBACK_DOMAIN,
-                STANDARD_DOMAINS,
-                DomainClassifier,
-            )
-
-            domain, domain_confidence, scores = DomainClassifier(self.dataset_repo).classify(
-                table_embedding, exclude_table_name=table_name
-            )
-            if domain == FALLBACK_DOMAIN:
-                llm_pick = (
-                    llm_domain
-                    if llm_domain in STANDARD_DOMAINS
-                    else self._select_domain_via_llm(table_name, summary_text, keywords)
-                )
-                if llm_pick:
-                    domain, domain_confidence = llm_pick, None
-            logger.info(
-                f"[Dataset] '{table_name}' 도메인 자동 분류: {domain} "
-                f"(conf={domain_confidence}, llm_domain={llm_domain or '-'}, scores={scores})"
-            )
+        categories = normalize_categories([domain]) or CategoryClassifier().classify(
+            table_name, summary_text, keywords, column_names, table_embedding
+        )
+        logger.info(f"[Dataset] '{table_name}' 분야 분류: {categories or '미분류'}")
 
         return DatasetProfile(
             table_name=table_name,
             display_name=display_name,
-            domain=domain,
-            domain_confidence=domain_confidence,
+            domain=major_of(categories[0]) if categories else "",
+            categories=categories,
             record_count=len(records),
             column_count=len(column_names),
             column_names=column_names,
@@ -634,36 +489,26 @@ class DatasetService:
         table_name: str,
         column_names: list[str],
         sample_records: list[dict[str, Any]],
-    ) -> tuple[list[str], list[float], str, str]:
-        """LLM으로 키워드·표시명·도메인 추출 후 (키워드, 평균 임베딩, 표시명, 도메인) 반환.
-
-        도메인은 기존 등록 도메인 목록을 프롬프트에 제공해 표기 통일을 유도하고,
-        centroid 분류가 폴백될 때(콜드스타트 등)만 사용된다.
-        """
-        import json
+    ) -> tuple[list[str], list[float], str]:
+        """LLM으로 키워드·표시명 추출 후 (키워드, 평균 임베딩, 표시명) 반환."""
         try:
-            existing_domains = sorted({
-                d for _, d, _ in (self.dataset_repo.list_domain_embeddings() or []) if d and d != "general"
-            })
             variables = {
                 "table_name": table_name,
                 "columns": ", ".join(column_names),
                 "column_descriptions": ", ".join(column_names),
                 "sample_records": json.dumps(sample_records[:3], ensure_ascii=False),
-                "existing_domains": ", ".join(existing_domains),
             }
             result = LLMResponse("table_metadata_extraction").generate_llm_response(variables)
             if not isinstance(result, dict):
-                return [], [], "", ""
+                return [], [], ""
             keywords = result.get("keywords", [])
             display_name = (result.get("display_name") or "").strip()
-            llm_domain = (result.get("domain") or "").strip()
             if not keywords:
-                return [], [], display_name, llm_domain
-            return keywords, self._embed_keywords(keywords), display_name, llm_domain
+                return [], [], display_name
+            return keywords, self._embed_keywords(keywords), display_name
         except Exception as e:
             logger.warning(f"[Dataset] '{table_name}' 키워드 추출 실패: {e}")
-            return [], [], "", ""
+            return [], [], ""
 
     @staticmethod
     def _embed_keywords(keywords: list[str]) -> list[float]:
@@ -672,91 +517,11 @@ class DatasetService:
 
         return mean_vector([embedding_service.generate_embedding(kw) for kw in keywords])
 
-    def _save_to_neptune(self, profile: DatasetProfile) -> None:
-        """Dataset 노드를 Neptune SPARQL INSERT로 저장 (upsert 효과)."""
-        dataset_uri = self._dataset_uri(profile.table_name)
-        description_escaped = profile.description.replace("\\", "\\\\").replace('"', '\\"')
-
-        catalog_id_triple = (
-            f' ;\n                dm:catalogIdentifier "{profile.catalog_identifier}"'
-            if profile.catalog_identifier
-            else ""
-        )
-        update = f"""
-        PREFIX dm: <{_DM}>
-        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-        PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
-
-        DELETE {{
-            {dataset_uri} dm:tableName ?tableName ;
-                           dm:domain ?domain ;
-                           dm:description ?desc .
-            {dataset_uri} dm:catalogIdentifier ?catalogId .
-        }}
-        WHERE {{
-            OPTIONAL {{ {dataset_uri} dm:tableName ?tableName }}
-            OPTIONAL {{ {dataset_uri} dm:domain ?domain }}
-            OPTIONAL {{ {dataset_uri} dm:description ?desc }}
-            OPTIONAL {{ {dataset_uri} dm:catalogIdentifier ?catalogId }}
-        }} ;
-
-        INSERT DATA {{
-            {dataset_uri} rdf:type dm:Dataset ;
-                dm:tableName "{profile.table_name}" ;
-                dm:domain "{profile.domain}" ;
-                dm:description "{description_escaped}"{catalog_id_triple} .
-        }}
-        """
-        self.neptune.execute_update(update)
-        logger.debug(f"[Neptune] Dataset 노드 저장: {profile.table_name}")
-
     def delete_table(self, table_name: str) -> bool:
-        """OpenSearch + Neptune에서 Dataset 노드 및 연관 관계를 모두 삭제."""
-        try:
-            self._delete_from_neptune(table_name)
-        except Exception as e:
-            logger.warning(f"[Dataset] Neptune 삭제 실패 (OpenSearch는 계속 진행): {e}")
-
+        """데이터셋 삭제 — 파일·임베딩·관계는 원장에서 함께 정리된다."""
         ok = self.dataset_repo.delete(table_name)
-        logger.info(f"[Dataset] '{table_name}' 삭제 완료 (opensearch={ok})")
+        logger.info(f"[Dataset] '{table_name}' 삭제 {'완료' if ok else '대상 없음'}")
         return ok
-
-    def _delete_from_neptune(self, table_name: str) -> None:
-        """Dataset 노드와 해당 테이블이 주체/대상인 관계 reification 트리플을 모두 삭제."""
-        dataset_uri = self._dataset_uri(table_name)
-
-        # Dataset 노드 트리플 + 해당 테이블이 subject 또는 object인 관계 reification 전체 삭제
-        update = f"""
-        PREFIX dm: <{_DM}>
-        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-
-        DELETE {{
-            {dataset_uri} ?p ?o .
-            ?rel ?rp ?ro .
-        }}
-        WHERE {{
-            {{
-                {dataset_uri} ?p ?o .
-            }}
-            UNION
-            {{
-                ?rel rdf:type rdf:Statement ;
-                     ?rp ?ro .
-                FILTER (
-                    ?rel != rdf:type &&
-                    (
-                        EXISTS {{ ?rel rdf:subject {dataset_uri} }} ||
-                        EXISTS {{ ?rel rdf:object  {dataset_uri} }}
-                    )
-                )
-            }}
-        }}
-        """
-        self.neptune.execute_update(update)
-        logger.debug(f"[Neptune] Dataset 삭제: {table_name}")
-
-    def _dataset_uri(self, table_name: str) -> str:
-        return f"<{_DM}dataset/{quote(table_name)}>"
 
 
 dataset_service = DatasetService()

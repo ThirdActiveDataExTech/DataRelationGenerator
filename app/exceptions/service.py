@@ -22,3 +22,21 @@ class CatalogEntryNotFoundError(ApplicationError):
         self.code = int(f"{settings.SERVICE_CODE}{status.HTTP_404_NOT_FOUND}")
         self.message = "Catalog entry not found"
         self.result = {"catalog_key": catalog_key}
+
+
+class DatasetNotFoundError(ApplicationError):
+    """원장에 등록되지 않은 데이터셋(table_name)"""
+
+    def __init__(self, table_name):
+        self.code = int(f"{settings.SERVICE_CODE}{status.HTTP_404_NOT_FOUND}")
+        self.message = "Dataset not found"
+        self.result = {"table_name": table_name}
+
+
+class DuplicateDatasetContentError(ApplicationError):
+    """같은 내용(content_sha256)의 데이터파일이 다른 이름으로 이미 등록됨"""
+
+    def __init__(self, table_name):
+        self.code = int(f"{settings.SERVICE_CODE}{status.HTTP_409_CONFLICT}")
+        self.message = "Dataset with the same content is already registered"
+        self.result = {"table_name": table_name}

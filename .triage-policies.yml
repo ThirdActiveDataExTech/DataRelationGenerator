@@ -34,8 +34,7 @@ resource_rules:
             
             이슈를 다시 확인하세요. {{author}}
             
-          status:
-            - close
+          status: close
 
   merge_requests:
     rules:
