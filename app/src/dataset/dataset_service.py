@@ -8,7 +8,7 @@ from typing import Any
 from app.config import settings
 from app.repositories.dataset_repository import DatasetRepository, get_dataset_repository
 from app.repositories.relation_repository import RelationRepository, get_relation_repository
-from app.schemas.dataset import DatasetProfile, DatasetRelation, DatasetSearchResult
+from app.schemas.dataset import DatasetProfile, DatasetRelation, DatasetSearchResult, type_seen_from
 from app.src.dataset.domain_classifier import CategoryClassifier, major_of, normalize_categories
 from app.src.embedding.embedding_service import embedding_service
 from app.src.meta_extract.llm_response import LLMResponse
@@ -114,7 +114,7 @@ class DatasetService:
             f"(score={relation.score}, method={relation.method})"
         )
 
-        if push_to_catalog and settings.CATALOG_PUSH_ENABLED:
+        if push_to_catalog:
             self._push_relation_to_catalog(relation, status="APPROVED")
 
     def propose_relation_to_catalog(self, relation: DatasetRelation) -> None:
@@ -129,6 +129,25 @@ class DatasetService:
             f"(score={relation.score}, method={relation.method})"
         )
         self._push_relation_to_catalog(relation, status="PENDING")
+
+    def review_relation(self, relation_id: int, approved: bool) -> dict:
+        """판정 대기 관계를 승인·반려한다 (원장이 정본). 카탈로그와 연동된 관계는 결정을 환류한다.
+
+        반려도 REJECTED 로 남겨 다음 파이프라인 실행에서 같은 쌍을 다시 제안하지 않게 한다.
+
+        Raises:
+            RelationNotFoundError: 없는 관계 id
+        """
+        row = self.relation_repo.set_status(relation_id, "APPROVED" if approved else "REJECTED")
+        self._push_relation_to_catalog(
+            DatasetRelation(
+                table_a=row["table_a"], table_b=row["table_b"],
+                catalog_identifier_a=row["catalog_identifier_a"], catalog_identifier_b=row["catalog_identifier_b"],
+                score=row["score"], method=row["method"], relation_type=row["relation_type"], evidence=row["evidence"],
+            ),
+            status=row["status"],
+        )
+        return row
 
     def apply_relation_decision(
         self,
@@ -175,6 +194,8 @@ class DatasetService:
 
     def _push_relation_to_catalog(self, relation: DatasetRelation, status: str = "APPROVED") -> None:
         """관계를 ①의 dataset_relation 으로 환류. 실패해도 관계 저장 자체는 유지 (graceful)."""
+        if not settings.CATALOG_PUSH_ENABLED:
+            return
         if not (relation.catalog_identifier_a and relation.catalog_identifier_b):
             logger.debug(
                 f"[Relation] 카탈로그 식별자 없음 — 환류 생략: {relation.table_a} <-> {relation.table_b}"
@@ -358,7 +379,7 @@ class DatasetService:
                 provider=p.provider,
                 landing_page=p.landing_page,
                 match_type="relation",
-                relation_type=edge["relation_type"],
+                relation_type=type_seen_from(edge["relation_type"], edge["source"] == table_name),
                 evidence=edge.get("evidence", {}),
             ))
 
