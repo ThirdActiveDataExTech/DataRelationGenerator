@@ -349,7 +349,7 @@ class RelationPipeline:
         else:
             score = desc_score
 
-        # PPMI 보조 신호 (계획서 ②-2) — KV 그래프 특징 co-occurrence 기반 연관성 수치.
+        # PPMI-SVD 보조 신호 — KV 그래프 특징 co-occurrence 기반 연관성 수치.
         # 설명 문구가 달라도 실제 Key/Value 가 겹치면 잡아내는, 임베딩과 상보적인 신호.
         from app.config import settings
 
