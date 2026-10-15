@@ -5,10 +5,36 @@ from typing import Any, Literal
 from psycopg.types.json import Jsonb
 
 from app.clients.postgres import connect
-from app.exceptions.service import DatasetNotFoundError
+from app.exceptions.service import DatasetNotFoundError, RelationNotFoundError
 from app.schemas.dataset import DatasetRelation
 
 RelationStatus = Literal["PENDING", "APPROVED", "REJECTED"]
+
+_REVIEW_SELECT = """
+SELECT r.id, fa.file_name AS a, fb.file_name AS b, fa.display_name AS name_a, fb.display_name AS name_b,
+       r.relation_type, r.score, r.method, r.status, r.evidence, r.created_at,
+       da.external_ids AS ids_a, db.external_ids AS ids_b
+FROM dcat_dataset_relation r
+JOIN meta_datagokr_file fa ON fa.dataset_id = r.source_dataset_id
+JOIN meta_datagokr_file fb ON fb.dataset_id = r.target_dataset_id
+JOIN dcat_dataset da ON da.dataset_id = r.source_dataset_id
+JOIN dcat_dataset db ON db.dataset_id = r.target_dataset_id
+"""
+
+
+def _catalog_id(ids: list[str] | None) -> str:
+    """통합 카탈로그 식별자 — 원천 식별자('datagokr:'·'kosis:' 접두)를 뺀 첫 값."""
+    return next((i for i in ids or [] if ":" not in i), "")
+
+
+def _review_row(r: dict) -> dict[str, Any]:
+    return {
+        "id": r["id"], "table_a": r["a"], "table_b": r["b"],
+        "name_a": r["name_a"] or r["a"], "name_b": r["name_b"] or r["b"],
+        "relation_type": r["relation_type"], "score": r["score"], "method": r["method"], "status": r["status"],
+        "evidence": r["evidence"], "created_at": r["created_at"].isoformat(),
+        "catalog_identifier_a": _catalog_id(r["ids_a"]), "catalog_identifier_b": _catalog_id(r["ids_b"]),
+    }
 
 
 class RelationRepository:
@@ -93,11 +119,34 @@ class RelationRepository:
                 "method": r["method"],
                 "evidence": r["evidence"],
                 "created_at": r["created_at"].isoformat(),
-                "catalog_identifier_a": (r["ids_a"] or [""])[0],
-                "catalog_identifier_b": (r["ids_b"] or [""])[0],
+                "catalog_identifier_a": _catalog_id(r["ids_a"]),
+                "catalog_identifier_b": _catalog_id(r["ids_b"]),
             }
             for r in rows
         ]
+
+    def review_rows(self, status: RelationStatus | None = None) -> list[dict[str, Any]]:
+        """판정 화면용 관계 목록 (상태 필터, 최근 순)."""
+        with connect() as conn:
+            rows = conn.execute(
+                _REVIEW_SELECT + " WHERE %(s)s::text IS NULL OR r.status = %(s)s ORDER BY r.created_at DESC",
+                {"s": status},
+            ).fetchall()
+        return [_review_row(r) for r in rows]
+
+    def set_status(self, relation_id: int, status: RelationStatus) -> dict[str, Any]:
+        """관계 상태를 바꾸고 바뀐 행을 돌려준다.
+
+        Raises:
+            RelationNotFoundError: 없는 관계 id
+        """
+        with connect() as conn:
+            if not conn.execute(
+                "UPDATE dcat_dataset_relation SET status = %s WHERE id = %s RETURNING id", (status, relation_id)
+            ).fetchone():
+                raise RelationNotFoundError(relation_id)
+            row = conn.execute(_REVIEW_SELECT + " WHERE r.id = %s", (relation_id,)).fetchone()
+        return _review_row(row)
 
 
 def get_relation_repository() -> RelationRepository:
