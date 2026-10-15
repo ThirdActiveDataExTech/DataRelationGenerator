@@ -180,28 +180,3 @@ field_type_classification_tool = pydantic_function_tool(
     name="classify_field_type",
     description="메타데이터 필드의 타입을 분류하여 적합한 매칭 전략을 결정합니다."
 )
-
-
-# ===== 고유명사 레이블링 =====
-
-
-class ProperNounLabel(BaseModel):
-    """고유명사 레이블 매핑."""
-
-    value: str = Field(..., description="원본 값")
-    label: str = Field(..., description="분류된 Taxonomy 레이블")
-
-
-class ProperNounLabelingResult(BaseModel):
-    """고유명사 레이블링 결과."""
-
-    labels: List[ProperNounLabel] = Field(
-        ..., description="값별 Taxonomy 레이블 매핑"
-    )
-
-
-proper_noun_labeling_tool = pydantic_function_tool(
-    ProperNounLabelingResult,
-    name="label_proper_nouns",
-    description="고유명사 값들을 의미적 범주(Taxonomy)로 분류합니다."
-)

@@ -33,6 +33,15 @@ class DatasetNotFoundError(ApplicationError):
         self.result = {"table_name": table_name}
 
 
+class RelationNotFoundError(ApplicationError):
+    """원장에 없는 관계(id)"""
+
+    def __init__(self, relation_id):
+        self.code = int(f"{settings.SERVICE_CODE}{status.HTTP_404_NOT_FOUND}")
+        self.message = "Relation not found"
+        self.result = {"relation_id": relation_id}
+
+
 class DuplicateDatasetContentError(ApplicationError):
     """같은 내용(content_sha256)의 데이터파일이 다른 이름으로 이미 등록됨"""
 

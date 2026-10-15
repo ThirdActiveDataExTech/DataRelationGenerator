@@ -17,6 +17,9 @@ class Level1RelationType(str, Enum):
     - ADJACENT_TO: 같은 맥락의 다른 개체 (대체재·다음 단계·주제 인접)
     - SAME_KIND: 같은 표준을 따르는 다른 지역·유형·판본
 
+    방향 (정의서 1.1항): DETAIL_FOR·STATISTIC_FOR 는 비대칭으로, 역할을 주는 쪽(상세·집계)이
+    source, 앵커가 target 이다. ADJACENT_TO·SAME_KIND 는 대칭.
+
     하위라벨은 relation_type 문자열에 `:` 로 이어 붙인다 (개방형 스키마).
     """
 
@@ -24,6 +27,22 @@ class Level1RelationType(str, Enum):
     STATISTIC_FOR = "STATISTIC_FOR"
     ADJACENT_TO = "ADJACENT_TO"
     SAME_KIND = "SAME_KIND"
+
+
+# source 쪽에서 target 을 볼 때의 유형. 상세를 준 쪽에게도 앵커는 같은 대상의 다른 정보지만,
+# 집계표에게 개체 목록은 비교 기준이 아니라 같은 맥락의 다른 데이터다. 대칭 유형은 그대로.
+_SOURCE_VIEW = {
+    Level1RelationType.DETAIL_FOR.value: Level1RelationType.DETAIL_FOR.value,
+    Level1RelationType.STATISTIC_FOR.value: Level1RelationType.ADJACENT_TO.value,
+}
+
+
+def type_seen_from(relation_type: str, anchor_is_source: bool) -> str:
+    """기준 데이터셋에서 본 관계 유형 ("유형:하위라벨"). 기준이 source 쪽이면 역방향 유형이다."""
+    head, sep, sub = relation_type.partition(":")
+    if anchor_is_source:
+        head = _SOURCE_VIEW.get(head, head)
+    return f"{head}{sep}{sub}"
 
 
 # 컬럼 자카드가 이 값 이상이면 같은 종류로 본다.
@@ -53,7 +72,8 @@ def column_jaccard(columns_a: list[str], columns_b: list[str]) -> float:
 # 개체의 사건 일자(인허가일자 등)로만 가지므로 구분된다.
 # ponytail: dataset_metadata.is_aggregate 가 채워지면 이 추정을 대체한다 (정의서 9항)
 _PERIOD_COLUMNS = ("연도", "년도", "기준연월", "기준년월", "기준시점", "시점", "기간", "year", "month")
-_MEASURE_TAILS = ("수", "건수", "명", "율", "률", "액", "합계", "평균", "count", "total", "sum", "avg", "rate")
+# '명'은 빼 둔다 — 컬럼명의 '~명'은 대부분 이름(코드명·테이블명)이지 인원 수가 아니다
+_MEASURE_TAILS = ("수", "건수", "율", "률", "액", "합계", "평균", "count", "total", "sum", "avg", "rate")
 
 
 def looks_aggregate(columns: list[str]) -> bool:
@@ -192,8 +212,8 @@ class DatasetProfile(BaseModel):
 class DatasetRelation(BaseModel):
     """테이블 간 관계 정보."""
 
-    table_a: str = Field(description="출발 테이블명")
-    table_b: str = Field(description="도착 테이블명")
+    table_a: str = Field(description="출발(source) 테이블명 — 비대칭 유형에서 상세·집계를 주는 쪽")
+    table_b: str = Field(description="도착(target) 테이블명 — 비대칭 유형에서 앵커")
     catalog_identifier_a: str = Field(default="", description="출발 데이터셋의 통합 카탈로그 식별자 (①연동 키)")
     catalog_identifier_b: str = Field(default="", description="도착 데이터셋의 통합 카탈로그 식별자 (①연동 키)")
     score: float = Field(ge=0.0, le=1.0, description="관계 점수")
@@ -461,12 +481,21 @@ class RelationPipelineResult(BaseModel):
     )
 
 
+class RelationReviewRequest(BaseModel):
+    """관계 판정 — 승인 또는 반려."""
+
+    approved: bool = Field(description="true 면 승인(APPROVED), false 면 반려(REJECTED)")
+
+
 class RunRelationPipelineRequest(BaseModel):
     """관계 생성 파이프라인 실행 요청."""
 
     table_names: list[str] = Field(default_factory=list, description="대상 테이블명 목록 (비어있으면 전체)")
     tier2_threshold: float = Field(default=0.4, ge=0.0, le=1.0, description="Tier 2 유사도 임계값")
-    tier3_confidence_threshold: float = Field(default=0.8, ge=0.0, le=1.0, description="Tier 3 확신도 임계값")
+    tier3_confidence_threshold: float = Field(
+        default=0.6, ge=0.0, le=1.0,
+        description="Tier 3 확신도 하한 — 이상이면 판정 대기, 자동 확정 기준(RELATION_AUTO_APPROVE_THRESHOLD) 이상이면 확정",
+    )
     refresh_table_names: list[str] = Field(
         default_factory=list,
         description="메타데이터가 변동된 테이블 — 이 테이블이 낀 쌍은 기존 관계가 있어도 재평가 (증분 갱신)",

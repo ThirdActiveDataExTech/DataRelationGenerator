@@ -598,29 +598,6 @@ A를 보는 사람에게 B가 무엇인지로 고릅니다. 근거를 댈 수 �
 반드시 extract_table_metadata function tool을 호출하세요.
 """
 
-    PROPER_NOUN_LABELING: str = """**반드시 label_proper_nouns tool을 사용하여 응답할 것.**
-
-고유명사 값들을 범주별로 분류하세요.
-
-## 필드명: {key_name}
-
-## 값 목록:
-{values_list}
-
-## 선택 가능한 범주 (Taxonomy):
-{taxonomy}
-
-## 작업
-각 값을 위 범주 중 하나로 분류하세요. 범주에 맞는 것이 없으면 "기타"를 선택하세요.
-
-## 예시
-- 필드: "발행기관명"
-- 범주: ["정부기관", "문화기관", "항공사", "기타"]
-- 한국문화진흥원 → 문화기관
-- 한국항공 → 항공사
-- KBS → 방송사 (없으면 기타)
-"""
-
     DATASET_CATEGORY_CLASSIFICATION: str = """**반드시 classify_dataset_categories tool을 사용하여 응답할 것.**
 
 당신은 데이터셋을 주제 분야로 분류하는 전문가입니다.
@@ -634,8 +611,9 @@ A를 보는 사람에게 B가 무엇인지로 고릅니다. 근거를 댈 수 �
 
 ## 규칙
 1. 반드시 분류표에 있는 '대분류 > 중분류' 그대로 쓰세요 (예: "의료 > 공중보건"). 새 분류를 만들지 마세요.
-2. 데이터가 **무엇에 관한 것인지**(대상·주제)로 분류하세요. 제공 형식이나 제공기관 이름만 보고 정하지 마세요.
-   - 병원·약국 현황 → 의료, 시청률·방송 프로그램 → 문화 > 방송·미디어, 인구·출생 통계 → 사회
+2. 데이터가 **무엇에 관한 것인지**(대상·주제)로 분류하세요. 제공 형식, 제공기관 이름, '통계'·'현황' 같은 자료 형태 표현만 보고 정하지 마세요.
+   - 병원·약국 현황 → 의료, 시청률·방송 프로그램 → 문화 > 방송·미디어
+   - 통계표: 시군구별 주민등록인구 → 사회 > 일반공공행정, 사망원인별 사망자수 → 의료 > 공중보건, 장애유형별 등록장애인수 → 사회 > 복지
 3. 가장 대표적인 분류를 맨 앞에 두세요. 두 번째·세 번째는 분명히 걸쳐 있을 때만 붙이세요.
 
 # 데이터셋
@@ -715,7 +693,6 @@ suggested_next 에는 사용자가 이어서 볼 만한 데이터셋명을 **제
             "schema_analysis": cls.SCHEMA_ANALYSIS,
             "relation_key_analysis": cls.RELATION_KEY_ANALYSIS,
             "field_type_classification": cls.FIELD_TYPE_CLASSIFICATION,
-            "proper_noun_labeling": cls.PROPER_NOUN_LABELING,
             "table_relation_verification": cls.TABLE_RELATION_VERIFICATION,
             "table_metadata_extraction": cls.TABLE_METADATA_EXTRACTION,
             "dataset_search_intent": cls.DATASET_SEARCH_INTENT,
