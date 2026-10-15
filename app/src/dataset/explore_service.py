@@ -12,7 +12,7 @@ from typing import Any
 from app.exceptions.service import DatasetNotFoundError
 from app.repositories.dataset_repository import DatasetRepository, get_dataset_repository
 from app.repositories.relation_repository import RelationRepository, get_relation_repository
-from app.schemas.dataset import DatasetProfile, Level1RelationType, column_jaccard
+from app.schemas.dataset import DatasetProfile, Level1RelationType, column_jaccard, type_seen_from
 from app.schemas.explore import (
     DatasetCard,
     DatasetDetail,
@@ -134,7 +134,7 @@ class ExploreService:
                     table_name=r["file_name"], display_name=r["display_name"] or "",
                     description=r["description"] or "", table_summary=r["table_summary"] or "",
                     provider=r["publisher"] or "", party=r["party"] or "", source=r["source"],
-                    categories=r["theme"], record_count=r["record_count"] or 0,
+                    categories=r["category"], record_count=r["record_count"] or 0,
                     column_count=r["column_count"] or 0, landing_page=r["landing_page"] or "",
                     keywords=r["keywords"], relation_count=r["relation_count"], similarity=r["similarity"],
                     created_at=r["created_at"].isoformat(),
@@ -161,7 +161,7 @@ class ExploreService:
         for e in edges:
             anchor_is_a = e["source"] == table_name
             other = self.dataset_repo.get(e["target"] if anchor_is_a else e["source"])
-            head, _, sub = e["relation_type"].partition(":")
+            head, _, sub = type_seen_from(e["relation_type"], anchor_is_a).partition(":")
             if not other or head not in grouped:
                 continue
             grouped[head].append(LinkableItem(

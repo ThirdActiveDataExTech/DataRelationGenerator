@@ -26,6 +26,7 @@ from app.utils.vector import cosine_similarity
 logger = logging.getLogger(__name__)
 
 _SAMPLE_DISPLAY = 3  # LLM에게 보여줄 샘플 레코드 수
+_RULE_AUTO_APPROVE = 0.8  # 구조 근거(공통 컬럼)가 있는 쌍의 자동 확정 기준
 
 # 단독으로 존재할 때 의미 없는 공통 컬럼명 (노이즈 필터)
 _COLUMN_BLACKLIST = {"ID", "NAME", "CODE", "TYPE", "STATUS", "DATE", "FLAG", "VALUE", "NOTE", "MEMO"}
@@ -62,12 +63,21 @@ def _value_in_both(a: DatasetProfile, b: DatasetProfile, value: str) -> bool:
 
     return appears(a) and appears(b)
 
+
+def _source_side_matches(matches: list[ColumnMatchInfo], source_is_a: bool) -> list[dict]:
+    """컬럼 매칭을 column_a = source 쪽 컬럼이 되도록 맞춘다."""
+    return [
+        m.model_dump() if source_is_a else {**m.model_dump(), "column_a": m.column_b, "column_b": m.column_a}
+        for m in matches
+    ]
+
+
 class RelationPipeline:
     """3-Tier 테이블 간 관계 생성 파이프라인.
 
     Tier 1 (rule): FK, 동일 컬럼명, 코드사전 자동 확정 → score=1.0
     Tier 2 (embedding): table_embedding 코사인 유사도 KNN → 후보 생성
-    Tier 3 (llm): LLM 검증으로 FP 제거 → Neptune 저장
+    Tier 3 (llm): LLM 검증으로 FP 제거 → 원장(dcat_dataset_relation) 저장
     """
 
     def __init__(
@@ -87,7 +97,7 @@ class RelationPipeline:
         self,
         table_names: list[str],
         tier2_threshold: float = 0.4,
-        tier3_confidence_threshold: float = 0.8,
+        tier3_confidence_threshold: float = 0.6,
         refresh_table_names: list[str] | None = None,
         seed_table_names: list[str] | None = None,
     ) -> list[RelationPipelineResult]:
@@ -96,7 +106,7 @@ class RelationPipeline:
         Args:
             table_names: 대상 테이블명 목록 (비어있으면 등록된 전체 테이블)
             tier2_threshold: Tier 2 유사도 임계값
-            tier3_confidence_threshold: Tier 3 확신도 임계값
+            tier3_confidence_threshold: Tier 3 확신도 하한 — 이상이면 판정 대기, 자동 확정 기준 이상이면 확정
             refresh_table_names: 메타데이터가 변동된 테이블 — 이 테이블이 낀 쌍은
                 기존 관계가 있어도 재평가 (save_relation 이 기존 관계를 대체)
             seed_table_names: 기준 테이블 — 지정 시 이 테이블이 낀 쌍만 평가.
@@ -209,7 +219,8 @@ class RelationPipeline:
             origin_method = "rule" if has_tier1 else "embedding"
             # 관계 유형을 4종으로 정규화 (원본 라벨은 하위 보존)
             jaccard = column_jaccard(a.column_names, b.column_names)
-            is_aggregate = looks_aggregate(a.column_names) or looks_aggregate(b.column_names)
+            aggregate_a, aggregate_b = looks_aggregate(a.column_names), looks_aggregate(b.column_names)
+            is_aggregate = aggregate_a or aggregate_b
             canonical_type = canonicalize_level1_type(
                 tier3.relation_type,
                 has_common_columns=has_tier1 or has_tier15,
@@ -217,10 +228,17 @@ class RelationPipeline:
                 is_aggregate=is_aggregate,
                 llm_type=tier3.level1_type,
             )
+            # 역할을 주는 쪽이 source (정의서 방향). LLM 은 "A를 보는 사람에게 B가 무엇인지"로
+            # 판정하므로 B 가 주는 쪽이고, 컬럼으로 A 만 집계표로 확인되면 A 가 집계(source)다.
+            source_is_a = (
+                canonical_type.startswith(Level1RelationType.STATISTIC_FOR.value)
+                and aggregate_a and not aggregate_b
+            )
+            source, target = (a, b) if source_is_a else (b, a)
             rel = DatasetRelation(
-                table_a=tier3.table_a, table_b=tier3.table_b,
-                catalog_identifier_a=a.catalog_identifier,
-                catalog_identifier_b=b.catalog_identifier,
+                table_a=source.table_name, table_b=target.table_name,
+                catalog_identifier_a=source.catalog_identifier,
+                catalog_identifier_b=target.catalog_identifier,
                 score=tier3.confidence, method=origin_method,
                 relation_type=canonical_type,
                 evidence={
@@ -232,8 +250,8 @@ class RelationPipeline:
                     "column_jaccard": round(jaccard, 3),
                     "is_aggregate": is_aggregate,
                     "llm_level1_type": tier3.level1_type,
-                    "matched_columns": [m.model_dump() for m in tier1[0].matched_columns] if tier1 else [],
-                    "ai_matched_columns": [m.model_dump() for m in tier15],
+                    "matched_columns": _source_side_matches(tier1[0].matched_columns if tier1 else [], source_is_a),
+                    "ai_matched_columns": _source_side_matches(tier15, source_is_a),
                     "ppmi": (
                         {"score": candidate.ppmi_score, "shared_features": candidate.shared_features}
                         if candidate and candidate.ppmi_score is not None
@@ -241,15 +259,13 @@ class RelationPipeline:
                     ),
                 },
             )
-            # 승인 게이팅 (승인 SSOT = ① 카탈로그):
-            # rule(구조 기반) 또는 임계값 이상 → 자동 확정, 미만 llm/embedding → ①에 PENDING 제안.
-            # 카탈로그 미연동(단독 실행) 시에는 게이팅 없이 기존대로 전부 저장.
+            # 승인 게이팅 (정본 = 원장 dcat_dataset_relation): 자동 확정 기준 이상이면 확정,
+            # 그 아래는 판정 대기 — 관리 화면 '관계 판정'에서 승인·반려한다.
+            # 구조 근거(공통 컬럼)가 있는 쌍은 종전 판정 기준(0.8)부터 확정한다.
             from app.config import settings
 
-            auto_approved = (
-                not settings.CATALOG_PUSH_ENABLED
-                or origin_method == "rule"
-                or tier3.confidence >= settings.RELATION_AUTO_APPROVE_THRESHOLD
+            auto_approved = tier3.confidence >= (
+                _RULE_AUTO_APPROVE if origin_method == "rule" else settings.RELATION_AUTO_APPROVE_THRESHOLD
             )
             if auto_approved:
                 self.dataset_service.save_relation(rel)
