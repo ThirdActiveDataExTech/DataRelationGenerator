@@ -15,10 +15,7 @@ from app.schemas.dataset import (
     table_metadata_extraction_tool,
     table_relation_verification_tool,
 )
-from app.schemas.keyvalue_graph import (
-    field_type_classification_tool,
-    proper_noun_labeling_tool
-)
+from app.schemas.keyvalue_graph import field_type_classification_tool
 from app.schemas.meta import (
     key_value_extraction_tool,
     cluster_normalization_tool,
@@ -41,7 +38,6 @@ class LLMResponse:
         "schema_analysis": schema_analysis_tool,
         "relation_key_analysis": relation_search_condition_tool,
         "field_type_classification": field_type_classification_tool,
-        "proper_noun_labeling": proper_noun_labeling_tool,
         "table_relation_verification": table_relation_verification_tool,
         "table_metadata_extraction": table_metadata_extraction_tool,
         "dataset_search_intent": dataset_search_intent_tool,
