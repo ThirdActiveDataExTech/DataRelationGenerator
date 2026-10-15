@@ -25,7 +25,7 @@ _SOURCE_BY_HOST = {"data.go.kr": "DATA_GO_KR", "kosis.kr": "KOSIS", "opendata.hi
 
 _PROFILE_SELECT = """
 SELECT d.dataset_id, f.file_name, f.display_name, d.external_ids, d.party, d.publisher, d.landing_page,
-       d.source, f.domain, d.theme, f.record_count, f.column_count, f.column_names, f.column_profile,
+       d.source, f.domain, d.category, f.record_count, f.column_count, f.column_names, f.column_profile,
        d.description, f.table_summary, d.keywords, d.created_at, f.storage_key, {vectors}
 FROM meta_datagokr_file f
 JOIN dcat_dataset d USING (dataset_id)
@@ -47,11 +47,14 @@ def _source_code(profile: DatasetProfile) -> str:
 
 
 def _content_sha256(profile: DatasetProfile) -> str:
-    """파일 내용 해시. 레코드가 없으면(메타데이터-only) 요약문이 내용이다."""
+    """파일 내용 해시. 레코드가 없으면(메타데이터-only) 데이터셋 이름과 요약문이 내용이다.
+
+    메타데이터만 있는 데이터셋은 같은 설명을 공유할 수 있어(표준데이터의 지자체별 목록) 이름을 함께 넣는다.
+    """
     content = (
         {"columns": profile.column_names, "sample_records": profile.sample_records, "record_count": profile.record_count}
         if profile.record_count
-        else {"summary": profile.table_summary}
+        else {"table_name": profile.table_name, "summary": profile.table_summary}
     )
     return hashlib.sha256(json.dumps(content, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -62,13 +65,14 @@ def _to_profile(row: dict) -> DatasetProfile:
         dataset_id=row["dataset_id"],
         table_name=row["file_name"],
         display_name=row["display_name"] or "",
-        catalog_identifier=ids[0] if ids else "",
+        # 원천 식별자는 'datagokr:'·'kosis:' 처럼 출처 접두가 붙는다 — 접두 없는 값이 통합 카탈로그 식별자
+        catalog_identifier=next((i for i in ids if ":" not in i), ""),
         party=row["party"] or "",
         provider=row["publisher"] or "",
         landing_page=row["landing_page"] or "",
         source=row["source"],
         domain=row["domain"] or "",
-        categories=row["theme"],
+        categories=row["category"],
         record_count=row["record_count"] or 0,
         column_count=row["column_count"] or 0,
         column_names=row["column_names"],
@@ -101,7 +105,7 @@ class DatasetRepository:
             "description": profile.description,
             "publisher": profile.provider,
             "keywords": Jsonb(profile.keywords),
-            "theme": Jsonb(profile.categories),
+            "category": Jsonb(profile.categories),
             "landing_page": profile.landing_page,
             "external_ids": Jsonb([profile.catalog_identifier] if profile.catalog_identifier else []),
             "party": profile.party,
@@ -111,14 +115,14 @@ class DatasetRepository:
             with connect() as conn:
                 conn.execute(
                     """
-                    INSERT INTO dcat_dataset (dataset_id, source, title, description, publisher, keywords, theme,
+                    INSERT INTO dcat_dataset (dataset_id, source, title, description, publisher, keywords, category,
                                               landing_page, external_ids, party, created_at)
                     VALUES (%(dataset_id)s, %(source)s, %(title)s, %(description)s, %(publisher)s, %(keywords)s,
-                            %(theme)s, %(landing_page)s, %(external_ids)s, %(party)s,
+                            %(category)s, %(landing_page)s, %(external_ids)s, %(party)s,
                             COALESCE(%(created_at)s::timestamptz, now()))
                     ON CONFLICT (dataset_id) DO UPDATE SET
                         source = EXCLUDED.source, title = EXCLUDED.title, description = EXCLUDED.description,
-                        publisher = EXCLUDED.publisher, keywords = EXCLUDED.keywords, theme = EXCLUDED.theme,
+                        publisher = EXCLUDED.publisher, keywords = EXCLUDED.keywords, category = EXCLUDED.category,
                         landing_page = EXCLUDED.landing_page, external_ids = EXCLUDED.external_ids,
                         party = EXCLUDED.party, updated_at = now()
                     """,
@@ -265,7 +269,7 @@ class DatasetRepository:
                 """
                 WITH base AS (
                     SELECT f.file_name, f.display_name, d.description, f.table_summary, d.publisher, d.party,
-                           d.source, d.theme, f.domain, f.record_count, f.column_count, d.landing_page,
+                           d.source, d.category, f.domain, f.record_count, f.column_count, d.landing_page,
                            d.keywords, d.created_at,
                            (SELECT count(*) FROM dcat_dataset_relation r
                             WHERE r.status = 'APPROVED'
@@ -280,9 +284,9 @@ class DatasetRepository:
                     JOIN dcat_dataset d USING (dataset_id)
                     LEFT JOIN meta_datagokr_file_vec v USING (file_id)
                     WHERE (%(category)s = '' OR EXISTS (
-                              SELECT 1 FROM jsonb_array_elements_text(d.theme) t
+                              SELECT 1 FROM jsonb_array_elements_text(d.category) t
                               WHERE split_part(t, ' > ', 1) = %(category)s))
-                      AND (%(subcategory)s = '' OR d.theme ? %(subcategory)s)
+                      AND (%(subcategory)s = '' OR d.category ? %(subcategory)s)
                       AND (%(party)s = '' OR d.party = %(party)s)
                       AND (%(provider)s = '' OR d.publisher = %(provider)s)
                 )
@@ -306,10 +310,10 @@ class DatasetRepository:
             rows = conn.execute(
                 """
                 SELECT t AS category, count(DISTINCT d.dataset_id) AS n
-                FROM dcat_dataset d, jsonb_array_elements_text(d.theme) t GROUP BY t
+                FROM dcat_dataset d, jsonb_array_elements_text(d.category) t GROUP BY t
                 UNION ALL
                 SELECT split_part(t, ' > ', 1), count(DISTINCT d.dataset_id)
-                FROM dcat_dataset d, jsonb_array_elements_text(d.theme) t GROUP BY 1
+                FROM dcat_dataset d, jsonb_array_elements_text(d.category) t GROUP BY 1
                 """
             ).fetchall()
         return {r["category"]: r["n"] for r in rows}

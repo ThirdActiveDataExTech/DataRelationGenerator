@@ -193,10 +193,6 @@ class Settings(BaseSettings):
 
     KV_BUILD_ON_SYNC: bool = False
 
-    # Dataset RDF Namespace
-    DATASET_RDF_NAMESPACE: str = "http://datarelation.wisenet.co.kr/ontology#"
-    DATASET_RDF_NAMESPACE_PREFIX: str = "dm"
-
     # Embedding Config
     EMBEDDING_MODEL_NAME: str = "jhgan/ko-sroberta-multitask"
     SIMILARITY_THRESHOLD: float = 0.75
@@ -204,5 +200,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()  # type: ignore
-print(settings.model_dump_json())
 langfuse_handler = CallbackHandler()

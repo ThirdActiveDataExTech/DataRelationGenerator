@@ -1,6 +1,8 @@
-from typing import Any
-
+import json
 import logging
+from typing import Any
+from urllib.parse import quote
+
 import numpy as np
 from rapidfuzz import fuzz
 from sklearn.cluster import DBSCAN
@@ -9,6 +11,11 @@ from app.repositories.graph_repository import GraphRepository
 from app.src.meta_extract.llm_response import LLMResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _literal(text: str) -> str:
+    """SPARQL 문자열 리터럴. JSON 문자열 표기는 SPARQL 큰따옴표 리터럴과 이스케이프 규칙이 같다."""
+    return json.dumps(str(text), ensure_ascii=False)
 
 
 class ClusteringNormalizer:
@@ -164,13 +171,13 @@ class ClusteringNormalizer:
         Returns:
             Key명 리스트
         """
-        query = """
-        MATCH (k:Key)
-        RETURN k.name as key_name
-        ORDER BY k.name
+        query = f"""
+        PREFIX kv: <{self.graph_repo.namespace}>
+        SELECT DISTINCT ?key_name
+        WHERE {{ ?k a kv:Key ; kv:keyName ?key_name . }}
+        ORDER BY ?key_name
         """
-        results = self.graph_repo.execute_query(query)
-        return [r["key_name"] for r in results]
+        return [r["key_name"] for r in self.graph_repo.execute_query(query)]
 
     def _get_values_for_key(self, key_name: str) -> list[str]:
         """특정 Key의 모든 Value 조회 (이미 정규화된 Value 제외)
@@ -181,14 +188,17 @@ class ClusteringNormalizer:
         Returns:
             Value 리스트 (중복 제거, 정규화되지 않은 것만)
         """
-        query = """
-        MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value)
-        WHERE NOT (v)-[:SAME_AS]->(:NormalizedValue)
-        RETURN DISTINCT v.name as value
-        ORDER BY v.name
+        query = f"""
+        PREFIX kv: <{self.graph_repo.namespace}>
+        SELECT DISTINCT ?value
+        WHERE {{
+            ?k a kv:Key ; kv:keyName {_literal(key_name)} ; kv:hasValue ?v .
+            ?v kv:valueContent ?value .
+            FILTER NOT EXISTS {{ ?v kv:sameAs ?normalized . }}
+        }}
+        ORDER BY ?value
         """
-        results = self.graph_repo.execute_query(query, {"key_name": key_name})
-        return [r["value"] for r in results]
+        return [r["value"] for r in self.graph_repo.execute_query(query)]
 
     def _calculate_similarity_matrix(self, values: list[str]) -> np.ndarray:
         """Value 간 유사도 행렬 계산
@@ -292,7 +302,7 @@ class ClusteringNormalizer:
             cluster_values: list[str],
             representative: str
     ) -> int:
-        """NormalizedValue 생성 및 SAME_AS 관계 생성
+        """NormalizedValue 생성, Value -sameAs-> / Document -hasNormalizedValue-> 연결
 
         Args:
             key_name: Key명
@@ -300,47 +310,28 @@ class ClusteringNormalizer:
             representative: 대표값
 
         Returns:
-            생성된 관계 수
+            정규화한 Value 수
         """
-        count = 0
-        for value in cluster_values:
-            count += 1
-
-        self._create_document_normalized_relations(key_name, cluster_values, representative)
-
-        return count
-
-    def _create_document_normalized_relations(
-            self,
-            key_name: str,
-            cluster_values: list[str],
-            representative: str
-    ) -> None:
-        """Document -[HAS_NORMALIZED_VALUE]-> NormalizedValue 관계 생성
-
-        Args:
-            key_name: Key명
-            cluster_values: 클러스터 내 모든 Value
-            representative: 대표값
+        ns = self.graph_repo.namespace
+        normalized_uri = f"<{ns}normalized/{quote(f'{key_name}:{representative}', safe='')}>"
+        contents = " ".join(_literal(v) for v in cluster_values)
+        update = f"""
+        PREFIX kv: <{ns}>
+        INSERT {{
+            {normalized_uri} a kv:NormalizedValue ;
+                kv:keyName {_literal(key_name)} ;
+                kv:normalizedContent {_literal(representative)} .
+            ?v kv:sameAs {normalized_uri} .
+            ?d kv:hasNormalizedValue {normalized_uri} .
+        }}
+        WHERE {{
+            VALUES ?content {{ {contents} }}
+            ?k a kv:Key ; kv:keyName {_literal(key_name)} ; kv:hasValue ?v .
+            ?v kv:valueContent ?content ; kv:extractedFrom ?d .
+        }}
         """
-        norm_id = f"{key_name}:normalized:{representative}"
-
-        for value in cluster_values:
-            query = """
-            MATCH (k:Key {name: $key_name})-[:HAS_VALUE]->(v:Value {name: $value})
-            MATCH (v)-[:EXTRACTED_FROM]->(d:Document)
-            MATCH (nv:NormalizedValue {id: $norm_id})
-            MERGE (d)-[r:HAS_NORMALIZED_VALUE]->(nv)
-            ON CREATE SET r.created_at = datetime()
-            """
-            self.graph_repo.execute_query(
-                query,
-                {
-                    "key_name": key_name,
-                    "value": value,
-                    "norm_id": norm_id
-                }
-            )
+        self.graph_repo.client.execute_update(update)
+        return len(cluster_values)
 
     def _try_parse_numeric(self, values: list[str]) -> tuple[list[float], bool]:
         """값들이 모두 숫자로 변환 가능한지 체크
