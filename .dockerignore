@@ -25,3 +25,12 @@ coverage.xml
 .mypy_cache
 .pytest_cache
 .ruff_cache
+
+# 빌드 컨텍스트에서 제외 (이미지는 app·static 만 복사)
+.git
+.venv
+.claude
+docs
+demo
+raw_uploads
+node_modules
