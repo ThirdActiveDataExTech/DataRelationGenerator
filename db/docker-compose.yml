@@ -1,0 +1,21 @@
+#   docker compose -f db/docker-compose.yml up -d
+#
+# 볼륨(pgdata)이 비어 있을 때만 init/ 이 실행된다: 001 테이블 생성 → 002 시드 적재(SEED_DIR 의 *.sql.gz).
+# SEED_DIR 은 db/.env 에 시드 데이터 레포 위치로 적는다 (db/.env.example). 처음부터 다시: down -v 후 up -d
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: wisenut
+      POSTGRES_PASSWORD: ${PGPASSWORD:?db/.env 에 PGPASSWORD 를 지정하세요}
+      POSTGRES_DB: datagokr
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d:ro
+      - ${SEED_DIR:-./seed}:/seed:ro
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+    name: db_pgdata  # 단독 실행(-f db/docker-compose.yml)과 전체 실행(루트 docker-compose.yaml)이 같은 원장을 쓴다
