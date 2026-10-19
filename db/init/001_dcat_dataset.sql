@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS active_meta_dataset
 (
     id           BIGSERIAL PRIMARY KEY,
     dataset_id   TEXT          NOT NULL REFERENCES dcat_dataset (dataset_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    metric_code  TEXT          NOT NULL,                   -- download_request / view_count
+    metric_code  TEXT          NOT NULL,                   -- 지표 표준값 · FK 는 003_metric_registry.sql
     metric_value NUMERIC(20, 4) NOT NULL,
     observed_at  TIMESTAMPTZ   NOT NULL,
     source       TEXT          NOT NULL,                   -- PORTAL_CATALOG / PORTAL_LOG / CRAWLER
