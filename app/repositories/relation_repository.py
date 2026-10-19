@@ -10,9 +10,12 @@ from app.schemas.dataset import DatasetRelation
 
 RelationStatus = Literal["PENDING", "APPROVED", "REJECTED"]
 
-_REVIEW_SELECT = """
+# 원장은 유형(표준값 FK)과 하위라벨을 나눠 갖고, 앱은 '유형:하위라벨' 한 문자열로 다룬다
+_TYPE_WITH_LABEL = "concat_ws(':', r.relation_type, r.relation_label) AS relation_type"
+
+_REVIEW_SELECT = f"""
 SELECT r.id, fa.file_name AS a, fb.file_name AS b, fa.display_name AS name_a, fb.display_name AS name_b,
-       r.relation_type, r.score, r.method, r.status, r.evidence, r.created_at,
+       {_TYPE_WITH_LABEL}, r.score, r.method, r.status, r.evidence, r.created_at,
        da.external_ids AS ids_a, db.external_ids AS ids_b
 FROM dcat_dataset_relation r
 JOIN meta_datagokr_file fa ON fa.dataset_id = r.source_dataset_id
@@ -56,6 +59,7 @@ class RelationRepository:
             if missing:
                 raise DatasetNotFoundError(missing)
             source, target = ids[relation.table_a], ids[relation.table_b]
+            relation_type, _, label = relation.relation_type.partition(":")
             conn.execute(
                 """
                 DELETE FROM dcat_dataset_relation
@@ -67,10 +71,10 @@ class RelationRepository:
             conn.execute(
                 """
                 INSERT INTO dcat_dataset_relation (source_dataset_id, target_dataset_id, relation_type,
-                                                   score, method, status, evidence)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                                   relation_label, score, method, status, evidence)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (source, target, relation.relation_type, relation.score, relation.method, status,
+                (source, target, relation_type, label or None, relation.score, relation.method, status,
                  Jsonb(relation.evidence)),
             )
 
@@ -96,8 +100,8 @@ class RelationRepository:
         """
         with connect() as conn:
             rows = conn.execute(
-                """
-                SELECT fa.file_name AS source, fb.file_name AS target, r.relation_type, r.score, r.method,
+                f"""
+                SELECT fa.file_name AS source, fb.file_name AS target, {_TYPE_WITH_LABEL}, r.score, r.method,
                        r.evidence, r.created_at, da.external_ids AS ids_a, db.external_ids AS ids_b
                 FROM dcat_dataset_relation r
                 JOIN meta_datagokr_file fa ON fa.dataset_id = r.source_dataset_id
