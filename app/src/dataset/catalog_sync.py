@@ -5,7 +5,7 @@
 
   ① catalog-service 갱신 엔트리 조회 (updated_at 기준, watermark 날짜부터)
   → 미등록 엔트리는 신규 등록, 기등록 엔트리는 변동 반영(refresh 대상 표시)
-  → 관계 파이프라인 증분 실행 (신규 쌍 + refresh 테이블이 낀 쌍 재평가)
+  → 관계 파이프라인 증분 실행 (동기화된 테이블이 낀 쌍만 — 신규 쌍 평가 + refresh 테이블 재평가)
   → watermark 갱신
 
 트리거 방식:
@@ -109,9 +109,12 @@ class CatalogSyncService:
         for table_name in kv_built:
             self._build_kv_graph(table_name)
 
+        # 상대 후보는 원장 전체, 평가 쌍은 이번에 동기화된 테이블이 낀 쌍으로 한정
         results = []
         if tables:
-            results = self.pipeline.run(table_names=[], refresh_table_names=refresh_tables)
+            results = self.pipeline.run(
+                table_names=[], refresh_table_names=refresh_tables, seed_table_names=tables
+            )
 
         self._set_watermark(today)
         cycle_summary = {
