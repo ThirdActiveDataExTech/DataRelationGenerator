@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS meta_datagokr_file_vec
 CREATE INDEX IF NOT EXISTS idx_meta_datagokr_file_vec_summary
     ON meta_datagokr_file_vec USING hnsw (summary_embedding vector_cosine_ops);
 
--- 데이터셋 간 관계 — 쌍+유형당 1행 · 재생성 시 대체 · 승인 상태의 정본
+-- 데이터셋 간 관계 — 쌍+유형+method당 1행 · 재생성 시 같은 method 행만 대체 · 정본은 dcat_dataset_relation_canonical 뷰(004)
 CREATE TABLE IF NOT EXISTS dcat_dataset_relation
 (
     id                BIGSERIAL PRIMARY KEY,
@@ -132,11 +132,13 @@ CREATE TABLE IF NOT EXISTS dcat_dataset_relation
     target_dataset_id TEXT        NOT NULL REFERENCES dcat_dataset (dataset_id) ON DELETE CASCADE ON UPDATE CASCADE,
     relation_type     TEXT        NOT NULL,                -- 관계 유형 정의서 4종(:하위라벨)
     score             REAL        NOT NULL,                -- 0~1
-    method            TEXT        NOT NULL,                -- rule / embedding / llm
+    method            TEXT        NOT NULL,                -- rule / embedding / llm (와이즈넛) · gnn (모비젠)
     status            TEXT        NOT NULL,                -- PENDING / APPROVED / REJECTED
     evidence          JSONB       NOT NULL DEFAULT '{}',   -- 매칭 컬럼, 유사도, LLM 사유
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (source_dataset_id, target_dataset_id, relation_type)
+    CONSTRAINT dcat_dataset_relation_pair_type_method_key
+        UNIQUE (source_dataset_id, target_dataset_id, relation_type, method),
+    CONSTRAINT dcat_dataset_relation_method_check CHECK (method IN ('rule', 'embedding', 'llm', 'gnn'))
 );
 CREATE INDEX IF NOT EXISTS idx_dcat_dataset_relation_type ON dcat_dataset_relation (relation_type);
 CREATE INDEX IF NOT EXISTS idx_dcat_dataset_relation_status ON dcat_dataset_relation (status);
