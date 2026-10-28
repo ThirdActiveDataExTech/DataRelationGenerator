@@ -1,4 +1,4 @@
-"""데이터셋 간 관계 저장소 — dcat_dataset_relation (승인 상태의 정본)."""
+"""데이터셋 간 관계 저장소 — dcat_dataset_relation. 조회는 정본 뷰(쌍+유형당 1행)를 읽는다."""
 
 from typing import Any, Literal
 
@@ -9,6 +9,9 @@ from app.exceptions.service import DatasetNotFoundError, RelationNotFoundError
 from app.schemas.dataset import DatasetRelation
 
 RelationStatus = Literal["PENDING", "APPROVED", "REJECTED"]
+
+# 관계 서비스가 기록하는 method. 같은 쌍에 모비젠이 넣는 gnn 행은 건드리지 않는다
+_OWN_METHODS = ["rule", "embedding", "llm"]
 
 # 원장은 유형(표준값 FK)과 하위라벨을 나눠 갖고, 앱은 '유형:하위라벨' 한 문자열로 다룬다
 _TYPE_WITH_LABEL = "concat_ws(':', r.relation_type, r.relation_label) AS relation_type"
@@ -44,7 +47,7 @@ class RelationRepository:
     """데이터셋 쌍의 관계. 관계 서비스는 데이터셋을 file_name(table_name)으로 가리킨다."""
 
     def replace(self, relation: DatasetRelation, status: RelationStatus) -> None:
-        """쌍(방향 무관)의 기존 관계를 지우고 새로 기록한다 — 재생성 시 대체.
+        """쌍(방향 무관)의 기존 관계 중 관계 서비스 method 행을 지우고 새로 기록한다 — 재생성 시 대체.
 
         Raises:
             DatasetNotFoundError: 어느 한쪽 데이터셋이 원장에 없음
@@ -63,10 +66,11 @@ class RelationRepository:
             conn.execute(
                 """
                 DELETE FROM dcat_dataset_relation
-                WHERE (source_dataset_id = %(s)s AND target_dataset_id = %(t)s)
-                   OR (source_dataset_id = %(t)s AND target_dataset_id = %(s)s)
+                WHERE ((source_dataset_id = %(s)s AND target_dataset_id = %(t)s)
+                    OR (source_dataset_id = %(t)s AND target_dataset_id = %(s)s))
+                  AND method = ANY(%(m)s)
                 """,
-                {"s": source, "t": target},
+                {"s": source, "t": target, "m": _OWN_METHODS},
             )
             conn.execute(
                 """
@@ -79,7 +83,7 @@ class RelationRepository:
             )
 
     def pairs(self) -> set[tuple[str, str]]:
-        """판정 이력이 있는 쌍(상태 무관) — 정렬된 (table_a, table_b) 튜플."""
+        """관계 서비스가 판정한 이력이 있는 쌍(상태 무관) — 정렬된 (table_a, table_b) 튜플."""
         with connect() as conn:
             rows = conn.execute(
                 """
@@ -87,12 +91,14 @@ class RelationRepository:
                 FROM dcat_dataset_relation r
                 JOIN meta_datagokr_file fa ON fa.dataset_id = r.source_dataset_id
                 JOIN meta_datagokr_file fb ON fb.dataset_id = r.target_dataset_id
-                """
+                WHERE r.method = ANY(%s)
+                """,
+                (_OWN_METHODS,),
             ).fetchall()
         return {tuple(sorted((r["a"], r["b"]))) for r in rows}
 
     def edges(self, table_names: list[str] | None = None) -> list[dict[str, Any]]:
-        """확정(APPROVED) 관계. table_names 를 주면 그중 하나가 끼어 있는 관계만 (최신 순).
+        """확정(APPROVED) 정본 관계. table_names 를 주면 그중 하나가 끼어 있는 관계만 (최신 순).
 
         Returns:
             [{"source","target","relation_type","score","method","evidence","created_at",
@@ -103,7 +109,7 @@ class RelationRepository:
                 f"""
                 SELECT fa.file_name AS source, fb.file_name AS target, {_TYPE_WITH_LABEL}, r.score, r.method,
                        r.evidence, r.created_at, da.external_ids AS ids_a, db.external_ids AS ids_b
-                FROM dcat_dataset_relation r
+                FROM dcat_dataset_relation_canonical r
                 JOIN meta_datagokr_file fa ON fa.dataset_id = r.source_dataset_id
                 JOIN meta_datagokr_file fb ON fb.dataset_id = r.target_dataset_id
                 JOIN dcat_dataset da ON da.dataset_id = r.source_dataset_id
