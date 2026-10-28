@@ -116,9 +116,9 @@ class DatasetRepository:
                 conn.execute(
                     """
                     INSERT INTO dcat_dataset (dataset_id, source, title, description, publisher, keywords, category,
-                                              landing_page, external_ids, party, created_at)
+                                              landing_page, external_ids, party, visibility, created_at)
                     VALUES (%(dataset_id)s, %(source)s, %(title)s, %(description)s, %(publisher)s, %(keywords)s,
-                            %(category)s, %(landing_page)s, %(external_ids)s, %(party)s,
+                            %(category)s, %(landing_page)s, %(external_ids)s, %(party)s, 'PUBLIC',
                             COALESCE(%(created_at)s::timestamptz, now()))
                     ON CONFLICT (dataset_id) DO UPDATE SET
                         source = EXCLUDED.source, title = EXCLUDED.title, description = EXCLUDED.description,
