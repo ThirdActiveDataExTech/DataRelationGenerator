@@ -105,6 +105,7 @@ class PPMIAnalyzer:
     """전체 데이터셋 코퍼스 기준 PPMI·SVD 연관성 수치 산출기 (인스턴스 = 실행 1회의 코퍼스 캐시)."""
 
     def __init__(self):
+        """빈 코퍼스로 초기화."""
         self._counts: dict[str, dict[str, int]] = {}
         self._embeddings: dict[str, np.ndarray] | None = None
 
@@ -137,7 +138,7 @@ class PPMIAnalyzer:
                     cols.append(index[f])
                     vals.append(n)
             counts = sparse.csr_matrix((vals, (rows, cols)), shape=(len(corpus), len(index)), dtype=float)
-            shared = np.flatnonzero(np.asarray((counts > 0).sum(axis=0)).ravel() >= 2)
+            shared = np.flatnonzero(counts.getnnz(axis=0) >= 2)
             if shared.size:
                 vectors = svd_embeddings(ppmi_matrix(counts)[:, shared])
             else:
