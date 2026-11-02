@@ -130,11 +130,7 @@ class RelationPipeline:
             from app.src.dataset.ppmi_analyzer import PPMIAnalyzer
 
             self._ppmi_analyzer = PPMIAnalyzer()
-            try:
-                self._ppmi_analyzer.load_tables([p.table_name for p in profiles])
-            except Exception as e:
-                logger.warning(f"[Pipeline] PPMI 코퍼스 구성 실패 — 임베딩 신호만 사용: {e}")
-                self._ppmi_analyzer = None
+            self._ppmi_analyzer.load_profiles(profiles)
 
         existing_pairs = self.dataset_service.get_existing_relation_pairs()
         all_pairs = list(itertools.combinations(profiles, 2))
@@ -365,13 +361,13 @@ class RelationPipeline:
         else:
             score = desc_score
 
-        # PPMI-SVD 보조 신호 — KV 그래프 특징 co-occurrence 기반 연관성 수치.
-        # 설명 문구가 달라도 실제 Key/Value 가 겹치면 잡아내는, 임베딩과 상보적인 신호.
+        # PPMI-SVD 보조 신호 — 컬럼·값 특징 co-occurrence 기반 연관성 수치.
+        # 설명 문구가 달라도 실제 컬럼·값이 겹치면 잡아내는, 임베딩과 상보적인 신호.
         from app.config import settings
 
         embedding_score, ppmi_score, shared_features = score, None, []
         if settings.PPMI_ENABLED:
-            ppmi = self._run_ppmi(a.table_name, b.table_name)
+            ppmi = self._run_ppmi(a, b)
             if ppmi is not None:
                 ppmi_score = ppmi["ppmi_cosine"]
                 shared_features = ppmi["shared_features"]
@@ -387,21 +383,18 @@ class RelationPipeline:
             shared_features=shared_features,
         )
 
-    def _run_ppmi(self, table_a: str, table_b: str) -> dict | None:
-        """KV 그래프 PPMI 연관성 수치 (graceful — 특징 없음/코퍼스 부족/실패 시 None).
+    def _run_ppmi(self, a: DatasetProfile, b: DatasetProfile) -> dict | None:
+        """PPMI 연관성 수치 (특징 없음/코퍼스 부족 시 None).
 
-        run() 이 구성한 실행 단위 코퍼스를 사용하고, 단독 호출 시엔 지연 생성한다.
+        run() 이 구성한 실행 단위 코퍼스를 사용하고, 단독 호출 시엔 두 프로필로 지연 생성한다.
         """
-        try:
-            analyzer = getattr(self, "_ppmi_analyzer", None)
-            if analyzer is None:
-                from app.src.dataset.ppmi_analyzer import PPMIAnalyzer
+        analyzer = getattr(self, "_ppmi_analyzer", None)
+        if analyzer is None:
+            from app.src.dataset.ppmi_analyzer import PPMIAnalyzer
 
-                analyzer = self._ppmi_analyzer = PPMIAnalyzer()
-            return analyzer.score_pair(table_a, table_b)
-        except Exception as e:
-            logger.warning(f"[Tier2] PPMI 분석 실패 — 임베딩 점수만 사용: {e}")
-            return None
+            analyzer = self._ppmi_analyzer = PPMIAnalyzer()
+        analyzer.load_profiles([a, b])
+        return analyzer.score_pair(a.table_name, b.table_name)
 
     # ──────────────────────────────────────────────
     # Tier 3 — LLM 검증
