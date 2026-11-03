@@ -362,7 +362,10 @@ def download_document(session: _Session, landing_page: str) -> bytes:
             raise DownloadLimited()
         return session.get(f"{PORTAL}/cmm/cmm/fileDownload.do?{urllib.parse.urlencode(file_key)}")
 
-    pk = re.search(r"/data/(\d+)/", landing_page)[1]
+    pk = re.search(r"/data/(\d+)/", landing_page)
+    if not pk:
+        raise ValueError(f"공공데이터포털 목록 주소가 아님: {landing_page}")
+    pk = pk[1]
     link = json.loads(session.get(f"{PORTAL}/tcs/dss/selectLinkUrl.do?publicDataPk={pk}", ajax=True))
     if not link.get("status"):
         raise ValueError(f"제공기관 링크 없음: {link.get('errorDc')}")
