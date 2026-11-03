@@ -33,6 +33,10 @@ dependencies = [
     "botocore>=1.42.97",
     "opensearch-py>=3.2.0",
     "psycopg[binary]>=3.3.6",
+    "pypdf>=6.21.4",
+    "olefile>=0.47",
+    "py3langid>=0.4.0",
+    "cryptography>=50.0.2",
 ]
 name = "python-fastapi-template"
 version = "v1"
