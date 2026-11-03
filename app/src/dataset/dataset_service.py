@@ -5,17 +5,22 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from openai import APIError
+
 from app.config import settings
+from app.exceptions.base import ApplicationError
 from app.repositories.dataset_repository import DatasetRepository, get_dataset_repository
 from app.repositories.relation_repository import RelationRepository, get_relation_repository
 from app.schemas.dataset import DatasetProfile, DatasetRelation, DatasetSearchResult, type_seen_from
 from app.src.dataset.domain_classifier import CategoryClassifier, major_of, normalize_categories
+from app.src.dataset.text_extractor import detect_language, extract_text, text_profile
 from app.src.embedding.embedding_service import embedding_service
 from app.src.meta_extract.llm_response import LLMResponse
 
 logger = logging.getLogger(__name__)
 
 _SAMPLE_SIZE = 10
+_CLASSIFY_EXCERPT_CHARS = 800  # 분류 프롬프트에 넣는 본문 발췌 길이
 
 
 class DatasetService:
@@ -96,6 +101,108 @@ class DatasetService:
             f"embedding_dim={len(profile.table_embedding)}"
         )
         return profile
+
+    def ingest_document(
+        self,
+        content: bytes,
+        filename: str,
+        table_name: str,
+        description: str = "",
+        keywords: list[str] | None = None,
+        raw_storage_key: str = "",
+        catalog_identifier: str = "",
+        party: str = "",
+        provider: str = "",
+        landing_page: str = "",
+    ) -> DatasetProfile:
+        """비정형 텍스트(문서 파일) → 본문 추출 → 특징·분류·임베딩 → 원장 저장.
+
+        Raises:
+            DocumentTextExtractionError: 본문을 읽지 못한 문서 (손상·암호화·이미지 문서 등)
+        """
+        features = text_profile(*extract_text(content, filename.rsplit(".", 1)[-1] if "." in filename else ""))
+        profile = self.document_profile(table_name, features, description, keywords)
+        profile.raw_storage_key = raw_storage_key
+        profile.catalog_identifier = catalog_identifier
+        profile.party = party  # type: ignore[assignment]
+        profile.provider = provider
+        profile.landing_page = landing_page
+
+        existing = self.dataset_repo.get(table_name)
+        if existing:
+            profile.dataset_id = existing.dataset_id
+            profile.created_at = existing.created_at
+
+        self.dataset_repo.upsert(profile)
+        logger.info(
+            f"[Dataset] 문서 '{table_name}' 등록 완료: {features['format']}, {features['char_count']}자, "
+            f"언어={profile.language}, "
+            f"분류={profile.categories or '미분류'}"
+        )
+        return profile
+
+    def document_profile(
+        self,
+        title: str,
+        features: dict,
+        description: str = "",
+        keywords: list[str] | None = None,
+        categories: list[str] | None = None,
+    ) -> DatasetProfile:
+        """문서 본문 특징(text_profile)으로 프로필을 만든다 — 정형 데이터의 컬럼·샘플 자리에 본문 발췌가 들어간다.
+
+        설명·키워드가 주어지지 않으면(직접 업로드) 본문 발췌로 LLM 이 만든다. 임베딩은 제목·설명·발췌를
+        함께 넣어 설명이 짧은 문서도 본문 내용으로 비교되게 한다. 다국어 임베딩이라 언어가 달라도 같은 공간이다.
+        원장에 저장된 본문 특징으로 다시 부르면 원문을 다시 받지 않고 재분류·재임베딩된다.
+        분류(categories)를 주면 분류를 생략하고 그대로 쓴다 (정형 경로의 지정 도메인과 같은 규칙).
+        """
+        excerpt = features["excerpt"]
+        if not (description and keywords):
+            meta = self._extract_document_metadata(title, excerpt)
+            description = description or meta.get("description", "")
+            keywords = keywords or meta.get("keywords", [])
+        keywords = keywords or []
+        summary = description or excerpt[:300]
+        embed_text = "\n".join(t for t in (title, summary, excerpt) if t)
+        embedding = embedding_service.generate_embedding(embed_text)
+        categories = normalize_categories(categories or []) or CategoryClassifier().classify(
+            title, f"{summary}\n본문 발췌: {excerpt[:_CLASSIFY_EXCERPT_CHARS]}", keywords, [], embedding
+        )
+        logger.info(f"[Dataset] 문서 '{title}' 분야 분류: {categories or '미분류'}")
+        return DatasetProfile(
+            table_name=title,
+            domain=major_of(categories[0]) if categories else "",
+            categories=categories,
+            source_type="unstructured_text",
+            # 데이터 언어 = 본문 언어 (제목은 등록 기관이 붙인 국문일 수 있다). 본문으로 못 정하면 제목·설명으로
+            language=next(
+                (lang for lang in (detect_language(excerpt), detect_language(f"{title}\n{summary}")) if lang != "und"), "und"
+            ),
+            record_count=0,
+            column_count=0,
+            column_names=[],
+            sample_records=[],
+            text_profile=features,
+            description=description,
+            table_summary=summary,
+            embed_text=embed_text,
+            table_embedding=embedding,
+            keywords=keywords,
+            keywords_embedding=self._embed_keywords(keywords) if keywords else [],
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    @staticmethod
+    def _extract_document_metadata(title: str, excerpt: str) -> dict:
+        """본문 발췌 → 설명·키워드 (LLM). 실패하면 빈 값 — 설명은 발췌 앞부분으로 대신한다."""
+        try:
+            result = LLMResponse("document_metadata_extraction").generate_llm_response(
+                {"title": title, "excerpt": excerpt}
+            )
+            return result if isinstance(result, dict) else {}
+        except (APIError, ApplicationError) as e:
+            logger.warning(f"[Dataset] 문서 '{title}' 설명·키워드 추출 실패: {e}")
+            return {}
 
     # ──────────────────────────────────────────────
     # 관계 저장
@@ -493,6 +600,7 @@ class DatasetService:
             display_name=display_name,
             domain=major_of(categories[0]) if categories else "",
             categories=categories,
+            language=detect_language(f"{table_name} {summary_text}"),
             record_count=len(records),
             column_count=len(column_names),
             column_names=column_names,

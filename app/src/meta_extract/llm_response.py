@@ -40,6 +40,7 @@ class LLMResponse:
         "field_type_classification": field_type_classification_tool,
         "table_relation_verification": table_relation_verification_tool,
         "table_metadata_extraction": table_metadata_extraction_tool,
+        "document_metadata_extraction": table_metadata_extraction_tool,  # 출력(설명·키워드·표시명)이 같다
         "dataset_search_intent": dataset_search_intent_tool,
         "dataset_search_answer": dataset_search_answer_tool,
         "dataset_category_classification": dataset_category_classification_tool,

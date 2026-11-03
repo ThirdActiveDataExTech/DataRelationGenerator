@@ -4,6 +4,7 @@ import itertools
 import json
 import logging
 
+from app.config import settings
 from app.repositories.dataset_repository import DatasetRepository, get_dataset_repository
 from app.schemas.dataset import (
     ColumnMatchInfo,
@@ -26,6 +27,7 @@ from app.utils.vector import cosine_similarity
 logger = logging.getLogger(__name__)
 
 _SAMPLE_DISPLAY = 3  # LLM에게 보여줄 샘플 레코드 수
+_EXCERPT_DISPLAY = 600  # 문서형 데이터는 샘플 대신 본문 발췌를 보여준다
 _RULE_AUTO_APPROVE = 0.8  # 구조 근거(공통 컬럼)가 있는 쌍의 자동 확정 기준
 
 # 단독으로 존재할 때 의미 없는 공통 컬럼명 (노이즈 필터)
@@ -64,6 +66,13 @@ def _value_in_both(a: DatasetProfile, b: DatasetProfile, value: str) -> bool:
     return appears(a) and appears(b)
 
 
+def _judge_samples(profile: DatasetProfile) -> str:
+    """판정 입력의 샘플 — 정형은 레코드, 비정형 텍스트(문서)는 본문 발췌."""
+    if profile.sample_records or not profile.text_profile.get("excerpt"):
+        return json.dumps(profile.sample_records[:_SAMPLE_DISPLAY], ensure_ascii=False)
+    return json.dumps([{"본문 발췌": profile.text_profile["excerpt"][:_EXCERPT_DISPLAY]}], ensure_ascii=False)
+
+
 def _source_side_matches(matches: list[ColumnMatchInfo], source_is_a: bool) -> list[dict]:
     """컬럼 매칭을 column_a = source 쪽 컬럼이 되도록 맞춘다."""
     return [
@@ -96,7 +105,7 @@ class RelationPipeline:
     def run(
         self,
         table_names: list[str],
-        tier2_threshold: float = 0.4,
+        tier2_threshold: float = settings.RELATION_CANDIDATE_THRESHOLD,
         tier3_confidence_threshold: float = 0.6,
         refresh_table_names: list[str] | None = None,
         seed_table_names: list[str] | None = None,
@@ -474,13 +483,13 @@ class RelationPipeline:
             "description_a": a.description,
             "summary_a": a.table_summary,
             "columns_a": ", ".join(a.column_names[:20]),
-            "samples_a": json.dumps(a.sample_records[:_SAMPLE_DISPLAY], ensure_ascii=False),
+            "samples_a": _judge_samples(a),
             "table_b": b.table_name,
             "domain_b": b.domain,
             "description_b": b.description,
             "summary_b": b.table_summary,
             "columns_b": ", ".join(b.column_names[:20]),
-            "samples_b": json.dumps(b.sample_records[:_SAMPLE_DISPLAY], ensure_ascii=False),
+            "samples_b": _judge_samples(b),
             "embedding_score": round(embedding_score, 3),
         }
         result = LLMResponse("table_relation_verification").generate_llm_response(variables=variables)

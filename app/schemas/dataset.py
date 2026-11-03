@@ -4,6 +4,7 @@ import uuid
 from enum import Enum
 from typing import Any, Literal
 
+from app.config import settings
 from app.schemas.tool_utils import pydantic_function_tool
 from app.src.dataset.domain_classifier import CATEGORIES
 from pydantic import BaseModel, Field
@@ -196,13 +197,21 @@ class DatasetProfile(BaseModel):
         default_factory=list,
         description="분야 분류 '대분류 > 중분류' 1~3개 (디지털 집현전 분류표). 첫 번째가 대표 분류",
     )
+    source_type: Literal["structured_file", "unstructured_text"] = Field(
+        default="structured_file", description="데이터 형식 — 정형 파일 / 비정형 텍스트(문서). 원장 dcat_dataset.source_type"
+    )
+    language: str = Field(default="ko", description="데이터 언어 (ISO 639-1 — ko·en, 판별 불가 und)")
     record_count: int = Field(description="레코드 수")
     column_count: int = Field(description="컬럼 수")
     column_names: list[str] = Field(description="컬럼명 목록")
     sample_records: list[dict[str, Any]] = Field(description="샘플 레코드 (최대 10개)")
+    text_profile: dict[str, Any] = Field(
+        default_factory=dict, description="비정형 텍스트 본문 특징 (형식·언어·글자 수·발췌). 정형 데이터는 빈 값"
+    )
     description: str = Field(default="", description="테이블 짧은 설명")
     table_summary: str = Field(default="", description="테이블 상세 요약 (임베딩 소스)")
-    table_embedding: list[float] = Field(default_factory=list, description="table_summary 임베딩 벡터")
+    embed_text: str = Field(default="", description="임베딩 입력 텍스트 — 비어 있으면 table_summary (문서는 요약+본문 발췌)")
+    table_embedding: list[float] = Field(default_factory=list, description="embed_text 임베딩 벡터")
     keywords: list[str] = Field(default_factory=list, description="LLM이 추출한 도메인 개념 키워드")
     keywords_embedding: list[float] = Field(default_factory=list, description="keywords 평균 임베딩 벡터")
     created_at: str = Field(default="", description="생성 시각 (ISO 8601)")
@@ -491,7 +500,9 @@ class RunRelationPipelineRequest(BaseModel):
     """관계 생성 파이프라인 실행 요청."""
 
     table_names: list[str] = Field(default_factory=list, description="대상 테이블명 목록 (비어있으면 전체)")
-    tier2_threshold: float = Field(default=0.4, ge=0.0, le=1.0, description="Tier 2 유사도 임계값")
+    tier2_threshold: float = Field(
+        default=settings.RELATION_CANDIDATE_THRESHOLD, ge=0.0, le=1.0, description="Tier 2 유사도 임계값 (임베딩 모델 기준값)"
+    )
     tier3_confidence_threshold: float = Field(
         default=0.6, ge=0.0, le=1.0,
         description="Tier 3 확신도 하한 — 이상이면 판정 대기, 자동 확정 기준(RELATION_AUTO_APPROVE_THRESHOLD) 이상이면 확정",
