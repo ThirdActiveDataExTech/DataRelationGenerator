@@ -10,13 +10,13 @@ CREATE TABLE IF NOT EXISTS dcat_dataset
     title          TEXT        NOT NULL,                   -- dct:title
     description    TEXT,                                   -- dct:description
     publisher      TEXT,                                   -- dct:publisher · 제공기관
-    source_type    TEXT        NOT NULL DEFAULT 'structured_file',
+    source_type    TEXT        NOT NULL DEFAULT 'structured_file', -- 정형 structured_file · 문서형 파일 unstructured_text
     dataset_origin TEXT        NOT NULL DEFAULT 'admin',   -- admin / user
     publisher_code TEXT,                                   -- 원천 포털의 기관 코드
     keywords       JSONB       NOT NULL DEFAULT '[]',      -- dcat:keyword
     theme          JSONB       NOT NULL DEFAULT '[]',      -- dct:subject · 원천 분류 그대로 (공공 '대분류 - 소분류' 분해, KOSIS 주제 경로)
     category       JSONB       NOT NULL DEFAULT '[]',      -- 디지털 집현전 분류 '대분류 > 중분류' 1~3개 (첫 번째가 대표)
-    language       TEXT        NOT NULL DEFAULT 'ko',      -- dct:language
+    language       TEXT        NOT NULL DEFAULT 'ko',      -- dct:language (ISO 639-1: ko · en)
     spatial        TEXT,                                   -- dct:spatial · 원문
     temporal_start DATE,                                   -- dct:temporal 시작
     temporal_end   DATE,                                   -- dct:temporal 종료 · NULL 이면 진행 중/미상
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS meta_datagokr_file
     record_count      BIGINT,
     column_count      INTEGER,
     column_names      JSONB       NOT NULL DEFAULT '[]',
-    column_profile    JSONB       NOT NULL DEFAULT '{}',   -- 항목별 기술통계량 · KOSIS 분류별 값·항목별 단위
+    column_profile    JSONB       NOT NULL DEFAULT '{}',   -- 항목별 기술통계량 · KOSIS 분류별 값·항목별 단위 · 문서 본문 특징(text_profile)
     coverage_start    DATE,                                -- 수록기간 시작
     coverage_end      DATE,                                -- 수록기간 종료 (공공은 파일명 날짜 접미)
     domain            TEXT,                                -- 대표 대분류 (dcat_dataset.category 첫 번째의 대분류)

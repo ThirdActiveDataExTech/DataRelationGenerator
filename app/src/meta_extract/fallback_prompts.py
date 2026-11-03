@@ -598,6 +598,35 @@ A를 보는 사람에게 B가 무엇인지로 고릅니다. 근거를 댈 수 �
 반드시 extract_table_metadata function tool을 호출하세요.
 """
 
+    DOCUMENT_METADATA_EXTRACTION: str = """**반드시 extract_table_metadata tool을 사용하여 응답할 것.**
+
+당신은 문서(보고서·지침·통계연보·게시글 등)를 읽고 핵심 메타데이터를 만드는 전문가입니다.
+
+# 문서
+제목: {title}
+본문 앞부분:
+{excerpt}
+
+# 임무
+
+## 1. description
+문서가 무엇을 다루는지, 누가 어떤 목적으로 볼 문서인지를 1~2문장으로 요약하세요.
+- 목차·머리말을 옮겨 적지 말고 내용의 대상과 범위를 쓸 것
+- 본문이 영어 등 외국어여도 한국어로 작성
+
+좋은 예: "전국 의료기관의 병상 수와 시도별 분포를 정리한 연간 통계 보고서로, 지역별 의료 자원 비교에 쓰입니다."
+나쁜 예: "제1장 개요, 제2장 현황, 제3장 부록으로 구성되어 있습니다."
+
+## 2. keywords
+문서를 대표하는 개념어 5~10개를 한국어로 추출하세요. 다른 데이터와 이어질 수 있는 대상·주제어(기관 종류, 지역, 질병, 제도명 등)를 우선하세요.
+
+## 3. display_name
+제목이 이미 자연스러우면 그대로, 파일명처럼 보이면 간결한 한국어 명사구로.
+
+# 출력
+반드시 extract_table_metadata function tool을 호출하세요.
+"""
+
     DATASET_CATEGORY_CLASSIFICATION: str = """**반드시 classify_dataset_categories tool을 사용하여 응답할 것.**
 
 당신은 데이터셋을 주제 분야로 분류하는 전문가입니다.
@@ -695,6 +724,7 @@ suggested_next 에는 사용자가 이어서 볼 만한 데이터셋명을 **제
             "field_type_classification": cls.FIELD_TYPE_CLASSIFICATION,
             "table_relation_verification": cls.TABLE_RELATION_VERIFICATION,
             "table_metadata_extraction": cls.TABLE_METADATA_EXTRACTION,
+            "document_metadata_extraction": cls.DOCUMENT_METADATA_EXTRACTION,
             "dataset_search_intent": cls.DATASET_SEARCH_INTENT,
             "dataset_search_answer": cls.DATASET_SEARCH_ANSWER,
             "dataset_category_classification": cls.DATASET_CATEGORY_CLASSIFICATION,
