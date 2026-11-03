@@ -22,6 +22,7 @@ from app.schemas.dataset import (
 from app.schemas.response import APIResponseModel
 from app.src.dataset.dataset_service import dataset_service
 from app.src.dataset.relation_pipeline import relation_pipeline
+from app.src.dataset.text_extractor import DOCUMENT_FORMATS
 
 router = APIRouter(prefix="/dataset")
 logger = logging.getLogger(__name__)
@@ -153,10 +154,10 @@ def _run_pipeline_sync(job_id: str, request: RunRelationPipelineRequest) -> None
     tags=["Datasets"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
-    summary="테이블 메타데이터 추출 및 원장 적재",
+    summary="테이블·문서 메타데이터 추출 및 원장 적재",
 )
 async def ingest_dataset(
-        file: Annotated[UploadFile, File(description="JSON / JSONL / CSV 파일")],
+        file: Annotated[UploadFile, File(description="정형: JSON / JSONL / CSV, 비정형 텍스트: PDF / HWP / HWPX / DOCX / ODT / HTML / TXT")],
         table_name: Annotated[str, Body(embed=True, description="테이블명")],
         domain: Annotated[str, Body(embed=True, description="도메인 (medical, broadcast 등). 생략 시 특징 기반 자동 분류")] = "",
         description: Annotated[str, Body(embed=True, description="짧은 설명")] = "",
@@ -165,9 +166,14 @@ async def ingest_dataset(
         party: Annotated[str, Body(embed=True, description="데이터 파티 구분 (1st/3rd). 직접 업로드는 통상 1st")] = "",
         provider: Annotated[str, Body(embed=True, description="제공 기관/발행처")] = "",
 ):
-    """JSON / JSONL / CSV 파일을 업로드하면 메타데이터를 추출하여 데이터셋 원장(PostgreSQL)에 저장."""
+    """파일을 업로드하면 메타데이터를 추출하여 데이터셋 원장(PostgreSQL)에 저장.
+
+    문서 파일은 본문을 읽어 비정형 텍스트 데이터셋으로 등록한다 (본문 특징·분류·다국어 임베딩).
+    """
     content = await file.read()
-    records = _parse_upload(content, file.filename or "upload.json")
+    filename = file.filename or "upload.json"
+    is_document = filename.rsplit(".", 1)[-1].upper() in DOCUMENT_FORMATS | {"HTM"}
+    records = [] if is_document else _parse_upload(content, filename)
 
     # 원본 파일 보존 (§3.2, 백엔드는 RAW_STORAGE_BACKEND) — 실패해도 적재는 계속.
     # 저장 키는 프로필에 기록해 두어, 재업로드 없이 KV 그래프 처리를 트리거할 수 있게 한다.
@@ -176,10 +182,23 @@ async def ingest_dataset(
         from app.src.dataset.raw_storage import get_raw_storage
         storage = get_raw_storage()
         if storage.enabled:
-            raw_storage_key = storage.store_raw_dataset(table_name, file.filename or "upload.json", content) or ""
+            raw_storage_key = storage.store_raw_dataset(table_name, filename, content) or ""
             logger.info(f"[RawStorage] 원본 저장: {raw_storage_key}")
     except Exception as e:
         logger.warning(f"[RawStorage] 원본 저장 실패 (적재는 계속): {e}")
+
+    if is_document:
+        profile = dataset_service.ingest_document(
+            content, filename, table_name, description=description, raw_storage_key=raw_storage_key,
+            catalog_identifier=catalog_identifier, party=party, provider=provider,
+        )
+        return APIResponseModel(
+            result=profile.model_dump(exclude={"table_embedding", "keywords_embedding"}),
+            description=(
+                f"문서 '{table_name}' 등록 완료: {profile.text_profile['format']}, "
+                f"{profile.text_profile['char_count']}자, 언어 {profile.language}"
+            ),
+        )
 
     profile = dataset_service.ingest_table(
         records=records,
