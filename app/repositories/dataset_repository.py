@@ -15,7 +15,7 @@ from psycopg.types.json import Jsonb
 
 from app.clients.postgres import connect, from_vector, to_vector
 from app.config import settings
-from app.exceptions.service import DuplicateDatasetContentError
+from app.exceptions.service import DatasetNotFoundError, DuplicateDatasetContentError
 from app.schemas.dataset import DatasetProfile, DatasetSearchResult
 
 _SOURCE_BY_HOST = {"data.go.kr": "DATA_GO_KR", "kosis.kr": "KOSIS", "opendata.hira.or.kr": "HIRA"}
@@ -175,6 +175,9 @@ class DatasetRepository:
         """이미 등록된 데이터셋에 비정형 텍스트 분석 결과(형식·언어·본문 특징·분류·임베딩)만 덮어쓴다.
 
         upsert 는 파일 행을 지우고 다시 넣어 표준 항목(파일 형식·크기·기간)을 잃으므로 쓰지 않는다.
+
+        Raises:
+            DatasetNotFoundError: 파일 행이 없는 데이터셋
         """
         with connect() as conn:
             conn.execute(
@@ -187,6 +190,8 @@ class DatasetRepository:
                 "WHERE dataset_id = %s RETURNING file_id",
                 (Jsonb({"text_profile": profile.text_profile}), profile.domain, profile.dataset_id),
             ).fetchone()
+            if row is None:
+                raise DatasetNotFoundError(profile.dataset_id)
             conn.execute(
                 """
                 INSERT INTO meta_datagokr_file_vec (file_id, summary_embedding, keywords_embedding, embed_text, model_name)
