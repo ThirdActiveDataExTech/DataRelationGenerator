@@ -67,7 +67,9 @@ def column_jaccard(columns_a: list[str], columns_b: list[str]) -> float:
 
 # 집계표는 시점을 행의 구분자로 갖고 수치 측정값을 나른다. 개체 목록은 시점을
 # 개체의 사건 일자(인허가일자 등)로만 가지므로 구분된다.
-# ponytail: dataset_metadata.is_aggregate 가 채워지면 이 추정을 대체한다 (정의서 9항)
+# ponytail: 컬럼 이름 추정이라 기관마다 다른 이름(진료인원(명)·확진인원·연)을 놓치고 개인 기록
+# (과목별점수·출생년도)을 집계로 잡는다 — 유형은 LLM 판정이 정하고 이 추정은 방향과 LLM 판정이
+# 없을 때만 쓴다. dataset_metadata.is_aggregate 가 채워지면 대체한다 (정의서 9항)
 _PERIOD_COLUMNS = ("연도", "년도", "기준연월", "기준년월", "기준시점", "시점", "기간", "year", "month")
 # '명'은 빼 둔다 — 컬럼명의 '~명'은 대부분 이름(코드명·테이블명)이지 인원 수가 아니다
 _MEASURE_TAILS = ("수", "건수", "율", "률", "액", "합계", "평균", "count", "total", "sum", "avg", "rate")
@@ -118,14 +120,14 @@ def canonicalize_level1_type(
 
     판정 순서 — 앞선 조건이 성립하면 뒤는 보지 않는다.
 
-    1. 한쪽만 집계표 → STATISTIC_FOR
-    2. LLM 판정
+    1. LLM 판정
+    2. 한쪽만 집계표 → STATISTIC_FOR
     3. 공통 컬럼이 있다 (같은 개체) → DETAIL_FOR
     4. 그 외 → ADJACENT_TO
 
-    구조 신호(1)는 확인 가능하므로 LLM 판정보다 우선한다. SAME_KIND 는 컬럼 구성이 겹치는
-    정도로 정하지 않고 LLM 판정만 따른다 — 지자체마다 항목 이름이 달라 같은 종류도 겹침이 낮고,
-    같은 시스템의 다른 측정표(속성 보완)는 공통 컬럼이 많아 겹침이 높다.
+    컬럼 구조 신호(2·3)는 LLM 판정이 없을 때만 쓴다. 컬럼 이름이 기관마다 달라 같은 통계도
+    한쪽만 집계표로 잡히고(2026-11 원장: LLM 판정을 덮어쓴 10건 중 바로잡은 것 0건), 같은
+    시스템의 다른 측정표(속성 보완)는 공통 컬럼이 많아 컬럼 겹침으로 동종 판본을 가를 수 없다.
 
     Args:
         raw_type: LLM/규칙이 산출한 원본 관계 유형 텍스트
@@ -141,13 +143,13 @@ def canonicalize_level1_type(
 
     judged = _as_level1_type(llm_type)
 
-    if is_aggregate:
-        canonical = Level1RelationType.STATISTIC_FOR
-    elif legacy is not None:
+    if legacy is not None:
         # 4종 이전 값은 텍스트 키워드보다 매핑을 우선한다
         canonical = legacy
     elif judged is not None:
         canonical = judged
+    elif is_aggregate:
+        canonical = Level1RelationType.STATISTIC_FOR
     elif any(k in text for k in _AGGREGATE_HINTS):
         # 구프롬프트 응답 대비 — 라벨 문구로 집계를 추정한다
         canonical = Level1RelationType.STATISTIC_FOR
