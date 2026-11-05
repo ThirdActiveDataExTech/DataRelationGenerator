@@ -11,6 +11,7 @@ from app.exceptions.base import ApplicationError
 from app.schemas.dataset import (
     dataset_search_answer_tool,
     dataset_category_classification_tool,
+    dataset_nature_classification_tool,
     dataset_search_intent_tool,
     table_metadata_extraction_tool,
     table_relation_verification_tool,
@@ -44,6 +45,7 @@ class LLMResponse:
         "dataset_search_intent": dataset_search_intent_tool,
         "dataset_search_answer": dataset_search_answer_tool,
         "dataset_category_classification": dataset_category_classification_tool,
+        "dataset_nature_classification": dataset_nature_classification_tool,
     }
 
     def __init__(self, task: str):

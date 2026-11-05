@@ -65,26 +65,10 @@ def column_jaccard(columns_a: list[str], columns_b: list[str]) -> float:
     return len(a & b) / len(a | b)
 
 
-# 집계표는 시점을 행의 구분자로 갖고 수치 측정값을 나른다. 개체 목록은 시점을
-# 개체의 사건 일자(인허가일자 등)로만 가지므로 구분된다.
-# ponytail: 컬럼 이름 추정이라 기관마다 다른 이름(진료인원(명)·확진인원·연)을 놓치고 개인 기록
-# (과목별점수·출생년도)을 집계로 잡는다 — 유형은 LLM 판정이 정하고 이 추정은 방향과 LLM 판정이
-# 없을 때만 쓴다. dataset_metadata.is_aggregate 가 채워지면 대체한다 (정의서 9항)
-_PERIOD_COLUMNS = ("연도", "년도", "기준연월", "기준년월", "기준시점", "시점", "기간", "year", "month")
-# '명'은 빼 둔다 — 컬럼명의 '~명'은 대부분 이름(코드명·테이블명)이지 인원 수가 아니다
-_MEASURE_TAILS = ("수", "건수", "율", "률", "액", "합계", "평균", "count", "total", "sum", "avg", "rate")
-
-
-def looks_aggregate(columns: list[str]) -> bool:
-    """컬럼 구성으로 집계표인지 추정한다.
-
-    시점 구분 컬럼과 수치 측정 컬럼을 함께 가지면 집계표로 본다. 개체 목록은
-    시점을 행 구분자로 쓰지 않으므로 이 조합이 나오지 않는다.
-    """
-    norm = [c.strip().lower().replace(" ", "") for c in columns if c and c.strip()]
-    has_period = any(tok in c for c in norm for tok in _PERIOD_COLUMNS)
-    has_measure = any(c.endswith(tail) for c in norm for tail in _MEASURE_TAILS)
-    return has_period and has_measure
+# 데이터셋 성격 — 집계 맥락의 방향(집계표가 source)을 정한다. 컬럼 이름 규칙(시점+측정 컬럼)은
+# 정답 표본 200건에서 재현율 14%(국가통계포털 통계표 0/30, 컬럼 없는 메타데이터 판별 불가)라
+# 데이터셋마다 LLM 으로 한 번 분류해 저장한다 (같은 표본 정확도 96%).
+DatasetNature = Literal["aggregate", "record", "reference", "content"]
 
 
 def migrate_stored_type(stored: str) -> str:
@@ -125,14 +109,14 @@ def canonicalize_level1_type(
     3. 공통 컬럼이 있다 (같은 개체) → DETAIL_FOR
     4. 그 외 → ADJACENT_TO
 
-    컬럼 구조 신호(2·3)는 LLM 판정이 없을 때만 쓴다. 컬럼 이름이 기관마다 달라 같은 통계도
-    한쪽만 집계표로 잡히고(2026-11 원장: LLM 판정을 덮어쓴 10건 중 바로잡은 것 0건), 같은
+    구조 신호(2·3)는 LLM 판정이 없을 때만 쓴다. 쌍을 함께 본 LLM 판정이 데이터셋 하나씩 본
+    성격보다 관계를 잘 가린다(같은 지표의 지역 판본은 양쪽 다 집계표지만 동종 판본이다). 같은
     시스템의 다른 측정표(속성 보완)는 공통 컬럼이 많아 컬럼 겹침으로 동종 판본을 가를 수 없다.
 
     Args:
         raw_type: LLM/규칙이 산출한 원본 관계 유형 텍스트
         has_common_columns: 공통 컬럼 존재 여부 (Tier1/Tier1.5)
-        is_aggregate: 한쪽만 집계표인지. 둘 다 집계표면 같은 통계의 다른 판일 수 있어 구조 신호가 아니다
+        is_aggregate: 데이터셋 성격상 한쪽만 집계표인지. 둘 다 집계표면 같은 통계의 다른 판일 수 있어 구조 신호가 아니다
         llm_type: LLM이 판정한 4종 유형. 구프롬프트 응답이면 빈 값
 
     Returns:
@@ -199,6 +183,9 @@ class DatasetProfile(BaseModel):
     sample_records: list[dict[str, Any]] = Field(description="샘플 레코드 (최대 10개)")
     text_profile: dict[str, Any] = Field(
         default_factory=dict, description="비정형 텍스트 본문 특징 (형식·언어·글자 수·발췌). 정형 데이터는 빈 값"
+    )
+    nature: DatasetNature | Literal[""] = Field(
+        default="", description="데이터셋 성격 — 집계표 / 개체·사건 기록 / 기준 정보 / 콘텐츠. 빈 값은 미분류"
     )
     description: str = Field(default="", description="테이블 짧은 설명")
     table_summary: str = Field(default="", description="테이블 상세 요약 (임베딩 소스)")
@@ -411,6 +398,19 @@ dataset_category_classification_tool = pydantic_function_tool(
     DatasetCategoryClassification,
     name="classify_dataset_categories",
     description="데이터셋을 디지털 집현전 주제 분류(대분류 > 중분류)로 분류합니다.",
+)
+
+
+class DatasetNatureClassification(BaseModel):
+    """데이터셋 성격 분류 결과."""
+
+    nature: DatasetNature = Field(description="데이터셋 성격")
+
+
+dataset_nature_classification_tool = pydantic_function_tool(
+    DatasetNatureClassification,
+    name="classify_dataset_nature",
+    description="데이터셋이 집계표·개체 기록·기준 정보·콘텐츠 중 무엇인지 분류합니다.",
 )
 
 
