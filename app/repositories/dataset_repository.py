@@ -59,8 +59,12 @@ def _content_sha256(profile: DatasetProfile) -> str:
 
 
 def _column_profile(profile: DatasetProfile) -> dict:
-    """meta_datagokr_file.column_profile — 정형은 샘플 레코드, 비정형 텍스트는 본문 특징을 함께 둔다."""
-    return {"sample_records": profile.sample_records, **({"text_profile": profile.text_profile} if profile.text_profile else {})}
+    """meta_datagokr_file.column_profile — 정형은 샘플 레코드, 비정형 텍스트는 본문 특징, 분류된 성격을 함께 둔다."""
+    return {
+        "sample_records": profile.sample_records,
+        **({"text_profile": profile.text_profile} if profile.text_profile else {}),
+        **({"nature": profile.nature} if profile.nature else {}),
+    }
 
 
 def _to_profile(row: dict) -> DatasetProfile:
@@ -84,6 +88,7 @@ def _to_profile(row: dict) -> DatasetProfile:
         column_names=row["column_names"],
         sample_records=row["column_profile"].get("sample_records", []),
         text_profile=row["column_profile"].get("text_profile", {}),
+        nature=row["column_profile"].get("nature", ""),
         description=row["description"] or "",
         table_summary=row["table_summary"] or "",
         embed_text=row["embed_text"] or "",
@@ -170,6 +175,14 @@ class DatasetRepository:
                 )
         except errors.UniqueViolation as e:
             raise DuplicateDatasetContentError(profile.table_name) from e
+
+    def update_nature(self, table_name: str, nature: str) -> None:
+        """분류한 데이터셋 성격만 덮어쓴다 (column_profile.nature)."""
+        with connect() as conn:
+            conn.execute(
+                "UPDATE meta_datagokr_file SET column_profile = column_profile || %s WHERE file_name = %s",
+                (Jsonb({"nature": nature}), table_name),
+            )
 
     def update_text_analysis(self, profile: DatasetProfile) -> None:
         """이미 등록된 데이터셋에 비정형 텍스트 분석 결과(형식·언어·본문 특징·분류·임베딩)만 덮어쓴다.

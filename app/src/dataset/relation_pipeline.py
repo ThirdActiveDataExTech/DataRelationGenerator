@@ -3,8 +3,11 @@
 import itertools
 import json
 import logging
+from openai import APIError
+from pydantic import ValidationError
 
 from app.config import settings
+from app.exceptions.base import ApplicationError
 from app.repositories.dataset_repository import DatasetRepository, get_dataset_repository
 from app.schemas.dataset import (
     ColumnMatchInfo,
@@ -14,10 +17,10 @@ from app.schemas.dataset import (
     RelationPipelineResult,
     Tier1Result,
     Tier2Candidate,
+    DatasetNatureClassification,
     Tier3Result,
     canonicalize_level1_type,
     column_jaccard,
-    looks_aggregate,
 )
 from app.src.dataset.dataset_service import DatasetService
 from app.src.embedding.embedding_service import embedding_service
@@ -226,7 +229,7 @@ class RelationPipeline:
             origin_method = "rule" if has_tier1 else "embedding"
             # 관계 유형을 4종으로 정규화 (원본 라벨은 하위 보존)
             jaccard = column_jaccard(a.column_names, b.column_names)
-            aggregate_a, aggregate_b = looks_aggregate(a.column_names), looks_aggregate(b.column_names)
+            aggregate_a, aggregate_b = self._nature(a) == "aggregate", self._nature(b) == "aggregate"
             is_aggregate = aggregate_a != aggregate_b
             canonical_type = canonicalize_level1_type(
                 tier3.relation_type,
@@ -235,7 +238,8 @@ class RelationPipeline:
                 llm_type=tier3.level1_type,
             )
             # 역할을 주는 쪽이 source (정의서 방향). LLM 은 "A를 보는 사람에게 B가 무엇인지"로
-            # 판정하므로 B 가 주는 쪽이고, 컬럼으로 A 만 집계표로 확인되면 A 가 집계(source)다.
+            # 판정하므로 B 가 주는 쪽이고, 성격 분류로 A 만 집계표면 A 가 집계(source)다.
+            # (2026-11 원장: LLM 이 집계 맥락이라 하면서 B 에 개체 목록을 둔 쌍 3/94)
             source_is_a = (
                 canonical_type.startswith(Level1RelationType.STATISTIC_FOR.value)
                 and aggregate_a and not aggregate_b
@@ -567,6 +571,24 @@ class RelationPipeline:
     # ──────────────────────────────────────────────
     # Helper
     # ──────────────────────────────────────────────
+
+    def _nature(self, profile: DatasetProfile) -> str:
+        """데이터셋 성격. 저장값이 없으면 LLM 으로 한 번 분류해 원장에 남긴다 — 실패하면 빈 값(미분류)."""
+        if profile.nature:
+            return profile.nature
+        try:
+            result = LLMResponse("dataset_nature_classification").generate_llm_response({
+                "title": profile.display_name or profile.table_name,
+                "description": (profile.description or profile.table_summary)[:700],
+                "columns": ", ".join(profile.column_names[:40]) or "(컬럼 정보 없음)",
+            })
+            nature = DatasetNatureClassification.model_validate(result).nature
+        except (APIError, ApplicationError, ValidationError) as e:
+            logger.warning(f"[Nature] '{profile.table_name}' 성격 분류 실패: {e}")
+            return ""
+        profile.nature = nature
+        self.dataset_repo.update_nature(profile.table_name, nature)
+        return nature
 
     def _load_profiles(self, table_names: list[str]) -> list[DatasetProfile]:
         """원장에서 테이블 프로파일 로드."""

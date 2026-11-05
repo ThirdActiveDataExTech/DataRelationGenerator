@@ -10,7 +10,7 @@ from app.utils.vector import cosine_similarity
 def _profile(name, column_names=("c",), sample_records=({},)) -> DatasetProfile:
     return DatasetProfile(
         table_name=name, catalog_identifier=f"id-{name}", domain="d",
-        record_count=1, column_count=len(column_names), column_names=list(column_names),
+        record_count=1, column_count=len(column_names), column_names=list(column_names), nature="record",
         sample_records=list(sample_records), table_embedding=[1.0, 0.0],
     )
 

@@ -652,6 +652,20 @@ A를 보는 사람에게 B가 무엇인지로 고릅니다. 근거를 댈 수 �
 - 컬럼: {columns}
 """
 
+    DATASET_NATURE_CLASSIFICATION: str = """**반드시 classify_dataset_nature tool을 사용하여 응답할 것.**
+
+공공데이터 파일 하나의 성격을 고르세요. 이름·설명·컬럼으로 판단합니다.
+- aggregate: 행이 개별 개체가 아니라 지역·기간·성별·연령·유형 같은 기준으로 묶은 수치(인원·건수·비율·금액·평균)입니다. 기준이 열로 펼쳐진 표(연도가 열, 지역이 열)도 같습니다. 예: 시군구별 출생아 수, 월별 확진자 수, 상병별 환자 수 통계, 기관별 연간 이용 실적
+- record: 행마다 실제 개체나 사건 하나를 기록합니다. 예: 약국·병원·업소 목록, 시험 응시자별 성적, 민원 접수 내역, 연구과제 목록
+- reference: 코드표, 테이블·컬럼 정의서, 안내문처럼 다른 데이터를 설명하는 기준 정보입니다
+- content: 방송·게시물·문서처럼 콘텐츠 자체가 행이거나 파일인 데이터입니다
+
+# 데이터셋
+- 이름: {title}
+- 설명: {description}
+- 컬럼: {columns}
+"""
+
     DATASET_SEARCH_ANSWER: str = """**반드시 answer_dataset_search tool을 사용하여 응답할 것.**
 
 당신은 데이터 카탈로그 검색 결과를 사용자에게 설명하는 전문가입니다.
@@ -728,6 +742,7 @@ suggested_next 에는 사용자가 이어서 볼 만한 데이터셋명을 **제
             "dataset_search_intent": cls.DATASET_SEARCH_INTENT,
             "dataset_search_answer": cls.DATASET_SEARCH_ANSWER,
             "dataset_category_classification": cls.DATASET_CATEGORY_CLASSIFICATION,
+            "dataset_nature_classification": cls.DATASET_NATURE_CLASSIFICATION,
         }
 
         if task not in prompt_map:
