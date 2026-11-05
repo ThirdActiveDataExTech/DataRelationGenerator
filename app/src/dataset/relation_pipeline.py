@@ -373,6 +373,8 @@ class RelationPipeline:
 
         # PPMI-SVD 보조 신호 — 컬럼·값 특징 co-occurrence 기반 연관성 수치.
         # 설명 문구가 달라도 실제 컬럼·값이 겹치면 잡아내는, 임베딩과 상보적인 신호.
+        # 가중 평균이라 PPMI≈0(컬럼·값 겹침 없음)이면 상한이 (1-w) 로 묶여 판정 전에 걸러진다 — 의도된 거름
+        # (2026-11 시범: 이렇게 걸러진 쌍을 따로 판정하면 관계 인정 5%, 비용만 23% 증가).
         from app.config import settings
 
         embedding_score, ppmi_score, shared_features = score, None, []
