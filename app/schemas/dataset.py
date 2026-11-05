@@ -16,7 +16,7 @@ class Level1RelationType(str, Enum):
     - DETAIL_FOR: 같은 개체에 앵커가 갖지 않은 속성을 공급
     - STATISTIC_FOR: 다른 입도의 집계·지수로 앵커 값에 맥락을 제공
     - ADJACENT_TO: 같은 맥락의 다른 개체 (대체재·다음 단계·주제 인접)
-    - SAME_KIND: 같은 표준을 따르는 다른 지역·유형·판본
+    - SAME_KIND: 같은 항목(시설·업종 목록, 통계 지표)을 지역·기관·기간·분류 기준만 달리해 담은 데이터
 
     방향 (정의서 1.1항): DETAIL_FOR·STATISTIC_FOR 는 비대칭으로, 역할을 주는 쪽(상세·집계)이
     source, 앵커가 target 이다. ADJACENT_TO·SAME_KIND 는 대칭.
@@ -45,10 +45,6 @@ def type_seen_from(relation_type: str, anchor_is_source: bool) -> str:
         head = _SOURCE_VIEW.get(head, head)
     return f"{head}{sep}{sub}"
 
-
-# 컬럼 자카드가 이 값 이상이면 같은 종류로 본다.
-# ponytail: 파일럿 6종 표본 추정값. 표준 준수 쌍으로 재측정 예정 (정의서 9항 1번)
-SAME_KIND_JACCARD_THRESHOLD = 0.6
 
 # 4종 이전에 저장된 값 → 현행 유형. 원본은 하위라벨로 보존한다.
 _LEGACY_TYPE_MAP = {
@@ -115,30 +111,26 @@ def canonicalize_level1_type(
     raw_type: str,
     has_common_columns: bool,
     *,
-    jaccard: float | None = None,
-    conforms_to_match: bool = False,
     is_aggregate: bool = False,
     llm_type: str | None = None,
 ) -> str:
     """관계 유형을 4종으로 정규화. 원본 라벨은 하위라벨로 보존한다.
 
-    판정 순서 (정의서 5항) — 앞선 조건이 성립하면 뒤는 보지 않는다.
+    판정 순서 — 앞선 조건이 성립하면 뒤는 보지 않는다.
 
-    1. 같은 표준을 따르거나 컬럼 자카드가 임계 이상 → SAME_KIND
-    2. 상대가 집계표 → STATISTIC_FOR
-    3. LLM 판정 (구조 신호가 결론을 내지 못한 경우)
-    4. 공통 컬럼이 있다 (같은 개체) → DETAIL_FOR
-    5. 그 외 → ADJACENT_TO
+    1. 한쪽만 집계표 → STATISTIC_FOR
+    2. LLM 판정
+    3. 공통 컬럼이 있다 (같은 개체) → DETAIL_FOR
+    4. 그 외 → ADJACENT_TO
 
-    구조 신호(1·2)는 확인 가능하므로 LLM 판정보다 우선한다. 카탈로그 메타데이터만
-    있어 컬럼이 비면 구조 신호가 아예 없는데, 그때 LLM 판정이 유일한 근거가 된다.
+    구조 신호(1)는 확인 가능하므로 LLM 판정보다 우선한다. SAME_KIND 는 컬럼 구성이 겹치는
+    정도로 정하지 않고 LLM 판정만 따른다 — 지자체마다 항목 이름이 달라 같은 종류도 겹침이 낮고,
+    같은 시스템의 다른 측정표(속성 보완)는 공통 컬럼이 많아 겹침이 높다.
 
     Args:
         raw_type: LLM/규칙이 산출한 원본 관계 유형 텍스트
         has_common_columns: 공통 컬럼 존재 여부 (Tier1/Tier1.5)
-        jaccard: 컬럼 자카드. None 이면 SAME_KIND 판정을 건너뛴다
-        conforms_to_match: 양측이 같은 개방표준을 따르는지
-        is_aggregate: 상대가 집계표인지. dataset_metadata 확보 후 채워진다
+        is_aggregate: 한쪽만 집계표인지. 둘 다 집계표면 같은 통계의 다른 판일 수 있어 구조 신호가 아니다
         llm_type: LLM이 판정한 4종 유형. 구프롬프트 응답이면 빈 값
 
     Returns:
@@ -149,9 +141,7 @@ def canonicalize_level1_type(
 
     judged = _as_level1_type(llm_type)
 
-    if conforms_to_match or (jaccard is not None and jaccard >= SAME_KIND_JACCARD_THRESHOLD):
-        canonical = Level1RelationType.SAME_KIND
-    elif is_aggregate:
+    if is_aggregate:
         canonical = Level1RelationType.STATISTIC_FOR
     elif legacy is not None:
         # 4종 이전 값은 텍스트 키워드보다 매핑을 우선한다
