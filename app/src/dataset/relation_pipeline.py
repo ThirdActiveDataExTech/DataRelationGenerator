@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 _SAMPLE_DISPLAY = 3  # LLM에게 보여줄 샘플 레코드 수
 _EXCERPT_DISPLAY = 600  # 문서형 데이터는 샘플 대신 본문 발췌를 보여준다
 _RULE_AUTO_APPROVE = 0.8  # 구조 근거(공통 컬럼)가 있는 쌍의 자동 확정 기준
+# 컬럼·값 인용 없이 이름·설명으로 판정하는 유형
+_NAME_EVIDENCE_TYPES = {Level1RelationType.ADJACENT_TO.value, Level1RelationType.SAME_KIND.value}
 
 # 단독으로 존재할 때 의미 없는 공통 컬럼명 (노이즈 필터)
 _COLUMN_BLACKLIST = {"ID", "NAME", "CODE", "TYPE", "STATUS", "DATE", "FLAG", "VALUE", "NOTE", "MEMO"}
@@ -225,11 +227,10 @@ class RelationPipeline:
             # 관계 유형을 4종으로 정규화 (원본 라벨은 하위 보존)
             jaccard = column_jaccard(a.column_names, b.column_names)
             aggregate_a, aggregate_b = looks_aggregate(a.column_names), looks_aggregate(b.column_names)
-            is_aggregate = aggregate_a or aggregate_b
+            is_aggregate = aggregate_a != aggregate_b
             canonical_type = canonicalize_level1_type(
                 tier3.relation_type,
                 has_common_columns=has_tier1 or has_tier15,
-                jaccard=jaccard,
                 is_aggregate=is_aggregate,
                 llm_type=tier3.level1_type,
             )
@@ -510,8 +511,9 @@ class RelationPipeline:
 
         근거는 LLM이 인용한 컬럼·값을 실제 프로파일에 대조해 검증한다.
         인용이 틀렸으면(환각) 기각하고, 인용이 아예 없으면 구조 근거가 필요한
-        유형(DETAIL_FOR/STATISTIC_FOR/SAME_KIND)은 기각한다. ADJACENT_TO 는
-        구조 근거가 없는 것이 정의이므로 인용을 요구하지 않는다.
+        유형(DETAIL_FOR/STATISTIC_FOR)은 기각한다. ADJACENT_TO 는 구조 근거가 없는
+        것이 정의이고, SAME_KIND 는 기관마다 항목 이름이 달라 같은 이름의 컬럼·값이
+        없을 수 있어 이름·설명을 근거로 삼으므로 인용을 요구하지 않는다.
         """
         pair = f"{a.table_name} <-> {b.table_name}"
 
@@ -536,7 +538,7 @@ class RelationPipeline:
         # 인용 없이도 구조 근거가 확인되면 통과 (Tier1/Tier1.5 공통 컬럼)
         has_evidence = bool(cited_columns or cited_values or tier1_common_columns)
         verifiable = bool(a.column_names and b.column_names)
-        if not has_evidence and level1_type != Level1RelationType.ADJACENT_TO.value:
+        if not has_evidence and level1_type not in _NAME_EVIDENCE_TYPES:
             if verifiable:
                 logger.info(f"[Tier3] {pair}: {level1_type} 인데 데이터 근거 인용 없음, 저장 제외")
                 return False
