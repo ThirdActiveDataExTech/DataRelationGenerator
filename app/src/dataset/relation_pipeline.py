@@ -3,8 +3,11 @@
 import itertools
 import json
 import logging
+from openai import APIError
+from pydantic import ValidationError
 
 from app.config import settings
+from app.exceptions.base import ApplicationError
 from app.repositories.dataset_repository import DatasetRepository, get_dataset_repository
 from app.schemas.dataset import (
     ColumnMatchInfo,
@@ -14,10 +17,10 @@ from app.schemas.dataset import (
     RelationPipelineResult,
     Tier1Result,
     Tier2Candidate,
+    DatasetNatureClassification,
     Tier3Result,
     canonicalize_level1_type,
     column_jaccard,
-    looks_aggregate,
 )
 from app.src.dataset.dataset_service import DatasetService
 from app.src.embedding.embedding_service import embedding_service
@@ -29,6 +32,8 @@ logger = logging.getLogger(__name__)
 _SAMPLE_DISPLAY = 3  # LLM에게 보여줄 샘플 레코드 수
 _EXCERPT_DISPLAY = 600  # 문서형 데이터는 샘플 대신 본문 발췌를 보여준다
 _RULE_AUTO_APPROVE = 0.8  # 구조 근거(공통 컬럼)가 있는 쌍의 자동 확정 기준
+# 컬럼·값 인용 없이 이름·설명으로 판정하는 유형
+_NAME_EVIDENCE_TYPES = {Level1RelationType.ADJACENT_TO.value, Level1RelationType.SAME_KIND.value}
 
 # 단독으로 존재할 때 의미 없는 공통 컬럼명 (노이즈 필터)
 _COLUMN_BLACKLIST = {"ID", "NAME", "CODE", "TYPE", "STATUS", "DATE", "FLAG", "VALUE", "NOTE", "MEMO"}
@@ -224,17 +229,17 @@ class RelationPipeline:
             origin_method = "rule" if has_tier1 else "embedding"
             # 관계 유형을 4종으로 정규화 (원본 라벨은 하위 보존)
             jaccard = column_jaccard(a.column_names, b.column_names)
-            aggregate_a, aggregate_b = looks_aggregate(a.column_names), looks_aggregate(b.column_names)
-            is_aggregate = aggregate_a or aggregate_b
+            aggregate_a, aggregate_b = self._nature(a) == "aggregate", self._nature(b) == "aggregate"
+            is_aggregate = aggregate_a != aggregate_b
             canonical_type = canonicalize_level1_type(
                 tier3.relation_type,
                 has_common_columns=has_tier1 or has_tier15,
-                jaccard=jaccard,
                 is_aggregate=is_aggregate,
                 llm_type=tier3.level1_type,
             )
             # 역할을 주는 쪽이 source (정의서 방향). LLM 은 "A를 보는 사람에게 B가 무엇인지"로
-            # 판정하므로 B 가 주는 쪽이고, 컬럼으로 A 만 집계표로 확인되면 A 가 집계(source)다.
+            # 판정하므로 B 가 주는 쪽이고, 성격 분류로 A 만 집계표면 A 가 집계(source)다.
+            # (2026-11 원장: LLM 이 집계 맥락이라 하면서 B 에 개체 목록을 둔 쌍 3/94)
             source_is_a = (
                 canonical_type.startswith(Level1RelationType.STATISTIC_FOR.value)
                 and aggregate_a and not aggregate_b
@@ -372,6 +377,8 @@ class RelationPipeline:
 
         # PPMI-SVD 보조 신호 — 컬럼·값 특징 co-occurrence 기반 연관성 수치.
         # 설명 문구가 달라도 실제 컬럼·값이 겹치면 잡아내는, 임베딩과 상보적인 신호.
+        # 가중 평균이라 PPMI≈0(컬럼·값 겹침 없음)이면 상한이 (1-w) 로 묶여 판정 전에 걸러진다 — 의도된 거름
+        # (2026-11 시범: 이렇게 걸러진 쌍을 따로 판정하면 관계 인정 5%, 비용만 23% 증가).
         from app.config import settings
 
         embedding_score, ppmi_score, shared_features = score, None, []
@@ -510,8 +517,9 @@ class RelationPipeline:
 
         근거는 LLM이 인용한 컬럼·값을 실제 프로파일에 대조해 검증한다.
         인용이 틀렸으면(환각) 기각하고, 인용이 아예 없으면 구조 근거가 필요한
-        유형(DETAIL_FOR/STATISTIC_FOR/SAME_KIND)은 기각한다. ADJACENT_TO 는
-        구조 근거가 없는 것이 정의이므로 인용을 요구하지 않는다.
+        유형(DETAIL_FOR/STATISTIC_FOR)은 기각한다. ADJACENT_TO 는 구조 근거가 없는
+        것이 정의이고, SAME_KIND 는 기관마다 항목 이름이 달라 같은 이름의 컬럼·값이
+        없을 수 있어 이름·설명을 근거로 삼으므로 인용을 요구하지 않는다.
         """
         pair = f"{a.table_name} <-> {b.table_name}"
 
@@ -536,7 +544,7 @@ class RelationPipeline:
         # 인용 없이도 구조 근거가 확인되면 통과 (Tier1/Tier1.5 공통 컬럼)
         has_evidence = bool(cited_columns or cited_values or tier1_common_columns)
         verifiable = bool(a.column_names and b.column_names)
-        if not has_evidence and level1_type != Level1RelationType.ADJACENT_TO.value:
+        if not has_evidence and level1_type not in _NAME_EVIDENCE_TYPES:
             if verifiable:
                 logger.info(f"[Tier3] {pair}: {level1_type} 인데 데이터 근거 인용 없음, 저장 제외")
                 return False
@@ -563,6 +571,24 @@ class RelationPipeline:
     # ──────────────────────────────────────────────
     # Helper
     # ──────────────────────────────────────────────
+
+    def _nature(self, profile: DatasetProfile) -> str:
+        """데이터셋 성격. 저장값이 없으면 LLM 으로 한 번 분류해 원장에 남긴다 — 실패하면 빈 값(미분류)."""
+        if profile.nature:
+            return profile.nature
+        try:
+            result = LLMResponse("dataset_nature_classification").generate_llm_response({
+                "title": profile.display_name or profile.table_name,
+                "description": (profile.description or profile.table_summary)[:700],
+                "columns": ", ".join(profile.column_names[:40]) or "(컬럼 정보 없음)",
+            })
+            nature = DatasetNatureClassification.model_validate(result).nature
+        except (APIError, ApplicationError, ValidationError) as e:
+            logger.warning(f"[Nature] '{profile.table_name}' 성격 분류 실패: {e}")
+            return ""
+        profile.nature = nature
+        self.dataset_repo.update_nature(profile.table_name, nature)
+        return nature
 
     def _load_profiles(self, table_names: list[str]) -> list[DatasetProfile]:
         """원장에서 테이블 프로파일 로드."""
