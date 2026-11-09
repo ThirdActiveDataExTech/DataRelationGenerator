@@ -1,6 +1,7 @@
 """원천 메타데이터 → 표준 항목 변환
 
-공공데이터포털 목록개방현황 1행, KOSIS 통계표 1개를 원장 4개 테이블의 행으로 바꾼다.
+공공데이터포털 목록개방현황 1행, KOSIS 통계표 1개, 심평원 공공데이터 상세 1건, 보건의료 빅데이터 통합 플랫폼
+카탈로그 1건을 원장 4개 테이블의 행으로 바꾼다.
 LLM·임베딩이 필요한 파생값(분야 분류·임베딩)은 여기서 만들지 않는다 — 적재기가 붙인다.
 """
 
@@ -14,10 +15,10 @@ from datetime import date
 PLACEHOLDER = {"", "-", "--", "없음", "해당없음", "해당 없음", "N/A", "null", "NULL", "."}
 
 PERIODICITY = {
-    "수시": "IRREGULAR", "부정기": "IRREGULAR",
-    "연간": "ANNUAL", "1년": "ANNUAL", "년": "ANNUAL",
+    "수시": "IRREGULAR", "부정기": "IRREGULAR", "사유 발생시": "IRREGULAR", "사유발생시": "IRREGULAR",
+    "연간": "ANNUAL", "1년": "ANNUAL", "년": "ANNUAL", "연": "ANNUAL",
     "반기": "SEMIANNUAL", "분기": "QUARTERLY",
-    "월간": "MONTHLY", "월": "MONTHLY", "주간": "WEEKLY",
+    "월간": "MONTHLY", "월": "MONTHLY", "주간": "WEEKLY", "주": "WEEKLY",
     "일간": "DAILY", "일": "DAILY", "1회한": "ONCE",
 }
 RESOLUTION = {"년": "P1Y", "반기": "P6M", "분기": "P3M", "월": "P1M", "일": "P1D"}
@@ -109,6 +110,7 @@ def file_date_suffix(name: str) -> date | None:
 def periodicity_code(text: str) -> str | None:
     """갱신 주기 원문 → 코드 (수시 IRREGULAR · 연간 ANNUAL …)."""
     text = re.sub(r"\s*\(.*\)$", "", clean(text))  # '수시 (1회성 데이터)'
+    text = re.sub(r"\s*1\s*회$", "", text)  # '연 1회' · '월 1회'
     return PERIODICITY.get(text)
 
 
@@ -119,8 +121,12 @@ def license_code(text: str) -> str | None:
         return None
     if "제한 없음" in text:
         return "OPEN"
-    m = re.search(r"제\s*(\d)\s*유형", text)
-    return f"KOGL-{m[1]}" if m else None
+    if m := re.search(r"제\s*(\d)\s*유형", text):
+        return f"KOGL-{m[1]}"
+    if "공공누리" in text:  # 유형 번호 없이 조건만 적은 표기 — 공공누리 유형 정의상 상업적 이용금지 +1, 변경금지 +2
+        no_commercial = bool(re.search(r"상업\S*\s*(?:이용\s*)?금지", text))
+        return f"KOGL-{1 + no_commercial + 2 * ('변경금지' in text)}"
+    return None
 
 
 def spatial_unit(*texts: str) -> str | None:
@@ -327,5 +333,124 @@ def kosis_record(table: dict, path: list[str], meta: dict, expl: list | dict) ->
             "coverage_start": start,
             "coverage_end": end,
             "structure_sha256": structure_hash(structure),
+        },
+    )
+
+
+# ── 건강보험심사평가원 보건의료빅데이터개방시스템 ─────────────
+
+HIRA_PUBLISHER = "건강보험심사평가원"
+HIRA_DETAIL_URL = "https://opendata.hira.or.kr/op/opc/selectOpenData.do?sno={sno}"
+_DATAGOKR_URL = re.compile(r"data\.go\.kr/data/(\d+)/")
+
+
+def hira_record(detail: dict) -> StandardRecord:
+    """공공데이터 상세 1건 → 표준 항목. 키는 상세 화면 항목명 그대로, sno 는 게시 번호.
+
+    기타 유의사항에 공공데이터포털 대응 데이터셋 주소가 있으면 그 식별자도 남긴다 — 같은 데이터의 교차 게시.
+    """
+    sno, title = clean(detail["sno"]), clean(detail["제목"])
+    rights = clean(detail.get("이용허락범위"))
+    form = clean(detail.get("제공형태"))
+    is_api = "API" in f"{title} {form}".upper()
+    counterpart = _DATAGOKR_URL.search(detail.get("기타 유의사항") or "")
+    return StandardRecord(
+        dataset={
+            "dataset_id": f"urn:hira:{sno}",
+            "source": "HIRA",
+            "title": title,
+            "description": clean(detail.get("자료 상세설명")),
+            "publisher": HIRA_PUBLISHER,
+            "publisher_code": None,
+            "keywords": [],
+            # 상세의 분류 칸 뒤에 붙은 'URL복사' 버튼 글자는 뗀다
+            "theme": [t for t in ("보건의료", clean(detail.get("분류")).removesuffix("URL복사").strip()) if t],
+            "spatial": None,
+            "temporal_start": None,
+            "temporal_end": None,
+            "temporal_resolution": None,
+            "accrual_periodicity": periodicity_code(detail.get("자료 갱신주기")),
+            "license": license_code(rights),
+            "rights": rights or None,
+            "landing_page": HIRA_DETAIL_URL.format(sno=sno),
+            "external_ids": [f"hira:{sno}"] + ([f"datagokr:{counterpart[1]}"] if counterpart else []),
+            "created_at": _date(detail.get("작성일")),
+            "updated_at": _date(detail.get("최종수정일")),
+            "item_count": 1,
+        },
+        attr={
+            "list_type": "API" if is_api else "FILE",
+            "provision_form": form or None,
+            "cost_charged": clean(detail.get("비용부과유무")) or None,
+            "cost_basis": clean(detail.get("비용부과기준 및 단위")) or None,
+            "dept_name": clean(detail.get("부서명")) or None,
+            "dept_phone": clean(detail.get("담당자 연락처")) or None,
+            "other_notes": clean(detail.get("기타 유의사항")) or None,
+        },
+        file={
+            "file_name": f"{HIRA_PUBLISHER}_{title}",
+            "file_format": "API" if is_api else None,
+            "record_count": None,
+        },
+        metrics={"view_count": clean(detail.get("조회수")).replace(",", "")},
+    )
+
+
+# ── 보건의료 빅데이터 통합 플랫폼 ───────────────────────
+
+HCDL_DETAIL_URL = "https://hcdl.mohw.go.kr/catalog/detail/{publ}/{clcd}/{inst}"
+
+
+def hcdl_record(item: dict, columns: list[dict]) -> StandardRecord:
+    """데이터 카탈로그 1건 + 컬럼 정의 → 표준 항목.
+
+    카탈로그에 설명이 없어 제공기관·데이터셋명·주요 컬럼명으로 설명을 구성한다(분류·임베딩 입력).
+    데이터는 이용 신청 후 분석센터에서만 쓸 수 있어 컬럼 정의만 있는 메타데이터 데이터셋이다.
+    """
+    inst, clcd = clean(item["prvdInstSpcd"]), clean(item["clcd"])
+    title, publisher = clean(item["clsNm"]), clean(item["instNm"])
+    schema = [
+        {
+            "name": clean(c.get("vrblNm")),
+            "id": clean(c.get("vrid")),
+            "type": clean(c.get("prvdInstDataClcd")) or None,
+            "length": clean(c.get("lnth")) or None,
+            "description": clean(c.get("vrblCont")) or None,
+            "code_set": c.get("cdSetYn") == "Y",
+        }
+        for c in columns
+    ]
+    names = list(dict.fromkeys(c["name"] or c["id"] for c in schema if c["name"] or c["id"]))
+    description = f"{publisher}의 {title}" + (f". 주요 항목: {', '.join(names[:20])}" if names else "")
+    return StandardRecord(
+        dataset={
+            "dataset_id": f"urn:hcdl:{inst}:{clcd}",
+            "source": "HCDL",
+            "title": title,
+            "description": description,
+            "publisher": publisher,
+            "publisher_code": inst,
+            "keywords": [],
+            "theme": [],
+            "spatial": None,
+            "temporal_start": None,
+            "temporal_end": None,
+            "temporal_resolution": None,
+            "accrual_periodicity": None,
+            "license": None,
+            "rights": None,
+            "landing_page": HCDL_DETAIL_URL.format(publ=clean(item.get("nmbrPublYn")) or "Y", clcd=clcd, inst=inst),
+            "external_ids": [f"hcdl:{inst}:{clcd}"],
+            "created_at": None,
+            "updated_at": None,
+            "item_count": 1,
+        },
+        attr={"provision_form": "이용 신청(분석센터)"},
+        file={
+            "file_name": f"{publisher}_{title}_{clcd}",
+            "file_format": None,
+            "record_count": None,
+            "column_names": names,
+            "column_profile": {"schema": schema},
         },
     )

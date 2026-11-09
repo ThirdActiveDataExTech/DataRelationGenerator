@@ -6,6 +6,8 @@ from app.src.dataset.standard_items import (
     datagokr_record,
     display_name,
     file_date_suffix,
+    hcdl_record,
+    hira_record,
     kosis_period,
     kosis_record,
     license_code,
@@ -38,6 +40,11 @@ def test_codes():
     assert periodicity_code("수시 (1회성 데이터)") == "IRREGULAR"
     assert license_code("이용허락범위 제한 없음") == "OPEN"
     assert license_code("제3자 권리 포함 : 저작권 표시/공공저작물 : 출처표시 (제 1유형)") == "KOGL-1"
+    # 심평원 표기 — 유형 번호 없이 조건만 적는다
+    assert license_code("저작자 표시-출처표시(공공누리) 출처, 만든이 등을 표시한다면 자유롭게 사용 가능합니다.") == "KOGL-1"
+    assert license_code("공공누리 출처표시-상업적이용금지-변경금지") == "KOGL-4"
+    assert periodicity_code("연 1회") == "ANNUAL" and periodicity_code("월 1회") == "MONTHLY"
+    assert periodicity_code("사유 발생시") == "IRREGULAR" and periodicity_code("1회한") == "ONCE"
     assert spatial_unit("시도", "행정구역(시군구)별") == "SIGUNGU"
     assert display_name("건강보험심사평가원_요양기관 개설 현황", "건강보험심사평가원") == "요양기관 개설 현황"
 
@@ -86,3 +93,58 @@ def test_kosis_record():
     assert rec.file["file_name"] == "국가데이터처_행정구역(시군구)별 주민등록세대수_DT_1B040B3"
     assert rec.file["column_names"] == ["행정구역(시군구)별", "세대수"]
     assert rec.file["column_profile"]["units"] == {"세대수": "세대"}
+
+
+def test_hira_record_cross_posted_to_datagokr():
+    """상세 화면 값 그대로 (sno 13601, 2026-11-09 조회)."""
+    rec = hira_record({
+        "sno": "13601", "분류": "요양기관 URL복사", "제목": "분만가능 의료기관 목록",
+        "자료 상세설명": "※ 본 자료는 청구내역 데이터를 기반으로 산출된 목록으로, 실제 분만 가능 여부는 방문전 확인",
+        "이용허락범위": "저작자 표시-출처표시(공공누리) 출처, 만든이 등을 표시한다면 자유롭게 사용 가능합니다.",
+        "기타 유의사항": "해당 데이터는 공공데이터 포털을 통해 다운받으실 수 있습니다. https://www.data.go.kr/data/15160285/fileData.do",
+        "비용부과유무": "무료", "제공형태": "다운로드", "자료 갱신주기": "없음", "부서명": "빅데이터실",
+        "담당자 연락처": "033-739-1008", "작성일": "2026-07-13", "최종수정일": "2026-07-13", "조회수": "1,088",
+    })
+    assert rec.dataset["dataset_id"] == "urn:hira:13601" and rec.dataset["source"] == "HIRA"
+    assert rec.dataset["external_ids"] == ["hira:13601", "datagokr:15160285"]
+    assert rec.dataset["theme"] == ["보건의료", "요양기관"]
+    assert rec.dataset["landing_page"] == "https://opendata.hira.or.kr/op/opc/selectOpenData.do?sno=13601"
+    assert rec.dataset["license"] == "KOGL-1" and rec.dataset["accrual_periodicity"] is None  # '없음'
+    assert rec.dataset["created_at"] == date(2026, 7, 13)
+    assert rec.attr["list_type"] == "FILE" and rec.attr["dept_phone"] == "033-739-1008"
+    assert rec.file["file_name"] == "건강보험심사평가원_분만가능 의료기관 목록"
+    assert display_name(rec.file["file_name"], rec.dataset["publisher"]) == "분만가능 의료기관 목록"
+    assert rec.metrics == {"view_count": "1088"}
+
+
+def test_hira_record_openapi_without_counterpart():
+    rec = hira_record({"sno": "13400", "분류": "요양기관", "제목": "(OpenAPI)자동차보험진료(청구)기관조회서비스",
+                       "제공형태": "OpenAPI", "자료 갱신주기": "연 1회"})
+    assert rec.dataset["external_ids"] == ["hira:13400"]
+    assert rec.attr["list_type"] == "API" and rec.file["file_format"] == "API"
+    assert rec.dataset["accrual_periodicity"] == "ANNUAL"
+
+
+def test_hcdl_record_with_column_definitions():
+    """카탈로그·컬럼 정의 API 응답 그대로 (건강보험심사평가원 명세서 일반내역, 2026-11-09 조회)."""
+    item = {"prvdInstSpcd": "H0002", "instNm": "건강보험심사평가원", "clcd": "TWJHC200", "clsNm": "명세서 일반내역",
+            "dltnYn": "N", "nmbrPublYn": "Y"}
+    columns = [
+        {"vrid": "CL_CD", "vrblNm": "요양기관종별구분코드", "prvdInstDataClcd": "문자", "lnth": "2", "vrblCont": "-",
+         "cdSetYn": "Y"},
+        {"vrid": "DGSBJT_CD", "vrblNm": "진료과목코드", "prvdInstDataClcd": "문자", "lnth": "2", "vrblCont": "-",
+         "cdSetYn": "Y"},
+        {"vrid": "AC1_yr", "vrblNm": "", "prvdInstDataClcd": "숫자", "lnth": "8", "vrblCont": "□□번", "cdSetYn": "N"},
+    ]
+    rec = hcdl_record(item, columns)
+    assert rec.dataset["dataset_id"] == "urn:hcdl:H0002:TWJHC200" and rec.dataset["source"] == "HCDL"
+    assert rec.dataset["landing_page"] == "https://hcdl.mohw.go.kr/catalog/detail/Y/TWJHC200/H0002"
+    assert rec.dataset["external_ids"] == ["hcdl:H0002:TWJHC200"]
+    assert rec.dataset["description"] == "건강보험심사평가원의 명세서 일반내역. 주요 항목: 요양기관종별구분코드, 진료과목코드, AC1_yr"
+    # 한글 컬럼명이 없으면 영문 변수명
+    assert rec.file["column_names"] == ["요양기관종별구분코드", "진료과목코드", "AC1_yr"]
+    schema = rec.file["column_profile"]["schema"]
+    assert schema[0] == {"name": "요양기관종별구분코드", "id": "CL_CD", "type": "문자", "length": "2",
+                         "description": None, "code_set": True}
+    assert schema[2]["description"] == "□□번"
+    assert rec.file["file_name"] == "건강보험심사평가원_명세서 일반내역_TWJHC200"
