@@ -18,7 +18,12 @@ from app.config import settings
 from app.exceptions.service import DatasetNotFoundError, DuplicateDatasetContentError
 from app.schemas.dataset import DatasetProfile, DatasetSearchResult
 
-_SOURCE_BY_HOST = {"data.go.kr": "DATA_GO_KR", "kosis.kr": "KOSIS", "opendata.hira.or.kr": "HIRA"}
+_SOURCE_BY_HOST = {
+    "data.go.kr": "DATA_GO_KR",
+    "kosis.kr": "KOSIS",
+    "opendata.hira.or.kr": "HIRA",
+    "hcdl.mohw.go.kr": "HCDL",
+}
 
 _PROFILE_SELECT = """
 SELECT d.dataset_id, f.file_name, f.display_name, d.external_ids, d.party, d.publisher, d.landing_page,
