@@ -166,7 +166,7 @@ class DatasetProfile(BaseModel):
         default="", description="원본 제공처 URL (DCAT dcat:landingPage/accessURL) — 사용자 시나리오 '수집' 단계 연결용"
     )
     source: str = Field(
-        default="", description="원천 포털 코드 (DATA_GO_KR / KOSIS / HIRA / FIRST_PARTY / OTHER) — 원장이 제공처로 정한다"
+        default="", description="원천 포털 코드 (DATA_GO_KR / KOSIS / HIRA / HCDL / FIRST_PARTY / OTHER) — 원장이 제공처로 정한다"
     )
     domain: str = Field(description="대표 대분류 (디지털 집현전 7대분류 — 과학·기술·인문·사회·교육·의료·문화). 미분류면 빈 값")
     categories: list[str] = Field(
