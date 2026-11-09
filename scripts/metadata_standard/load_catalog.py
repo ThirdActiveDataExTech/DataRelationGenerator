@@ -1,4 +1,5 @@
-"""표준 항목 적재기 — 공공데이터포털 목록개방현황·KOSIS 메타데이터를 표준 항목으로 바꿔 원장(dcat_*)에 넣는다.
+"""표준 항목 적재기 — 공공데이터포털·KOSIS·심평원·보건의료 빅데이터 통합 플랫폼 메타데이터를 표준 항목으로 바꿔
+원장(dcat_*)에 넣는다.
 
     # 공공데이터포털 — 목록개방현황(시드 데이터 레포 source/)에서 분류체계로 골라 적재
     PYTHONPATH=. uv run --with truststore python scripts/metadata_standard/load_catalog.py datagokr \\
@@ -7,6 +8,12 @@
     # KOSIS — 주제별 목록에서 주제 아래 통계표를 내려가며 적재
     KOSIS_API_KEY=... PYTHONPATH=. uv run --with truststore python scripts/metadata_standard/load_catalog.py kosis \\
         [--topics 인구 보건 복지] [--limit N] [--dry-run]
+
+    # 심평원 보건의료빅데이터개방시스템 — 공공데이터 목록·상세 화면 (공공데이터포털 교차 게시분은 식별자만 연결)
+    PYTHONPATH=. uv run --with truststore python scripts/metadata_standard/load_catalog.py hira [--limit N] [--dry-run]
+
+    # 보건의료 빅데이터 통합 플랫폼 — 기관별 데이터 카탈로그와 컬럼 정의 (비회원 공개분)
+    PYTHONPATH=. uv run --with truststore python scripts/metadata_standard/load_catalog.py hcdl [--limit N] [--dry-run]
 
     # 공공 일반 파일(CSV)의 컬럼명 — 원본 파일 앞부분(16KB)만 받아 헤더를 읽는다
     PYTHONPATH=. uv run --with truststore python scripts/metadata_standard/load_catalog.py columns [--limit N]
@@ -50,9 +57,12 @@ from app.src.dataset.dataset_service import DatasetService  # noqa: E402
 from app.src.dataset.domain_classifier import CategoryClassifier, major_of  # noqa: E402
 from app.src.dataset.text_extractor import DOCUMENT_FORMATS, detect_format, extract_text, text_profile  # noqa: E402
 from app.src.dataset.standard_items import (  # noqa: E402
+    HIRA_DETAIL_URL,
     StandardRecord,
     datagokr_record,
     display_name,
+    hcdl_record,
+    hira_record,
     kosis_record,
 )
 from app.src.embedding.embedding_service import embedding_service  # noqa: E402
@@ -62,6 +72,9 @@ from app.utils.vector import mean_vector  # noqa: E402
 DATAGOKR_THEMES = ("보건의료 - 보건의료", "보건의료 - 건강보험", "사회복지 - 보육·가족및여성", "과학기술 - 방송통신")
 KOSIS_TOPICS = ("인구", "보건", "복지")
 KOSIS_META = ("ORG", "PRD", "ITM", "CMMT", "SOURCE")
+HIRA_LIST = "https://opendata.hira.or.kr/op/opc/selectOpenDataList.do?pageIndex={page}"
+HIRA_PAGE_SIZE = 10
+HCDL_API = "https://hcdl.mohw.go.kr/api"
 
 DATASET_COLUMNS = (
     "source", "title", "description", "publisher", "publisher_code", "keywords", "theme", "spatial",
@@ -261,6 +274,73 @@ def kosis_collect(args) -> list[tuple[StandardRecord, list[str]]]:
         out.append((rec, [f"%orgId={table['ORG_ID']}%", f"%tblId={table['TBL_ID']}%"]))
         if i % 50 == 0:
             print(f"  메타 {i}/{len(tables)}", flush=True)
+    return out
+
+
+def _cells(markup: str) -> dict:
+    """상세 화면 표의 항목명(th) → 값(td) 텍스트."""
+    def text(fragment: str) -> str:
+        return html.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", fragment))).strip()
+
+    # 주석 처리된 칸(심평원 담당자명)이 다음 칸과 한 항목으로 읽히지 않게 주석부터 뗀다
+    markup = re.sub(r"<!--.*?-->", "", markup, flags=re.S)
+    return {text(k): text(v) for k, v in re.findall(r"<th[^>]*>(.*?)</th>\s*<td[^>]*>(.*?)</td>", markup, re.S)}
+
+
+def hira_collect(args) -> list[tuple[StandardRecord, list[str]]]:
+    first = fetch(HIRA_LIST.format(page=1))
+    if not (found := re.search(r"전체\s*<span>(\d+)</span>건", first)):
+        raise SystemExit("심평원 공공데이터 목록에서 전체 건수를 찾지 못했습니다 — 목록 화면 구성 변경 확인")
+    total = int(found[1])
+    pages = [first] + [fetch(HIRA_LIST.format(page=p)) for p in range(2, -(-total // HIRA_PAGE_SIZE) + 1)]
+    snos = list(dict.fromkeys(s for page in pages for s in re.findall(r'<a href="(\d+)" class="select">', page)))
+    snos = snos[: args.limit] if args.limit else snos
+    print(f"심평원 공공데이터 {len(snos)}건 (목록 {total}건)")
+    records = [hira_record({**_cells(fetch(HIRA_DETAIL_URL.format(sno=s))), "sno": s}) for s in snos]
+    return [(r, [f"%opendata.hira.or.kr%sno={r.dataset['dataset_id'].rsplit(':', 1)[1]}"]) for r in link_cross_posted(records, args.dry_run)]
+
+
+def link_cross_posted(records: list[StandardRecord], dry_run: bool) -> list[StandardRecord]:
+    """공공데이터포털에 같은 데이터로 이미 적재된 것은 새로 만들지 않고 원천 식별자만 붙인다. 나머지를 돌려준다.
+
+    심평원은 공공데이터 대부분을 공공데이터포털에도 올리고 상세에 그 주소를 적는다 — 같은 데이터가 두 행이 되면
+    관계 생성이 둘을 서로의 판본으로 잇는다.
+    """
+    counterpart = {
+        r.dataset["dataset_id"]: next((f"urn:{i}" for i in r.dataset["external_ids"] if i.startswith("datagokr:")), None)
+        for r in records
+    }
+    with connect() as conn:
+        loaded = {
+            row["dataset_id"] for row in conn.execute(
+                "SELECT dataset_id FROM dcat_dataset WHERE dataset_id = ANY(%s)", ([c for c in counterpart.values() if c],)
+            ).fetchall()
+        }
+        linked = [r for r in records if counterpart[r.dataset["dataset_id"]] in loaded]
+        for r in [] if dry_run else linked:
+            own_id = r.dataset["external_ids"][0]
+            conn.execute(
+                "UPDATE dcat_dataset SET external_ids = external_ids || %s, updated_at = now() "
+                "WHERE dataset_id = %s AND NOT external_ids ? %s",
+                (Jsonb([own_id]), counterpart[r.dataset["dataset_id"]], own_id),
+            )
+    print(f"  공공데이터포털 적재분과 같은 데이터 {len(linked)}건 — 식별자 연결{'(시험)' if dry_run else ''}, 신규 {len(records) - len(linked)}건")
+    return [r for r in records if r not in linked]
+
+
+def hcdl_collect(args) -> list[tuple[StandardRecord, list[str]]]:
+    def api(path: str, **query) -> list[dict]:
+        params = {"q": json.dumps(query, separators=(",", ":")), "page": 1, "size": 10000, "total": 0}
+        return json.loads(fetch(f"{HCDL_API}/{path}?{urllib.parse.urlencode(params)}"))
+
+    insts = json.loads(fetch(f"{HCDL_API}/catalog/countByInst"))
+    items = [i for inst in insts for i in api("catalog/list", prvdInstSpcd=inst["instSpcd"]) if i.get("dltnYn") != "Y"]
+    items = items[: args.limit] if args.limit else items
+    print(f"보건의료 빅데이터 통합 플랫폼 {len(items)}건 (기관 {len(insts)}곳 등록 {sum(i['cnt'] for i in insts)}건 중 비회원 공개분)")
+    out = []
+    for item in items:
+        columns = api("column/list", clcd=item["clcd"], prvdInstSpcd=item["prvdInstSpcd"], nmbrPublYn=item["nmbrPublYn"])
+        out.append((hcdl_record(item, columns), [f"%/{item['clcd']}/{item['prvdInstSpcd']}"]))
     return out
 
 
@@ -506,9 +586,11 @@ def main() -> None:
     p4.add_argument("--redownload", action="store_true", help="본문 특징이 있어도 원문을 다시 받는다")
     p4.add_argument("--interval", type=float, default=1.0, help="원문 요청 사이 대기(초)")
     p4.add_argument("--only-format", help="이미 읽은 본문 형식이 이것인 데이터셋만 (예: 추출 규칙을 바꾼 HTML 만 다시 받기)")
-    for p in (p1, p2, p3, p4):
+    p5 = sub.add_parser("hira")
+    p6 = sub.add_parser("hcdl")
+    for p in (p1, p2, p3, p4, p5, p6):
         p.add_argument("--limit", type=int, default=0, help="소스(KOSIS 는 주제)별 최대 건수 — 시험 적재용")
-    for p in (p1, p2):
+    for p in (p1, p2, p5, p6):
         p.add_argument("--dry-run", action="store_true", help="변환·채움률만 보고 원장에 쓰지 않는다")
         p.add_argument("--refresh", action="store_true", help="이미 있는 데이터셋도 분류·임베딩을 다시 붙인다")
         p.add_argument("--workers", type=int, default=6)
@@ -519,7 +601,8 @@ def main() -> None:
     if args.source in ("columns", "texts"):
         (columns if args.source == "columns" else texts)(args)
         return
-    records = datagokr(args) if args.source == "datagokr" else kosis_collect(args)
+    collect = {"datagokr": datagokr, "kosis": kosis_collect, "hira": hira_collect, "hcdl": hcdl_collect}
+    records = collect[args.source](args)
     fill_report([r for r, _ in records])
     if not args.dry_run:
         load(records, args.observed_at, args.refresh, args.workers)
