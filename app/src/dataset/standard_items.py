@@ -124,7 +124,8 @@ def license_code(text: str) -> str | None:
     if m := re.search(r"제\s*(\d)\s*유형", text):
         return f"KOGL-{m[1]}"
     if "공공누리" in text:  # 유형 번호 없이 조건만 적은 표기 — 공공누리 유형 정의상 상업적 이용금지 +1, 변경금지 +2
-        return f"KOGL-{1 + bool(re.search(r'상업\S*\s*(?:이용\s*)?금지', text)) + 2 * ('변경금지' in text)}"
+        no_commercial = bool(re.search(r"상업\S*\s*(?:이용\s*)?금지", text))
+        return f"KOGL-{1 + no_commercial + 2 * ('변경금지' in text)}"
     return None
 
 
