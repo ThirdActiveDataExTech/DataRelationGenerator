@@ -1,0 +1,12 @@
+# active-metadata-management 의 docker-compose.yaml 을 관계 생성 서비스와 함께 띄울 때 바꾸는 값
+services:
+  workflow-ui:
+    environment:
+      RELATION_SERVICE_URL: http://localhost:8000
+
+# 해당 레포에서 단독으로 띄울 때와 같은 볼륨(카탈로그 DB·스냅샷)을 쓴다
+volumes:
+  pgdata-postgres17:
+    name: active-metadata-management_pgdata-postgres17
+  snapshot-data:
+    name: active-metadata-management_snapshot-data

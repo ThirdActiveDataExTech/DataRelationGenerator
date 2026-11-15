@@ -8,22 +8,22 @@ from openai import APIError
 from app.config import langfuse_handler
 from app.dependencies import chatopenai_client, get_langfuse_prompt
 from app.exceptions.base import ApplicationError
+from app.schemas.dataset import (
+    dataset_search_answer_tool,
+    dataset_category_classification_tool,
+    dataset_nature_classification_tool,
+    dataset_search_intent_tool,
+    table_metadata_extraction_tool,
+    table_relation_verification_tool,
+)
+from app.schemas.keyvalue_graph import field_type_classification_tool
 from app.schemas.meta import (
     key_value_extraction_tool,
     cluster_normalization_tool,
 )
 from app.schemas.relation_discovery import relation_search_condition_tool
 from app.schemas.schema_analysis import schema_analysis_tool
-from app.schemas.keyvalue_graph import (
-    field_type_classification_tool,
-    proper_noun_labeling_tool
-)
-from app.schemas.dataset import (
-    dataset_search_intent_tool,
-    domain_selection_tool,
-    table_metadata_extraction_tool,
-    table_relation_verification_tool,
-)
+from app.schemas.tool_utils import restore_map_fields
 from app.src.meta_extract.fallback_prompts import FallbackPrompts
 
 
@@ -39,11 +39,13 @@ class LLMResponse:
         "schema_analysis": schema_analysis_tool,
         "relation_key_analysis": relation_search_condition_tool,
         "field_type_classification": field_type_classification_tool,
-        "proper_noun_labeling": proper_noun_labeling_tool,
         "table_relation_verification": table_relation_verification_tool,
         "table_metadata_extraction": table_metadata_extraction_tool,
+        "document_metadata_extraction": table_metadata_extraction_tool,  # 출력(설명·키워드·표시명)이 같다
         "dataset_search_intent": dataset_search_intent_tool,
-        "domain_selection": domain_selection_tool,
+        "dataset_search_answer": dataset_search_answer_tool,
+        "dataset_category_classification": dataset_category_classification_tool,
+        "dataset_nature_classification": dataset_nature_classification_tool,
     }
 
     def __init__(self, task: str):
@@ -73,10 +75,13 @@ class LLMResponse:
         """LLM 응답 처리하여 메타데이터 추출"""
         try:
             tool_call = response.tool_calls[0]
-            return self._extract_message_from_tool_call(tool_call)
+            args = self._extract_message_from_tool_call(tool_call)
         except (IndexError, AttributeError, KeyError) as e:
             raise ApplicationError(code=400, message=f"No tool calls in llm_response: {str(e)}",
                                    result={"exception": f"llm response: {response.content}"})
+        # dict 필드는 Bedrock 호환을 위해 entry 배열 스키마로 나가므로 dict 로 복원
+        tool_name = self.TASK_TOOLS[self.task]["function"]["name"]
+        return restore_map_fields(tool_name, args)
 
     @staticmethod
     def _compile_prompt(prompt, **variables):

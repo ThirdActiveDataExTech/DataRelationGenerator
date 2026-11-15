@@ -4,7 +4,6 @@ from typing import Any, Dict
 import logging
 
 from app.src.keyvalue_graph.data_loader import DataRecord
-from app.src.keyvalue_graph.field_mappings import FIELD_NAME_MAPPING
 from app.src.keyvalue_graph.neptune_graph_builder import NeptuneGraphBuilder
 from app.src.keyvalue_graph.text_utils import truncate_single_record
 from app.src.meta_extract.llm_response import LLMResponse
@@ -19,10 +18,10 @@ class LLMBasedKeyValueLoader:
         """초기화.
 
         Args:
-            field_mapping: 필드명 매핑 (원본 → 한글). None이면 기본 매핑 사용
+            field_mapping: 필드명 매핑 (원본 → 한글). None이면 원본 필드명을 그대로 쓴다
         """
         self.graph_builder = NeptuneGraphBuilder()
-        self.field_mapping = field_mapping or FIELD_NAME_MAPPING
+        self.field_mapping = field_mapping or {}
 
     def extract_and_build_graph(
             self,

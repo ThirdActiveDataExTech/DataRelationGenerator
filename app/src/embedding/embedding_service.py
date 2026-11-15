@@ -10,9 +10,11 @@ class EmbeddingService:
     """Embedding 생성 로직"""
 
     def __init__(self):
-        """초기화 - SentenceTransformer 모델 로드"""
+        """초기화 - SentenceTransformer 모델 로드 (모든 입력에 EMBEDDING_PROMPT 접두)"""
         self._model_name: str = settings.EMBEDDING_MODEL_NAME
-        self._model: SentenceTransformer = SentenceTransformer(self._model_name)
+        self._model: SentenceTransformer = SentenceTransformer(
+            self._model_name, prompts={"input": settings.EMBEDDING_PROMPT}, default_prompt_name="input"
+        )
 
     def generate_embedding(self, text: str, show_progress_bar: bool = False) -> List[float]:
         """텍스트를 embedding 벡터로 변환
@@ -35,6 +37,10 @@ class EmbeddingService:
             )
         embedding = self._model.encode(text, convert_to_numpy=True, show_progress_bar=show_progress_bar)
         return embedding.tolist()
+
+    def generate_embeddings(self, texts: List[str], show_progress_bar: bool = False) -> List[List[float]]:
+        """여러 텍스트를 한 번에 임베딩 (일괄 재임베딩용). 빈 텍스트는 호출 쪽에서 거른다."""
+        return self._model.encode(texts, convert_to_numpy=True, show_progress_bar=show_progress_bar).tolist()
 
     @staticmethod
     def binarize_embedding(embedding: List[float], method: str = "threshold") -> List[float]:

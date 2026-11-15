@@ -3,17 +3,24 @@
 import itertools
 import json
 import logging
+from openai import APIError
+from pydantic import ValidationError
 
+from app.config import settings
+from app.exceptions.base import ApplicationError
 from app.repositories.dataset_repository import DatasetRepository, get_dataset_repository
 from app.schemas.dataset import (
     ColumnMatchInfo,
     DatasetProfile,
     DatasetRelation,
+    Level1RelationType,
     RelationPipelineResult,
     Tier1Result,
     Tier2Candidate,
+    DatasetNatureClassification,
     Tier3Result,
     canonicalize_level1_type,
+    column_jaccard,
 )
 from app.src.dataset.dataset_service import DatasetService
 from app.src.embedding.embedding_service import embedding_service
@@ -23,9 +30,60 @@ from app.utils.vector import cosine_similarity
 logger = logging.getLogger(__name__)
 
 _SAMPLE_DISPLAY = 3  # LLM에게 보여줄 샘플 레코드 수
+_EXCERPT_DISPLAY = 600  # 문서형 데이터는 샘플 대신 본문 발췌를 보여준다
+_RULE_AUTO_APPROVE = 0.8  # 구조 근거(공통 컬럼)가 있는 쌍의 자동 확정 기준
+# 컬럼·값 인용 없이 이름·설명으로 판정하는 유형
+_NAME_EVIDENCE_TYPES = {Level1RelationType.ADJACENT_TO.value, Level1RelationType.SAME_KIND.value}
 
 # 단독으로 존재할 때 의미 없는 공통 컬럼명 (노이즈 필터)
 _COLUMN_BLACKLIST = {"ID", "NAME", "CODE", "TYPE", "STATUS", "DATE", "FLAG", "VALUE", "NOTE", "MEMO"}
+
+
+
+def _norm(text: str) -> str:
+    return str(text).strip().lower().replace(" ", "")
+
+
+def _column_in_both(a: DatasetProfile, b: DatasetProfile, column: str) -> bool:
+    """인용된 컬럼이 양쪽에 실제로 있는지. 컬럼을 모르면 검증하지 않는다."""
+    if not (a.column_names and b.column_names):
+        return True
+    target = _norm(column)
+    return any(_norm(c) == target for c in a.column_names) and any(
+        _norm(c) == target for c in b.column_names
+    )
+
+
+def _value_in_both(a: DatasetProfile, b: DatasetProfile, value: str) -> bool:
+    """인용된 값이 양쪽 샘플에 실제로 등장하는지. 샘플을 모르면 검증하지 않는다."""
+    if not (a.sample_records and b.sample_records):
+        return True
+    target = _norm(value)
+
+    def appears(profile: DatasetProfile) -> bool:
+        return any(
+            target in _norm(cell)
+            for record in profile.sample_records
+            for cell in record.values()
+            if cell is not None
+        )
+
+    return appears(a) and appears(b)
+
+
+def _judge_samples(profile: DatasetProfile) -> str:
+    """판정 입력의 샘플 — 정형은 레코드, 비정형 텍스트(문서)는 본문 발췌."""
+    if profile.sample_records or not profile.text_profile.get("excerpt"):
+        return json.dumps(profile.sample_records[:_SAMPLE_DISPLAY], ensure_ascii=False)
+    return json.dumps([{"본문 발췌": profile.text_profile["excerpt"][:_EXCERPT_DISPLAY]}], ensure_ascii=False)
+
+
+def _source_side_matches(matches: list[ColumnMatchInfo], source_is_a: bool) -> list[dict]:
+    """컬럼 매칭을 column_a = source 쪽 컬럼이 되도록 맞춘다."""
+    return [
+        m.model_dump() if source_is_a else {**m.model_dump(), "column_a": m.column_b, "column_b": m.column_a}
+        for m in matches
+    ]
 
 
 class RelationPipeline:
@@ -33,7 +91,7 @@ class RelationPipeline:
 
     Tier 1 (rule): FK, 동일 컬럼명, 코드사전 자동 확정 → score=1.0
     Tier 2 (embedding): table_embedding 코사인 유사도 KNN → 후보 생성
-    Tier 3 (llm): LLM 검증으로 FP 제거 → Neptune 저장
+    Tier 3 (llm): LLM 검증으로 FP 제거 → 원장(dcat_dataset_relation) 저장
     """
 
     def __init__(
@@ -52,8 +110,8 @@ class RelationPipeline:
     def run(
         self,
         table_names: list[str],
-        tier2_threshold: float = 0.4,
-        tier3_confidence_threshold: float = 0.8,
+        tier2_threshold: float = settings.RELATION_CANDIDATE_THRESHOLD,
+        tier3_confidence_threshold: float = 0.6,
         refresh_table_names: list[str] | None = None,
         seed_table_names: list[str] | None = None,
     ) -> list[RelationPipelineResult]:
@@ -62,7 +120,7 @@ class RelationPipeline:
         Args:
             table_names: 대상 테이블명 목록 (비어있으면 등록된 전체 테이블)
             tier2_threshold: Tier 2 유사도 임계값
-            tier3_confidence_threshold: Tier 3 확신도 임계값
+            tier3_confidence_threshold: Tier 3 확신도 하한 — 이상이면 판정 대기, 자동 확정 기준 이상이면 확정
             refresh_table_names: 메타데이터가 변동된 테이블 — 이 테이블이 낀 쌍은
                 기존 관계가 있어도 재평가 (save_relation 이 기존 관계를 대체)
             seed_table_names: 기준 테이블 — 지정 시 이 테이블이 낀 쌍만 평가.
@@ -86,11 +144,7 @@ class RelationPipeline:
             from app.src.dataset.ppmi_analyzer import PPMIAnalyzer
 
             self._ppmi_analyzer = PPMIAnalyzer()
-            try:
-                self._ppmi_analyzer.load_tables([p.table_name for p in profiles])
-            except Exception as e:
-                logger.warning(f"[Pipeline] PPMI 코퍼스 구성 실패 — 임베딩 신호만 사용: {e}")
-                self._ppmi_analyzer = None
+            self._ppmi_analyzer.load_profiles(profiles)
 
         existing_pairs = self.dataset_service.get_existing_relation_pairs()
         all_pairs = list(itertools.combinations(profiles, 2))
@@ -173,22 +227,41 @@ class RelationPipeline:
         if tier3:
             result.tier3_verified = [tier3]
             origin_method = "rule" if has_tier1 else "embedding"
-            # 관계 유형을 Level 1 표준 3종(§7.4)으로 정규화 (원본 라벨은 하위 보존)
+            # 관계 유형을 4종으로 정규화 (원본 라벨은 하위 보존)
+            jaccard = column_jaccard(a.column_names, b.column_names)
+            aggregate_a, aggregate_b = self._nature(a) == "aggregate", self._nature(b) == "aggregate"
+            is_aggregate = aggregate_a != aggregate_b
             canonical_type = canonicalize_level1_type(
-                tier3.relation_type, has_common_columns=has_tier1 or has_tier15
+                tier3.relation_type,
+                has_common_columns=has_tier1 or has_tier15,
+                is_aggregate=is_aggregate,
+                llm_type=tier3.level1_type,
             )
+            # 역할을 주는 쪽이 source (정의서 방향). LLM 은 "A를 보는 사람에게 B가 무엇인지"로
+            # 판정하므로 B 가 주는 쪽이고, 성격 분류로 A 만 집계표면 A 가 집계(source)다.
+            # (2026-11 원장: LLM 이 집계 맥락이라 하면서 B 에 개체 목록을 둔 쌍 3/94)
+            source_is_a = (
+                canonical_type.startswith(Level1RelationType.STATISTIC_FOR.value)
+                and aggregate_a and not aggregate_b
+            )
+            source, target = (a, b) if source_is_a else (b, a)
             rel = DatasetRelation(
-                table_a=tier3.table_a, table_b=tier3.table_b,
-                catalog_identifier_a=a.catalog_identifier,
-                catalog_identifier_b=b.catalog_identifier,
+                table_a=source.table_name, table_b=target.table_name,
+                catalog_identifier_a=source.catalog_identifier,
+                catalog_identifier_b=target.catalog_identifier,
                 score=tier3.confidence, method=origin_method,
                 relation_type=canonical_type,
                 evidence={
                     "reason": tier3.reason,
-                    "evidence_type": tier3.evidence_type,
+                    "usage": tier3.usage,
+                    "evidence_columns": tier3.evidence_columns,
+                    "evidence_values": tier3.evidence_values,
                     "embedding_score": tier3.embedding_score,
-                    "matched_columns": [m.model_dump() for m in tier1[0].matched_columns] if tier1 else [],
-                    "ai_matched_columns": [m.model_dump() for m in tier15],
+                    "column_jaccard": round(jaccard, 3),
+                    "is_aggregate": is_aggregate,
+                    "llm_level1_type": tier3.level1_type,
+                    "matched_columns": _source_side_matches(tier1[0].matched_columns if tier1 else [], source_is_a),
+                    "ai_matched_columns": _source_side_matches(tier15, source_is_a),
                     "ppmi": (
                         {"score": candidate.ppmi_score, "shared_features": candidate.shared_features}
                         if candidate and candidate.ppmi_score is not None
@@ -196,15 +269,13 @@ class RelationPipeline:
                     ),
                 },
             )
-            # 승인 게이팅 (승인 SSOT = ① 카탈로그):
-            # rule(구조 기반) 또는 임계값 이상 → 자동 확정, 미만 llm/embedding → ①에 PENDING 제안.
-            # 카탈로그 미연동(단독 실행) 시에는 게이팅 없이 기존대로 전부 저장.
+            # 승인 게이팅 (정본 = 원장 dcat_dataset_relation): 자동 확정 기준 이상이면 확정,
+            # 그 아래는 판정 대기 — 관리 화면 '관계 판정'에서 승인·반려한다.
+            # 구조 근거(공통 컬럼)가 있는 쌍은 종전 판정 기준(0.8)부터 확정한다.
             from app.config import settings
 
-            auto_approved = (
-                not settings.CATALOG_PUSH_ENABLED
-                or origin_method == "rule"
-                or tier3.confidence >= settings.RELATION_AUTO_APPROVE_THRESHOLD
+            auto_approved = tier3.confidence >= (
+                _RULE_AUTO_APPROVE if origin_method == "rule" else settings.RELATION_AUTO_APPROVE_THRESHOLD
             )
             if auto_approved:
                 self.dataset_service.save_relation(rel)
@@ -304,13 +375,15 @@ class RelationPipeline:
         else:
             score = desc_score
 
-        # PPMI 보조 신호 (계획서 ②-2) — KV 그래프 특징 co-occurrence 기반 연관성 수치.
-        # 설명 문구가 달라도 실제 Key/Value 가 겹치면 잡아내는, 임베딩과 상보적인 신호.
+        # PPMI-SVD 보조 신호 — 컬럼·값 특징 co-occurrence 기반 연관성 수치.
+        # 설명 문구가 달라도 실제 컬럼·값이 겹치면 잡아내는, 임베딩과 상보적인 신호.
+        # 가중 평균이라 PPMI≈0(컬럼·값 겹침 없음)이면 상한이 (1-w) 로 묶여 판정 전에 걸러진다 — 의도된 거름
+        # (2026-11 시범: 이렇게 걸러진 쌍을 따로 판정하면 관계 인정 5%, 비용만 23% 증가).
         from app.config import settings
 
         embedding_score, ppmi_score, shared_features = score, None, []
         if settings.PPMI_ENABLED:
-            ppmi = self._run_ppmi(a.table_name, b.table_name)
+            ppmi = self._run_ppmi(a, b)
             if ppmi is not None:
                 ppmi_score = ppmi["ppmi_cosine"]
                 shared_features = ppmi["shared_features"]
@@ -326,21 +399,18 @@ class RelationPipeline:
             shared_features=shared_features,
         )
 
-    def _run_ppmi(self, table_a: str, table_b: str) -> dict | None:
-        """KV 그래프 PPMI 연관성 수치 (graceful — 특징 없음/코퍼스 부족/실패 시 None).
+    def _run_ppmi(self, a: DatasetProfile, b: DatasetProfile) -> dict | None:
+        """PPMI 연관성 수치 (특징 없음/코퍼스 부족 시 None).
 
-        run() 이 구성한 실행 단위 코퍼스를 사용하고, 단독 호출 시엔 지연 생성한다.
+        run() 이 구성한 실행 단위 코퍼스를 사용하고, 단독 호출 시엔 두 프로필로 지연 생성한다.
         """
-        try:
-            analyzer = getattr(self, "_ppmi_analyzer", None)
-            if analyzer is None:
-                from app.src.dataset.ppmi_analyzer import PPMIAnalyzer
+        analyzer = getattr(self, "_ppmi_analyzer", None)
+        if analyzer is None:
+            from app.src.dataset.ppmi_analyzer import PPMIAnalyzer
 
-                analyzer = self._ppmi_analyzer = PPMIAnalyzer()
-            return analyzer.score_pair(table_a, table_b)
-        except Exception as e:
-            logger.warning(f"[Tier2] PPMI 분석 실패 — 임베딩 점수만 사용: {e}")
-            return None
+            analyzer = self._ppmi_analyzer = PPMIAnalyzer()
+        analyzer.load_profiles([a, b])
+        return analyzer.score_pair(a.table_name, b.table_name)
 
     # ──────────────────────────────────────────────
     # Tier 3 — LLM 검증
@@ -376,23 +446,35 @@ class RelationPipeline:
                     return None
 
             if not passed:
+                # 기각도 남긴다 — 관계가 안 생긴 이유를 사후에 알 수 있어야 한다
+                judged = [
+                    None if v is None else (v.get("relation_type"), v.get("confidence"))
+                    for v in verdicts
+                ]
+                logger.info(
+                    f"[Tier3] {a.table_name} <-> {b.table_name}: 전원 기각 "
+                    f"(임계 {confidence_threshold}, 판정={judged})"
+                )
                 return None
 
             result = passed[0]
-            evidence_type = result.get("evidence_type", "")
             confidence = result.get("confidence", 0.0)
+            cited = (result.get("evidence_columns") or []) + (result.get("evidence_values") or [])
             logger.info(
                 f"[Tier3] {a.table_name} <-> {b.table_name}: "
-                f"관계 확정 (type={result['relation_type']}, evidence={evidence_type}, "
+                f"관계 확정 (type={result.get('level1_type')}, 근거인용={cited}, "
                 f"confidence={confidence:.2f}, votes={len(passed)}/{len(verdicts) if len(passed) != 2 else 2})"
             )
             return Tier3Result(
                 table_a=a.table_name,
                 table_b=b.table_name,
                 relation_type=result["relation_type"],
-                evidence_type=evidence_type,
+                level1_type=result.get("level1_type", ""),
+                evidence_columns=result.get("evidence_columns") or [],
+                evidence_values=result.get("evidence_values") or [],
                 confidence=confidence,
                 reason=result.get("reason", ""),
+                usage=result.get("usage", ""),
                 embedding_score=embedding_score,
             )
 
@@ -408,13 +490,13 @@ class RelationPipeline:
             "description_a": a.description,
             "summary_a": a.table_summary,
             "columns_a": ", ".join(a.column_names[:20]),
-            "samples_a": json.dumps(a.sample_records[:_SAMPLE_DISPLAY], ensure_ascii=False),
+            "samples_a": _judge_samples(a),
             "table_b": b.table_name,
             "domain_b": b.domain,
             "description_b": b.description,
             "summary_b": b.table_summary,
             "columns_b": ", ".join(b.column_names[:20]),
-            "samples_b": json.dumps(b.sample_records[:_SAMPLE_DISPLAY], ensure_ascii=False),
+            "samples_b": _judge_samples(b),
             "embedding_score": round(embedding_score, 3),
         }
         result = LLMResponse("table_relation_verification").generate_llm_response(variables=variables)
@@ -431,33 +513,52 @@ class RelationPipeline:
         confidence_threshold: float,
         tier1_common_columns: int,
     ) -> bool:
-        """판정 1건이 저장 조건을 만족하는지 검사."""
+        """판정 1건이 저장 조건을 만족하는지 검사.
+
+        근거는 LLM이 인용한 컬럼·값을 실제 프로파일에 대조해 검증한다.
+        인용이 틀렸으면(환각) 기각하고, 인용이 아예 없으면 구조 근거가 필요한
+        유형(DETAIL_FOR/STATISTIC_FOR)은 기각한다. ADJACENT_TO 는 구조 근거가 없는
+        것이 정의이고, SAME_KIND 는 기관마다 항목 이름이 달라 같은 이름의 컬럼·값이
+        없을 수 있어 이름·설명을 근거로 삼으므로 인용을 요구하지 않는다.
+        """
         pair = f"{a.table_name} <-> {b.table_name}"
 
         if not result.get("related", False):
             logger.debug(f"[Tier3] {pair}: 관계 없음")
             return False
 
-        # 테이블 데이터 내 근거 없이 활용 시나리오만으로 판단한 관계는 저장하지 않음
-        evidence_type = result.get("evidence_type", "")
-        if evidence_type in ("usage_dependency", "none"):
-            logger.info(f"[Tier3] {pair}: 데이터 근거 없음 (evidence_type={evidence_type}), 저장 제외")
+        level1_type = result.get("level1_type", "")
+        cited_columns = [c for c in (result.get("evidence_columns") or []) if str(c).strip()]
+        cited_values = [v for v in (result.get("evidence_values") or []) if str(v).strip()]
+
+        bad_columns = [c for c in cited_columns if not _column_in_both(a, b, c)]
+        if bad_columns:
+            logger.info(f"[Tier3] {pair}: 인용 컬럼이 양쪽에 없음 {bad_columns} (환각), 저장 제외")
             return False
 
-        if evidence_type == "shared_key" and tier1_common_columns == 0:
-            if a.column_names and b.column_names:
-                logger.info(f"[Tier3] {pair}: shared_key 주장이나 공통 컬럼 없음 (환각), 저장 제외")
+        bad_values = [v for v in cited_values if not _value_in_both(a, b, v)]
+        if bad_values:
+            logger.info(f"[Tier3] {pair}: 인용 값이 양쪽 샘플에 없음 {bad_values} (환각), 저장 제외")
+            return False
+
+        # 인용 없이도 구조 근거가 확인되면 통과 (Tier1/Tier1.5 공통 컬럼)
+        has_evidence = bool(cited_columns or cited_values or tier1_common_columns)
+        verifiable = bool(a.column_names and b.column_names)
+        if not has_evidence and level1_type not in _NAME_EVIDENCE_TYPES:
+            if verifiable:
+                logger.info(f"[Tier3] {pair}: {level1_type} 인데 데이터 근거 인용 없음, 저장 제외")
                 return False
-            result["evidence_type"] = "same_entity"
-            logger.info(f"[Tier3] {pair}: 메타데이터-only — shared_key 검증 불가, same_entity로 강등")
+            # 메타데이터-only 는 인용할 컬럼·샘플 자체가 없다 — 요구하지 않는다
+            logger.info(f"[Tier3] {pair}: 메타데이터-only — 근거 인용 검증 불가, 통과")
 
         # 지식·콘텐츠성 데이터끼리의 값·주제 중첩은 관계로 보지 않음.
-        # 예외: LLM이 동종 병렬 데이터셋으로 판정했거나 Tier1 공통 컬럼이 2개 이상
-        # (동일 스키마는 구조적으로 확인된 병렬 근거)
+        # 예외: 동종 병렬(SAME_KIND)이거나 Tier1 공통 컬럼이 2개 이상
         natures = (result.get("table_a_nature"), result.get("table_b_nature"))
-        is_parallel = evidence_type == "parallel_schema" or tier1_common_columns >= 2
+        is_parallel = (
+            level1_type == Level1RelationType.SAME_KIND.value or tier1_common_columns >= 2
+        )
         if natures == ("knowledge_content", "knowledge_content") and not is_parallel:
-            logger.info(f"[Tier3] {pair}: 콘텐츠성 데이터 간 주제 중첩 (evidence_type={evidence_type}), 저장 제외")
+            logger.info(f"[Tier3] {pair}: 콘텐츠성 데이터 간 주제 중첩, 저장 제외")
             return False
 
         confidence = result.get("confidence", 0.0)
@@ -471,8 +572,26 @@ class RelationPipeline:
     # Helper
     # ──────────────────────────────────────────────
 
+    def _nature(self, profile: DatasetProfile) -> str:
+        """데이터셋 성격. 저장값이 없으면 LLM 으로 한 번 분류해 원장에 남긴다 — 실패하면 빈 값(미분류)."""
+        if profile.nature:
+            return profile.nature
+        try:
+            result = LLMResponse("dataset_nature_classification").generate_llm_response({
+                "title": profile.display_name or profile.table_name,
+                "description": (profile.description or profile.table_summary)[:700],
+                "columns": ", ".join(profile.column_names[:40]) or "(컬럼 정보 없음)",
+            })
+            nature = DatasetNatureClassification.model_validate(result).nature
+        except (APIError, ApplicationError, ValidationError) as e:
+            logger.warning(f"[Nature] '{profile.table_name}' 성격 분류 실패: {e}")
+            return ""
+        profile.nature = nature
+        self.dataset_repo.update_nature(profile.table_name, nature)
+        return nature
+
     def _load_profiles(self, table_names: list[str]) -> list[DatasetProfile]:
-        """OpenSearch에서 테이블 프로파일 로드."""
+        """원장에서 테이블 프로파일 로드."""
         profiles = []
         for name in table_names:
             profile = self.dataset_repo.get(name)

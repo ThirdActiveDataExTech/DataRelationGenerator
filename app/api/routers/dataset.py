@@ -2,15 +2,16 @@ import asyncio
 import csv
 import io
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Literal
 
-import logging
 from fastapi import APIRouter, Body, UploadFile, File
 from fastapi.responses import JSONResponse
 
 from app.schemas.dataset import (
+    RelationReviewRequest,
     DatasetIngestRequest,
     DatasetRelation,
     DatasetSearchRequest,
@@ -21,6 +22,7 @@ from app.schemas.dataset import (
 from app.schemas.response import APIResponseModel
 from app.src.dataset.dataset_service import dataset_service
 from app.src.dataset.relation_pipeline import relation_pipeline
+from app.src.dataset.text_extractor import DOCUMENT_FORMATS
 
 router = APIRouter(prefix="/dataset")
 logger = logging.getLogger(__name__)
@@ -90,19 +92,19 @@ def _run_kv_build_sync(job_id: str, table_name: str) -> None:
         normalized = ClusteringNormalizer().normalize_all_keys()
 
         get_job_store().update(job_id,
-            status="done",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            records=len(records),
-            documents_built=success,
-            normalized=normalized.get("normalized_count", 0),
-        )
+                               status="done",
+                               finished_at=datetime.now(timezone.utc).isoformat(),
+                               records=len(records),
+                               documents_built=success,
+                               normalized=normalized.get("normalized_count", 0),
+                               )
     except Exception as e:
         logger.error(f"[KVBuild] job={job_id} 실패: {e}")
         get_job_store().update(job_id,
-            status="error",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            error=str(e),
-        )
+                               status="error",
+                               finished_at=datetime.now(timezone.utc).isoformat(),
+                               error=str(e),
+                               )
 
 
 def _parse_upload(content: bytes, filename: str) -> list[dict]:
@@ -132,19 +134,19 @@ def _run_pipeline_sync(job_id: str, request: RunRelationPipelineRequest) -> None
             seed_table_names=request.seed_table_names,
         )
         get_job_store().update(job_id,
-            status="done",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            results=[r.model_dump() for r in results],
-            total_saved=sum(len(r.saved_relations) for r in results),
-            total_pending=sum(len(r.pending_relations) for r in results),
-        )
+                               status="done",
+                               finished_at=datetime.now(timezone.utc).isoformat(),
+                               results=[r.model_dump() for r in results],
+                               total_saved=sum(len(r.saved_relations) for r in results),
+                               total_pending=sum(len(r.pending_relations) for r in results),
+                               )
     except Exception as e:
         logger.error(f"[Pipeline] job={job_id} 실패: {e}")
         get_job_store().update(job_id,
-            status="error",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            error=str(e),
-        )
+                               status="error",
+                               finished_at=datetime.now(timezone.utc).isoformat(),
+                               error=str(e),
+                               )
 
 
 @router.post(
@@ -152,10 +154,10 @@ def _run_pipeline_sync(job_id: str, request: RunRelationPipelineRequest) -> None
     tags=["Datasets"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
-    summary="테이블 메타데이터 추출 및 Neptune/OpenSearch 적재",
+    summary="테이블·문서 메타데이터 추출 및 원장 적재",
 )
 async def ingest_dataset(
-        file: Annotated[UploadFile, File(description="JSON / JSONL / CSV 파일")],
+        file: Annotated[UploadFile, File(description="정형: JSON / JSONL / CSV, 비정형 텍스트: PDF / HWP / HWPX / DOCX / ODT / HTML / TXT")],
         table_name: Annotated[str, Body(embed=True, description="테이블명")],
         domain: Annotated[str, Body(embed=True, description="도메인 (medical, broadcast 등). 생략 시 특징 기반 자동 분류")] = "",
         description: Annotated[str, Body(embed=True, description="짧은 설명")] = "",
@@ -164,9 +166,14 @@ async def ingest_dataset(
         party: Annotated[str, Body(embed=True, description="데이터 파티 구분 (1st/3rd). 직접 업로드는 통상 1st")] = "",
         provider: Annotated[str, Body(embed=True, description="제공 기관/발행처")] = "",
 ):
-    """JSON / JSONL / CSV 파일을 업로드하면 메타데이터를 추출하여 Neptune Dataset 노드와 OpenSearch에 저장."""
+    """파일을 업로드하면 메타데이터를 추출하여 데이터셋 원장(PostgreSQL)에 저장.
+
+    문서 파일은 본문을 읽어 비정형 텍스트 데이터셋으로 등록한다 (본문 특징·분류·다국어 임베딩).
+    """
     content = await file.read()
-    records = _parse_upload(content, file.filename or "upload.json")
+    filename = file.filename or "upload.json"
+    is_document = filename.rsplit(".", 1)[-1].upper() in DOCUMENT_FORMATS | {"HTM"}
+    records = [] if is_document else _parse_upload(content, filename)
 
     # 원본 파일 보존 (§3.2, 백엔드는 RAW_STORAGE_BACKEND) — 실패해도 적재는 계속.
     # 저장 키는 프로필에 기록해 두어, 재업로드 없이 KV 그래프 처리를 트리거할 수 있게 한다.
@@ -175,10 +182,23 @@ async def ingest_dataset(
         from app.src.dataset.raw_storage import get_raw_storage
         storage = get_raw_storage()
         if storage.enabled:
-            raw_storage_key = storage.store_raw_dataset(table_name, file.filename or "upload.json", content) or ""
+            raw_storage_key = storage.store_raw_dataset(table_name, filename, content) or ""
             logger.info(f"[RawStorage] 원본 저장: {raw_storage_key}")
     except Exception as e:
         logger.warning(f"[RawStorage] 원본 저장 실패 (적재는 계속): {e}")
+
+    if is_document:
+        profile = dataset_service.ingest_document(
+            content, filename, table_name, description=description, raw_storage_key=raw_storage_key,
+            catalog_identifier=catalog_identifier, party=party, provider=provider,
+        )
+        return APIResponseModel(
+            result=profile.model_dump(exclude={"table_embedding", "keywords_embedding"}),
+            description=(
+                f"문서 '{table_name}' 등록 완료: {profile.text_profile['format']}, "
+                f"{profile.text_profile['char_count']}자, 언어 {profile.language}"
+            ),
+        )
 
     profile = dataset_service.ingest_table(
         records=records,
@@ -223,6 +243,7 @@ async def ingest_dataset_json(
         party=request.party,
         provider=request.provider,
         landing_page=request.landing_page,
+        column_names=request.column_names,
     )
 
     return APIResponseModel(
@@ -267,14 +288,23 @@ async def ingest_dataset_from_catalog(request: IngestFromCatalogRequest):
         domain=request.domain or None,
         party=request.party,
     )
-    profile = dataset_service.ingest_table(records=request.records or [], **args)
+
+    records = request.records or []
+    raw_key = ""
+    if not records:
+        from app.src.dataset.data_fetcher import fetch_and_store
+
+        records, raw_key = fetch_and_store(entry.get("access_url") or "", args["table_name"])
+
+    profile = dataset_service.ingest_table(records=records, raw_storage_key=raw_key, **args)
 
     return APIResponseModel(
         result=profile.model_dump(exclude={"table_embedding", "keywords_embedding"}),
         description=(
-            f"카탈로그 엔트리(identifier={args['catalog_identifier']}) → "
-            f"Dataset '{profile.table_name}' 등록 완료"
-            + ("" if request.records else " (메타데이터-only)")
+                f"카탈로그 엔트리(identifier={args['catalog_identifier']}) → "
+                f"Dataset '{profile.table_name}' 등록 완료"
+                + ("" if records else " (메타데이터-only)")
+                + (f" (access_url 실데이터 {len(records)}건 수집)" if raw_key else "")
         ),
     )
 
@@ -284,10 +314,10 @@ async def ingest_dataset_from_catalog(request: IngestFromCatalogRequest):
     tags=["Relations"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
-    summary="테이블 간 관계 Neptune 저장",
+    summary="테이블 간 관계 저장",
 )
 async def save_relation(relation: DatasetRelation):
-    """두 테이블 간 관계를 Neptune RDF Reification으로 저장.
+    """두 테이블 간 관계를 확정(APPROVED)으로 저장 (같은 쌍의 기존 관계는 대체).
 
     Args:
         relation: DatasetRelation (table_a, table_b, score, method, relation_type)
@@ -320,7 +350,7 @@ async def apply_relation_decision(request: RelationDecisionRequest):
 
     승인 SSOT는 ①(dataset_relation.status)입니다. 이 엔드포인트는 ①의 PATCH
     /relation/datasets/{id} 승인 처리에서 호출되는 내부 콜백으로,
-    승인된 관계를 Neptune 지식그래프에 저장합니다 (재환류 없음). 반려는 no-op.
+    결정을 관계 상태(APPROVED / REJECTED)로 기록합니다 (재환류 없음).
     """
     relation = dataset_service.apply_relation_decision(
         source_identifier=request.source_identifier,
@@ -399,9 +429,10 @@ async def nl_search(
     return APIResponseModel(
         result=result,
         description=(
-            f"'{query}' → 의도='{result['intent']}', "
-            f"데이터셋 {len(result['datasets'])}개, "
-            f"노드 {len(result['graph']['nodes'])}개 / 엣지 {len(result['graph']['edges'])}개"
+                f"'{query}' → 의도='{result['intent']}', "
+                f"데이터셋 {len(result['datasets'])}개, "
+                f"노드 {len(result['graph']['nodes'])}개 / 엣지 {len(result['graph']['edges'])}개"
+                + ("" if result["answer"] else " (답변 생성 실패)")
         ),
     )
 
@@ -502,8 +533,8 @@ async def get_subgraph(
     response_class=JSONResponse,
     summary="등록된 Dataset 목록 조회",
 )
-async def list_datasets():
-    """OpenSearch에 등록된 모든 Dataset 목록을 반환.
+def list_datasets():
+    """원장에 등록된 모든 Dataset 목록을 반환.
 
     각 데이터셋에 KV 그래프 처리 상태(kv_document_count, kv_processed)를 함께 반환하여
     '데이터셋 관리' 화면에서 처리 여부 배지/트리거를 표시할 수 있게 한다.
@@ -517,7 +548,8 @@ async def list_datasets():
     items = []
     for p in profiles:
         doc = p.model_dump(exclude={"table_embedding", "keywords_embedding"})
-        kv_count = os_repo.count_documents_by_table(p.table_name)
+        # KV 그래프는 원본 파일이 있는 데이터셋만 만들 수 있다 — 나머지는 조회하지 않는다
+        kv_count = os_repo.count_documents_by_table(p.table_name) if p.raw_storage_key else 0
         doc["kv_document_count"] = kv_count
         doc["kv_processed"] = kv_count > 0
         doc["raw_available"] = bool(p.raw_storage_key)
@@ -555,9 +587,9 @@ async def run_relation_pipeline(request: RunRelationPipelineRequest):
     return APIResponseModel(
         result={"job_id": job_id, "status": "running"},
         description=(
-            f"파이프라인 시작: "
-            + (f"{len(request.table_names)}개 테이블" if request.table_names else "전체 테이블")
-            + (f" (재평가 {len(request.refresh_table_names)}개)" if request.refresh_table_names else "")
+                f"파이프라인 시작: "
+                + (f"{len(request.table_names)}개 테이블" if request.table_names else "전체 테이블")
+                + (f" (재평가 {len(request.refresh_table_names)}개)" if request.refresh_table_names else "")
         ),
     )
 
@@ -585,7 +617,8 @@ async def get_pipeline_status(job_id: str):
     summary="① 카탈로그 갱신분 동기화 + 관계 파이프라인 증분 실행 (액티브 루프 1회)",
 )
 async def sync_from_catalog(
-        date_from: Annotated[str | None, Body(embed=True, description="조회 시작일(YYYY-MM-DD) 재정의 — 백필용. 생략 시 watermark")] = None,
+        date_from: Annotated[
+            str | None, Body(embed=True, description="조회 시작일(YYYY-MM-DD) 재정의 — 백필용. 생략 시 watermark")] = None,
 ):
     """카탈로그 변경 감지 → 데이터셋 등록/재평가 표시 → 파이프라인 증분 실행을 백그라운드로 시작.
 
@@ -635,56 +668,31 @@ async def get_sync_from_catalog_status(job_id: str):
 
 
 @router.get(
-    "/sync-status",
-    tags=["Datasets"],
+    "/relation/review",
+    tags=["Relations"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
-    summary="OpenSearch ↔ Neptune Dataset 노드 동기화 상태 확인",
+    summary="관계 판정 목록 조회",
 )
-async def get_sync_status():
-    """OpenSearch에 등록된 테이블 목록 vs Neptune Dataset 노드를 비교해 동기화 상태를 반환."""
-    from app.repositories.dataset_repository import get_dataset_repository
-    from app.clients.neptune import get_neptune_client
-    from app.config import settings
+def list_relation_review(status: Literal["PENDING", "APPROVED", "REJECTED"] | None = None):
+    """원장의 관계를 상태별로 조회한다 (관리 화면 '관계 판정'). status 를 비우면 전체."""
+    from app.repositories.relation_repository import get_relation_repository
 
-    repo = get_dataset_repository()
-    profiles = repo.list_all()
-    os_names = {p.table_name for p in profiles}
+    rows = get_relation_repository().review_rows(status)
+    return APIResponseModel(result=rows, description=f"관계 {len(rows)}개")
 
-    neptune = get_neptune_client()
-    dm = settings.DATASET_RDF_NAMESPACE
-    query = f"""
-    PREFIX dm: <{dm}>
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-    SELECT ?tableName WHERE {{
-        ?s rdf:type dm:Dataset ;
-           dm:tableName ?tableName .
-    }}
-    """
-    try:
-        resp = neptune.execute_query(query)
-        neptune_names = {
-            b["tableName"]["value"]
-            for b in resp.get("results", {}).get("bindings", [])
-        }
-    except Exception:
-        neptune_names = set()
 
-    items = [
-        {
-            "table_name": name,
-            "in_opensearch": name in os_names,
-            "in_neptune": name in neptune_names,
-            "synced": name in os_names and name in neptune_names,
-        }
-        for name in os_names | neptune_names
-    ]
-    items.sort(key=lambda x: x["table_name"])
-
-    return APIResponseModel(
-        result=items,
-        description=f"총 {len(items)}개, 동기화={sum(1 for i in items if i['synced'])}개",
-    )
+@router.patch(
+    "/relation/review/{relation_id}",
+    tags=["Relations"],
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+    summary="관계 승인·반려",
+)
+def review_relation(relation_id: int, request: RelationReviewRequest):
+    """판정 대기 관계를 승인하거나 반려한다. 카탈로그와 연동된 관계는 결정을 카탈로그에도 반영한다."""
+    row = dataset_service.review_relation(relation_id, request.approved)
+    return APIResponseModel(result=row, description=f"관계 {relation_id} {row['status']}")
 
 
 @router.get(
@@ -692,53 +700,25 @@ async def get_sync_status():
     tags=["Relations"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
-    summary="Neptune에 저장된 관계 목록 조회",
+    summary="확정된 데이터셋 간 관계 목록 조회",
 )
-async def list_relations():
-    """Neptune에 저장된 모든 Dataset 간 관계를 반환."""
-    from app.clients.neptune import get_neptune_client
-    from app.config import settings
+def list_relations():
+    """확정(APPROVED)된 모든 Dataset 간 관계를 최신 순으로 반환."""
+    from app.repositories.relation_repository import get_relation_repository
 
-    neptune = get_neptune_client()
-    dm = settings.DATASET_RDF_NAMESPACE
-    query = f"""
-    PREFIX dm: <{dm}>
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-    SELECT ?tableA ?tableB ?catalogIdA ?catalogIdB ?score ?method ?relationType ?createdAt WHERE {{
-        ?rel rdf:type rdf:Statement ;
-             rdf:subject ?s ;
-             rdf:predicate dm:relatedTo ;
-             rdf:object ?o ;
-             dm:relationScore ?score ;
-             dm:relationMethod ?method ;
-             dm:relationType ?relationType ;
-             dm:createdAt ?createdAt .
-        ?s dm:tableName ?tableA .
-        ?o dm:tableName ?tableB .
-        OPTIONAL {{ ?s dm:catalogIdentifier ?catalogIdA }}
-        OPTIONAL {{ ?o dm:catalogIdentifier ?catalogIdB }}
-    }}
-    ORDER BY DESC(?createdAt)
-    """
-    try:
-        resp = neptune.execute_query(query)
-        bindings = resp.get("results", {}).get("bindings", [])
-        relations = [
-            {
-                "table_a": b["tableA"]["value"],
-                "table_b": b["tableB"]["value"],
-                "catalog_identifier_a": b.get("catalogIdA", {}).get("value", ""),
-                "catalog_identifier_b": b.get("catalogIdB", {}).get("value", ""),
-                "score": float(b["score"]["value"]),
-                "method": b["method"]["value"],
-                "relation_type": b["relationType"]["value"],
-                "created_at": b["createdAt"]["value"],
-            }
-            for b in bindings
-        ]
-    except Exception:
-        relations = []
-
+    relations = [
+        {
+            "table_a": e["source"],
+            "table_b": e["target"],
+            "catalog_identifier_a": e["catalog_identifier_a"],
+            "catalog_identifier_b": e["catalog_identifier_b"],
+            "score": e["score"],
+            "method": e["method"],
+            "relation_type": e["relation_type"],
+            "created_at": e["created_at"],
+        }
+        for e in get_relation_repository().edges()
+    ]
     return APIResponseModel(
         result=relations,
         description=f"관계 {len(relations)}개",
@@ -752,50 +732,23 @@ async def list_relations():
     response_class=JSONResponse,
     summary="데이터셋 현황 요약",
 )
-async def get_stats():
-    """데이터셋 수, 관계 수, Tier별 분포 등 현황 요약을 반환."""
-    from app.clients.neptune import get_neptune_client
-    from app.config import settings
+def get_stats():
+    """데이터셋 수, 확정 관계 수, 도메인·생성 방법별 분포를 반환."""
+    from collections import Counter
+
     from app.repositories.dataset_repository import get_dataset_repository
+    from app.repositories.relation_repository import get_relation_repository
 
-    repo = get_dataset_repository()
-    profiles = repo.list_all()
-    dataset_count = len(profiles)
-    domain_counts: dict[str, int] = {}
-    for p in profiles:
-        domain_counts[p.domain] = domain_counts.get(p.domain, 0) + 1
-
-    neptune = get_neptune_client()
-    dm = settings.DATASET_RDF_NAMESPACE
-    query = f"""
-    PREFIX dm: <{dm}>
-    PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
-    SELECT ?method (COUNT(?rel) AS ?cnt) WHERE {{
-        ?rel rdf:type rdf:Statement ;
-             rdf:predicate dm:relatedTo ;
-             dm:relationMethod ?method .
-    }}
-    GROUP BY ?method
-    """
-    try:
-        resp = neptune.execute_query(query)
-        method_counts = {
-            b["method"]["value"]: int(b["cnt"]["value"])
-            for b in resp.get("results", {}).get("bindings", [])
-        }
-    except Exception:
-        method_counts = {}
-
-    total_relations = sum(method_counts.values())
-
+    profiles = get_dataset_repository().list_all()
+    edges = get_relation_repository().edges()
     return APIResponseModel(
         result={
-            "dataset_count": dataset_count,
-            "relation_count": total_relations,
-            "domain_counts": domain_counts,
-            "method_counts": method_counts,
+            "dataset_count": len(profiles),
+            "relation_count": len(edges),
+            "domain_counts": dict(Counter(p.domain for p in profiles)),
+            "method_counts": dict(Counter(e["method"] for e in edges)),
         },
-        description=f"데이터셋 {dataset_count}개, 관계 {total_relations}개",
+        description=f"데이터셋 {len(profiles)}개, 관계 {len(edges)}개",
     )
 
 
@@ -807,7 +760,7 @@ async def get_stats():
     summary="Dataset 삭제",
 )
 async def delete_dataset(table_name: str):
-    """OpenSearch + Neptune에서 Dataset 및 연관 관계를 삭제."""
+    """Dataset 과 그 파일·임베딩·관계를 원장에서 삭제."""
     from app.src.dataset.dataset_service import DatasetService
     ok = DatasetService().delete_table(table_name)
     return APIResponseModel(
