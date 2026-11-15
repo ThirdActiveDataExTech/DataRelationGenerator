@@ -528,7 +528,7 @@ Key-Value 메타데이터:
 A를 보는 사람에게 B가 무엇인지로 고릅니다. 근거를 댈 수 없으면 그 유형이 아니고, 어느 유형도 아니면 related=false 입니다.
 - DETAIL_FOR: B가 A와 같은 개체의 다른 속성을 담습니다. 근거는 양쪽에 같은 이름으로 있는 식별자 컬럼이나, 양쪽 샘플에 모두 나오는 개체 이름·코드입니다. 예: 어린이집 현황 ↔ 어린이집 교직원 현황 (어린이집코드)
 - STATISTIC_FOR: B가 개별 개체가 아니라 지역·기간·유형별로 묶은 수치이고, A를 해석할 기준이 됩니다. 근거는 양쪽에 모두 있는 지역·기간 값입니다. 예: 어린이집 현황 ↔ 시군구별 출생아 수 (A의 소재지와 B의 시군구에 모두 나오는 "성남시")
-- SAME_KIND: B가 A와 같은 항목 구성에 지역·기간·제공 방식만 다른 판입니다. 근거는 공통 항목명 여러 개입니다. 예: 전국 어린이집 현황 ↔ 성남시 어린이집 현황
+- SAME_KIND: B가 A와 같은 항목(같은 종류의 시설·업종 목록, 또는 같은 통계 지표)을 지역·기관·기간·분류 기준만 달리해 담아, 이어 붙이면 범위가 넓어집니다. 기관마다 항목 이름은 달라도 됩니다. 근거는 양쪽 이름·설명에 나오는 같은 대상입니다. 예: 광양시 약국 현황 ↔ 의정부시 약국 현황, 시도별 사망자 수 ↔ 성·연령별 사망자 수. 같은 시군에 다른 지표를 더하는 시군별 당뇨병 조절률 ↔ 투약순응률은 DETAIL_FOR 입니다.
 - ADJACENT_TO: 같은 대상이 A와 B 중 하나를 고르거나 차례로 거치는 관계입니다. 인용은 필요 없지만 reason에 그 관계를 구체적으로 써야 합니다. 예: 어린이집 현황 ↔ 유치원 현황
 
 # 근거 인용 (evidence_columns, evidence_values)
@@ -598,27 +598,33 @@ A를 보는 사람에게 B가 무엇인지로 고릅니다. 근거를 댈 수 �
 반드시 extract_table_metadata function tool을 호출하세요.
 """
 
-    PROPER_NOUN_LABELING: str = """**반드시 label_proper_nouns tool을 사용하여 응답할 것.**
+    DOCUMENT_METADATA_EXTRACTION: str = """**반드시 extract_table_metadata tool을 사용하여 응답할 것.**
 
-고유명사 값들을 범주별로 분류하세요.
+당신은 문서(보고서·지침·통계연보·게시글 등)를 읽고 핵심 메타데이터를 만드는 전문가입니다.
 
-## 필드명: {key_name}
+# 문서
+제목: {title}
+본문 앞부분:
+{excerpt}
 
-## 값 목록:
-{values_list}
+# 임무
 
-## 선택 가능한 범주 (Taxonomy):
-{taxonomy}
+## 1. description
+문서가 무엇을 다루는지, 누가 어떤 목적으로 볼 문서인지를 1~2문장으로 요약하세요.
+- 목차·머리말을 옮겨 적지 말고 내용의 대상과 범위를 쓸 것
+- 본문이 영어 등 외국어여도 한국어로 작성
 
-## 작업
-각 값을 위 범주 중 하나로 분류하세요. 범주에 맞는 것이 없으면 "기타"를 선택하세요.
+좋은 예: "전국 의료기관의 병상 수와 시도별 분포를 정리한 연간 통계 보고서로, 지역별 의료 자원 비교에 쓰입니다."
+나쁜 예: "제1장 개요, 제2장 현황, 제3장 부록으로 구성되어 있습니다."
 
-## 예시
-- 필드: "발행기관명"
-- 범주: ["정부기관", "문화기관", "항공사", "기타"]
-- 한국문화진흥원 → 문화기관
-- 한국항공 → 항공사
-- KBS → 방송사 (없으면 기타)
+## 2. keywords
+문서를 대표하는 개념어 5~10개를 한국어로 추출하세요. 다른 데이터와 이어질 수 있는 대상·주제어(기관 종류, 지역, 질병, 제도명 등)를 우선하세요.
+
+## 3. display_name
+제목이 이미 자연스러우면 그대로, 파일명처럼 보이면 간결한 한국어 명사구로.
+
+# 출력
+반드시 extract_table_metadata function tool을 호출하세요.
 """
 
     DATASET_CATEGORY_CLASSIFICATION: str = """**반드시 classify_dataset_categories tool을 사용하여 응답할 것.**
@@ -634,14 +640,29 @@ A를 보는 사람에게 B가 무엇인지로 고릅니다. 근거를 댈 수 �
 
 ## 규칙
 1. 반드시 분류표에 있는 '대분류 > 중분류' 그대로 쓰세요 (예: "의료 > 공중보건"). 새 분류를 만들지 마세요.
-2. 데이터가 **무엇에 관한 것인지**(대상·주제)로 분류하세요. 제공 형식이나 제공기관 이름만 보고 정하지 마세요.
-   - 병원·약국 현황 → 의료, 시청률·방송 프로그램 → 문화 > 방송·미디어, 인구·출생 통계 → 사회
+2. 데이터가 **무엇에 관한 것인지**(대상·주제)로 분류하세요. 제공 형식, 제공기관 이름, '통계'·'현황' 같은 자료 형태 표현만 보고 정하지 마세요.
+   - 병원·약국 현황 → 의료, 시청률·방송 프로그램 → 문화 > 방송·미디어
+   - 통계표: 시군구별 주민등록인구 → 사회 > 일반공공행정, 사망원인별 사망자수 → 의료 > 공중보건, 장애유형별 등록장애인수 → 사회 > 복지
 3. 가장 대표적인 분류를 맨 앞에 두세요. 두 번째·세 번째는 분명히 걸쳐 있을 때만 붙이세요.
 
 # 데이터셋
 - 제목: {title}
 - 요약: {summary}
 - 키워드: {keywords}
+- 컬럼: {columns}
+"""
+
+    DATASET_NATURE_CLASSIFICATION: str = """**반드시 classify_dataset_nature tool을 사용하여 응답할 것.**
+
+공공데이터 파일 하나의 성격을 고르세요. 이름·설명·컬럼으로 판단합니다.
+- aggregate: 행이 개별 개체가 아니라 지역·기간·성별·연령·유형 같은 기준으로 묶은 수치(인원·건수·비율·금액·평균)입니다. 기준이 열로 펼쳐진 표(연도가 열, 지역이 열)도 같습니다. 예: 시군구별 출생아 수, 월별 확진자 수, 상병별 환자 수 통계, 기관별 연간 이용 실적
+- record: 행마다 실제 개체나 사건 하나를 기록합니다. 예: 약국·병원·업소 목록, 시험 응시자별 성적, 민원 접수 내역, 연구과제 목록
+- reference: 코드표, 테이블·컬럼 정의서, 안내문처럼 다른 데이터를 설명하는 기준 정보입니다
+- content: 방송·게시물·문서처럼 콘텐츠 자체가 행이거나 파일인 데이터입니다
+
+# 데이터셋
+- 이름: {title}
+- 설명: {description}
 - 컬럼: {columns}
 """
 
@@ -667,7 +688,7 @@ A를 보는 사람에게 B가 무엇인지로 고릅니다. 근거를 댈 수 �
   관계 유형의 뜻은 아래와 같습니다
   - DETAIL_FOR: 같은 개체의 다른 속성을 공급 (더 자세히 보기)
   - STATISTIC_FOR: 다른 입도의 집계·지표 (모수·추세로 맥락 보기)
-  - SAME_KIND: 같은 표준의 다른 지역·판본 (대체하거나 합치기)
+  - SAME_KIND: 같은 종류의 다른 지역·기관·기간 데이터 (이어 붙이거나 견주기)
   - ADJACENT_TO: 같은 맥락의 다른 개체 (함께 놓고 비교하기)
 - 관계가 없는 데이터셋은 **유사도로만 잡혔다**는 점을 밝히세요
 - 질의에 답할 데이터가 부족하면 부족하다고 말하세요. 억지로 채우지 마세요
@@ -715,12 +736,13 @@ suggested_next 에는 사용자가 이어서 볼 만한 데이터셋명을 **제
             "schema_analysis": cls.SCHEMA_ANALYSIS,
             "relation_key_analysis": cls.RELATION_KEY_ANALYSIS,
             "field_type_classification": cls.FIELD_TYPE_CLASSIFICATION,
-            "proper_noun_labeling": cls.PROPER_NOUN_LABELING,
             "table_relation_verification": cls.TABLE_RELATION_VERIFICATION,
             "table_metadata_extraction": cls.TABLE_METADATA_EXTRACTION,
+            "document_metadata_extraction": cls.DOCUMENT_METADATA_EXTRACTION,
             "dataset_search_intent": cls.DATASET_SEARCH_INTENT,
             "dataset_search_answer": cls.DATASET_SEARCH_ANSWER,
             "dataset_category_classification": cls.DATASET_CATEGORY_CLASSIFICATION,
+            "dataset_nature_classification": cls.DATASET_NATURE_CLASSIFICATION,
         }
 
         if task not in prompt_map:

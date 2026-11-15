@@ -22,7 +22,7 @@ class DatasetCard(BaseModel):
     table_summary: str = ""
     provider: str = ""
     party: str = ""
-    source: str = Field(default="", description="원천 포털 코드 (DATA_GO_KR / KOSIS / HIRA / FIRST_PARTY / OTHER)")
+    source: str = Field(default="", description="원천 포털 코드 (DATA_GO_KR / KOSIS / HIRA / HCDL / FIRST_PARTY / OTHER)")
     categories: list[str] = Field(default_factory=list, description="'대분류 > 중분류' 1~3개")
     record_count: int = 0
     column_count: int = 0

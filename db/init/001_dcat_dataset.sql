@@ -10,13 +10,13 @@ CREATE TABLE IF NOT EXISTS dcat_dataset
     title          TEXT        NOT NULL,                   -- dct:title
     description    TEXT,                                   -- dct:description
     publisher      TEXT,                                   -- dct:publisher · 제공기관
-    source_type    TEXT        NOT NULL DEFAULT 'structured_file',
+    source_type    TEXT        NOT NULL DEFAULT 'structured_file', -- 정형 structured_file · 문서형 파일 unstructured_text
     dataset_origin TEXT        NOT NULL DEFAULT 'admin',   -- admin / user
     publisher_code TEXT,                                   -- 원천 포털의 기관 코드
     keywords       JSONB       NOT NULL DEFAULT '[]',      -- dcat:keyword
     theme          JSONB       NOT NULL DEFAULT '[]',      -- dct:subject · 원천 분류 그대로 (공공 '대분류 - 소분류' 분해, KOSIS 주제 경로)
     category       JSONB       NOT NULL DEFAULT '[]',      -- 디지털 집현전 분류 '대분류 > 중분류' 1~3개 (첫 번째가 대표)
-    language       TEXT        NOT NULL DEFAULT 'ko',      -- dct:language
+    language       TEXT        NOT NULL DEFAULT 'ko',      -- dct:language (ISO 639-1: ko · en)
     spatial        TEXT,                                   -- dct:spatial · 원문
     temporal_start DATE,                                   -- dct:temporal 시작
     temporal_end   DATE,                                   -- dct:temporal 종료 · NULL 이면 진행 중/미상
@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS active_meta_dataset
 (
     id           BIGSERIAL PRIMARY KEY,
     dataset_id   TEXT          NOT NULL REFERENCES dcat_dataset (dataset_id) ON DELETE CASCADE ON UPDATE CASCADE,
-    metric_code  TEXT          NOT NULL,                   -- download_request / view_count
+    metric_code  TEXT          NOT NULL,                   -- 지표 표준값 · FK 는 003_metric_registry.sql
     metric_value NUMERIC(20, 4) NOT NULL,
     observed_at  TIMESTAMPTZ   NOT NULL,
     source       TEXT          NOT NULL,                   -- PORTAL_CATALOG / PORTAL_LOG / CRAWLER
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS meta_datagokr_file
     record_count      BIGINT,
     column_count      INTEGER,
     column_names      JSONB       NOT NULL DEFAULT '[]',
-    column_profile    JSONB       NOT NULL DEFAULT '{}',   -- 항목별 기술통계량 · KOSIS 분류별 값·항목별 단위
+    column_profile    JSONB       NOT NULL DEFAULT '{}',   -- 항목별 기술통계량 · KOSIS 분류별 값·항목별 단위 · 문서 본문 특징(text_profile)
     coverage_start    DATE,                                -- 수록기간 시작
     coverage_end      DATE,                                -- 수록기간 종료 (공공은 파일명 날짜 접미)
     domain            TEXT,                                -- 대표 대분류 (dcat_dataset.category 첫 번째의 대분류)
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS meta_datagokr_file_vec
 CREATE INDEX IF NOT EXISTS idx_meta_datagokr_file_vec_summary
     ON meta_datagokr_file_vec USING hnsw (summary_embedding vector_cosine_ops);
 
--- 데이터셋 간 관계 — 쌍+유형당 1행 · 재생성 시 대체 · 승인 상태의 정본
+-- 데이터셋 간 관계 — 쌍+유형+method당 1행 · 재생성 시 같은 method 행만 대체 · 정본은 dcat_dataset_relation_canonical 뷰(004)
 CREATE TABLE IF NOT EXISTS dcat_dataset_relation
 (
     id                BIGSERIAL PRIMARY KEY,
@@ -132,11 +132,13 @@ CREATE TABLE IF NOT EXISTS dcat_dataset_relation
     target_dataset_id TEXT        NOT NULL REFERENCES dcat_dataset (dataset_id) ON DELETE CASCADE ON UPDATE CASCADE,
     relation_type     TEXT        NOT NULL,                -- 관계 유형 정의서 4종(:하위라벨)
     score             REAL        NOT NULL,                -- 0~1
-    method            TEXT        NOT NULL,                -- rule / embedding / llm
+    method            TEXT        NOT NULL,                -- rule / embedding / llm (와이즈넛) · gnn (모비젠)
     status            TEXT        NOT NULL,                -- PENDING / APPROVED / REJECTED
     evidence          JSONB       NOT NULL DEFAULT '{}',   -- 매칭 컬럼, 유사도, LLM 사유
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (source_dataset_id, target_dataset_id, relation_type)
+    CONSTRAINT dcat_dataset_relation_pair_type_method_key
+        UNIQUE (source_dataset_id, target_dataset_id, relation_type, method),
+    CONSTRAINT dcat_dataset_relation_method_check CHECK (method IN ('rule', 'embedding', 'llm', 'gnn'))
 );
 CREATE INDEX IF NOT EXISTS idx_dcat_dataset_relation_type ON dcat_dataset_relation (relation_type);
 CREATE INDEX IF NOT EXISTS idx_dcat_dataset_relation_status ON dcat_dataset_relation (status);

@@ -33,6 +33,15 @@ class DatasetNotFoundError(ApplicationError):
         self.result = {"table_name": table_name}
 
 
+class RelationNotFoundError(ApplicationError):
+    """원장에 없는 관계(id)"""
+
+    def __init__(self, relation_id):
+        self.code = int(f"{settings.SERVICE_CODE}{status.HTTP_404_NOT_FOUND}")
+        self.message = "Relation not found"
+        self.result = {"relation_id": relation_id}
+
+
 class DuplicateDatasetContentError(ApplicationError):
     """같은 내용(content_sha256)의 데이터파일이 다른 이름으로 이미 등록됨"""
 
@@ -40,3 +49,12 @@ class DuplicateDatasetContentError(ApplicationError):
         self.code = int(f"{settings.SERVICE_CODE}{status.HTTP_409_CONFLICT}")
         self.message = "Dataset with the same content is already registered"
         self.result = {"table_name": table_name}
+
+
+class DocumentTextExtractionError(ApplicationError):
+    """문서 파일에서 본문을 읽지 못함 (손상·암호화·이미지 문서·미지원 형식)"""
+
+    def __init__(self, reason: str):
+        self.code = int(f"{settings.SERVICE_CODE}{status.HTTP_422_UNPROCESSABLE_ENTITY}")
+        self.message = "Document text could not be extracted"
+        self.result = {"reason": reason}
