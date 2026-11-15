@@ -2,15 +2,16 @@ import asyncio
 import csv
 import io
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated
+from typing import Annotated, Literal
 
-import logging
 from fastapi import APIRouter, Body, UploadFile, File
 from fastapi.responses import JSONResponse
 
 from app.schemas.dataset import (
+    RelationReviewRequest,
     DatasetIngestRequest,
     DatasetRelation,
     DatasetSearchRequest,
@@ -21,6 +22,7 @@ from app.schemas.dataset import (
 from app.schemas.response import APIResponseModel
 from app.src.dataset.dataset_service import dataset_service
 from app.src.dataset.relation_pipeline import relation_pipeline
+from app.src.dataset.text_extractor import DOCUMENT_FORMATS
 
 router = APIRouter(prefix="/dataset")
 logger = logging.getLogger(__name__)
@@ -90,19 +92,19 @@ def _run_kv_build_sync(job_id: str, table_name: str) -> None:
         normalized = ClusteringNormalizer().normalize_all_keys()
 
         get_job_store().update(job_id,
-            status="done",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            records=len(records),
-            documents_built=success,
-            normalized=normalized.get("normalized_count", 0),
-        )
+                               status="done",
+                               finished_at=datetime.now(timezone.utc).isoformat(),
+                               records=len(records),
+                               documents_built=success,
+                               normalized=normalized.get("normalized_count", 0),
+                               )
     except Exception as e:
         logger.error(f"[KVBuild] job={job_id} 실패: {e}")
         get_job_store().update(job_id,
-            status="error",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            error=str(e),
-        )
+                               status="error",
+                               finished_at=datetime.now(timezone.utc).isoformat(),
+                               error=str(e),
+                               )
 
 
 def _parse_upload(content: bytes, filename: str) -> list[dict]:
@@ -132,19 +134,19 @@ def _run_pipeline_sync(job_id: str, request: RunRelationPipelineRequest) -> None
             seed_table_names=request.seed_table_names,
         )
         get_job_store().update(job_id,
-            status="done",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            results=[r.model_dump() for r in results],
-            total_saved=sum(len(r.saved_relations) for r in results),
-            total_pending=sum(len(r.pending_relations) for r in results),
-        )
+                               status="done",
+                               finished_at=datetime.now(timezone.utc).isoformat(),
+                               results=[r.model_dump() for r in results],
+                               total_saved=sum(len(r.saved_relations) for r in results),
+                               total_pending=sum(len(r.pending_relations) for r in results),
+                               )
     except Exception as e:
         logger.error(f"[Pipeline] job={job_id} 실패: {e}")
         get_job_store().update(job_id,
-            status="error",
-            finished_at=datetime.now(timezone.utc).isoformat(),
-            error=str(e),
-        )
+                               status="error",
+                               finished_at=datetime.now(timezone.utc).isoformat(),
+                               error=str(e),
+                               )
 
 
 @router.post(
@@ -152,10 +154,10 @@ def _run_pipeline_sync(job_id: str, request: RunRelationPipelineRequest) -> None
     tags=["Datasets"],
     response_model=APIResponseModel,
     response_class=JSONResponse,
-    summary="테이블 메타데이터 추출 및 원장 적재",
+    summary="테이블·문서 메타데이터 추출 및 원장 적재",
 )
 async def ingest_dataset(
-        file: Annotated[UploadFile, File(description="JSON / JSONL / CSV 파일")],
+        file: Annotated[UploadFile, File(description="정형: JSON / JSONL / CSV, 비정형 텍스트: PDF / HWP / HWPX / DOCX / ODT / HTML / TXT")],
         table_name: Annotated[str, Body(embed=True, description="테이블명")],
         domain: Annotated[str, Body(embed=True, description="도메인 (medical, broadcast 등). 생략 시 특징 기반 자동 분류")] = "",
         description: Annotated[str, Body(embed=True, description="짧은 설명")] = "",
@@ -164,9 +166,14 @@ async def ingest_dataset(
         party: Annotated[str, Body(embed=True, description="데이터 파티 구분 (1st/3rd). 직접 업로드는 통상 1st")] = "",
         provider: Annotated[str, Body(embed=True, description="제공 기관/발행처")] = "",
 ):
-    """JSON / JSONL / CSV 파일을 업로드하면 메타데이터를 추출하여 데이터셋 원장(PostgreSQL)에 저장."""
+    """파일을 업로드하면 메타데이터를 추출하여 데이터셋 원장(PostgreSQL)에 저장.
+
+    문서 파일은 본문을 읽어 비정형 텍스트 데이터셋으로 등록한다 (본문 특징·분류·다국어 임베딩).
+    """
     content = await file.read()
-    records = _parse_upload(content, file.filename or "upload.json")
+    filename = file.filename or "upload.json"
+    is_document = filename.rsplit(".", 1)[-1].upper() in DOCUMENT_FORMATS | {"HTM"}
+    records = [] if is_document else _parse_upload(content, filename)
 
     # 원본 파일 보존 (§3.2, 백엔드는 RAW_STORAGE_BACKEND) — 실패해도 적재는 계속.
     # 저장 키는 프로필에 기록해 두어, 재업로드 없이 KV 그래프 처리를 트리거할 수 있게 한다.
@@ -175,10 +182,23 @@ async def ingest_dataset(
         from app.src.dataset.raw_storage import get_raw_storage
         storage = get_raw_storage()
         if storage.enabled:
-            raw_storage_key = storage.store_raw_dataset(table_name, file.filename or "upload.json", content) or ""
+            raw_storage_key = storage.store_raw_dataset(table_name, filename, content) or ""
             logger.info(f"[RawStorage] 원본 저장: {raw_storage_key}")
     except Exception as e:
         logger.warning(f"[RawStorage] 원본 저장 실패 (적재는 계속): {e}")
+
+    if is_document:
+        profile = dataset_service.ingest_document(
+            content, filename, table_name, description=description, raw_storage_key=raw_storage_key,
+            catalog_identifier=catalog_identifier, party=party, provider=provider,
+        )
+        return APIResponseModel(
+            result=profile.model_dump(exclude={"table_embedding", "keywords_embedding"}),
+            description=(
+                f"문서 '{table_name}' 등록 완료: {profile.text_profile['format']}, "
+                f"{profile.text_profile['char_count']}자, 언어 {profile.language}"
+            ),
+        )
 
     profile = dataset_service.ingest_table(
         records=records,
@@ -281,10 +301,10 @@ async def ingest_dataset_from_catalog(request: IngestFromCatalogRequest):
     return APIResponseModel(
         result=profile.model_dump(exclude={"table_embedding", "keywords_embedding"}),
         description=(
-            f"카탈로그 엔트리(identifier={args['catalog_identifier']}) → "
-            f"Dataset '{profile.table_name}' 등록 완료"
-            + ("" if records else " (메타데이터-only)")
-            + (f" (access_url 실데이터 {len(records)}건 수집)" if raw_key else "")
+                f"카탈로그 엔트리(identifier={args['catalog_identifier']}) → "
+                f"Dataset '{profile.table_name}' 등록 완료"
+                + ("" if records else " (메타데이터-only)")
+                + (f" (access_url 실데이터 {len(records)}건 수집)" if raw_key else "")
         ),
     )
 
@@ -409,10 +429,10 @@ async def nl_search(
     return APIResponseModel(
         result=result,
         description=(
-            f"'{query}' → 의도='{result['intent']}', "
-            f"데이터셋 {len(result['datasets'])}개, "
-            f"노드 {len(result['graph']['nodes'])}개 / 엣지 {len(result['graph']['edges'])}개"
-            + ("" if result["answer"] else " (답변 생성 실패)")
+                f"'{query}' → 의도='{result['intent']}', "
+                f"데이터셋 {len(result['datasets'])}개, "
+                f"노드 {len(result['graph']['nodes'])}개 / 엣지 {len(result['graph']['edges'])}개"
+                + ("" if result["answer"] else " (답변 생성 실패)")
         ),
     )
 
@@ -513,7 +533,7 @@ async def get_subgraph(
     response_class=JSONResponse,
     summary="등록된 Dataset 목록 조회",
 )
-async def list_datasets():
+def list_datasets():
     """원장에 등록된 모든 Dataset 목록을 반환.
 
     각 데이터셋에 KV 그래프 처리 상태(kv_document_count, kv_processed)를 함께 반환하여
@@ -528,7 +548,8 @@ async def list_datasets():
     items = []
     for p in profiles:
         doc = p.model_dump(exclude={"table_embedding", "keywords_embedding"})
-        kv_count = os_repo.count_documents_by_table(p.table_name)
+        # KV 그래프는 원본 파일이 있는 데이터셋만 만들 수 있다 — 나머지는 조회하지 않는다
+        kv_count = os_repo.count_documents_by_table(p.table_name) if p.raw_storage_key else 0
         doc["kv_document_count"] = kv_count
         doc["kv_processed"] = kv_count > 0
         doc["raw_available"] = bool(p.raw_storage_key)
@@ -566,9 +587,9 @@ async def run_relation_pipeline(request: RunRelationPipelineRequest):
     return APIResponseModel(
         result={"job_id": job_id, "status": "running"},
         description=(
-            f"파이프라인 시작: "
-            + (f"{len(request.table_names)}개 테이블" if request.table_names else "전체 테이블")
-            + (f" (재평가 {len(request.refresh_table_names)}개)" if request.refresh_table_names else "")
+                f"파이프라인 시작: "
+                + (f"{len(request.table_names)}개 테이블" if request.table_names else "전체 테이블")
+                + (f" (재평가 {len(request.refresh_table_names)}개)" if request.refresh_table_names else "")
         ),
     )
 
@@ -596,7 +617,8 @@ async def get_pipeline_status(job_id: str):
     summary="① 카탈로그 갱신분 동기화 + 관계 파이프라인 증분 실행 (액티브 루프 1회)",
 )
 async def sync_from_catalog(
-        date_from: Annotated[str | None, Body(embed=True, description="조회 시작일(YYYY-MM-DD) 재정의 — 백필용. 생략 시 watermark")] = None,
+        date_from: Annotated[
+            str | None, Body(embed=True, description="조회 시작일(YYYY-MM-DD) 재정의 — 백필용. 생략 시 watermark")] = None,
 ):
     """카탈로그 변경 감지 → 데이터셋 등록/재평가 표시 → 파이프라인 증분 실행을 백그라운드로 시작.
 
@@ -643,6 +665,34 @@ async def get_sync_from_catalog_status(job_id: str):
     if not job:
         return APIResponseModel(result=None, description="job을 찾을 수 없습니다")
     return APIResponseModel(result=job, description=f"status={job['status']}")
+
+
+@router.get(
+    "/relation/review",
+    tags=["Relations"],
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+    summary="관계 판정 목록 조회",
+)
+def list_relation_review(status: Literal["PENDING", "APPROVED", "REJECTED"] | None = None):
+    """원장의 관계를 상태별로 조회한다 (관리 화면 '관계 판정'). status 를 비우면 전체."""
+    from app.repositories.relation_repository import get_relation_repository
+
+    rows = get_relation_repository().review_rows(status)
+    return APIResponseModel(result=rows, description=f"관계 {len(rows)}개")
+
+
+@router.patch(
+    "/relation/review/{relation_id}",
+    tags=["Relations"],
+    response_model=APIResponseModel,
+    response_class=JSONResponse,
+    summary="관계 승인·반려",
+)
+def review_relation(relation_id: int, request: RelationReviewRequest):
+    """판정 대기 관계를 승인하거나 반려한다. 카탈로그와 연동된 관계는 결정을 카탈로그에도 반영한다."""
+    row = dataset_service.review_relation(relation_id, request.approved)
+    return APIResponseModel(result=row, description=f"관계 {relation_id} {row['status']}")
 
 
 @router.get(

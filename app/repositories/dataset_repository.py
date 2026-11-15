@@ -15,24 +15,28 @@ from psycopg.types.json import Jsonb
 
 from app.clients.postgres import connect, from_vector, to_vector
 from app.config import settings
-from app.exceptions.service import DuplicateDatasetContentError
+from app.exceptions.service import DatasetNotFoundError, DuplicateDatasetContentError
 from app.schemas.dataset import DatasetProfile, DatasetSearchResult
 
-# 검색어 의미 유사도 하한. ponytail: 실데이터 60건 측정(관련 0.4~0.7 / 무관 0.0~0.3) 기준 — 데이터가 늘면 재측정
-_MIN_SEARCH_SIMILARITY = 0.4
-
-_SOURCE_BY_HOST = {"data.go.kr": "DATA_GO_KR", "kosis.kr": "KOSIS", "opendata.hira.or.kr": "HIRA"}
+_SOURCE_BY_HOST = {
+    "data.go.kr": "DATA_GO_KR",
+    "kosis.kr": "KOSIS",
+    "opendata.hira.or.kr": "HIRA",
+    "hcdl.mohw.go.kr": "HCDL",
+}
 
 _PROFILE_SELECT = """
 SELECT d.dataset_id, f.file_name, f.display_name, d.external_ids, d.party, d.publisher, d.landing_page,
-       d.source, f.domain, d.theme, f.record_count, f.column_count, f.column_names, f.column_profile,
-       d.description, f.table_summary, d.keywords, d.created_at, f.storage_key, {vectors}
+       d.source, d.source_type, d.language, f.domain, d.category, f.record_count, f.column_count, f.column_names,
+       f.column_profile, d.description, f.table_summary, d.keywords, d.created_at, f.storage_key, {vectors}
 FROM meta_datagokr_file f
 JOIN dcat_dataset d USING (dataset_id)
 LEFT JOIN meta_datagokr_file_vec v USING (file_id)
 """
-_WITH_VECTORS = "v.summary_embedding::text AS summary_embedding, v.keywords_embedding::text AS keywords_embedding"
-_NO_VECTORS = "NULL AS summary_embedding, NULL AS keywords_embedding"
+_WITH_VECTORS = (
+    "v.summary_embedding::text AS summary_embedding, v.keywords_embedding::text AS keywords_embedding, v.embed_text"
+)
+_NO_VECTORS = "NULL AS summary_embedding, NULL AS keywords_embedding, NULL AS embed_text"
 
 
 def _source_code(profile: DatasetProfile) -> str:
@@ -47,13 +51,25 @@ def _source_code(profile: DatasetProfile) -> str:
 
 
 def _content_sha256(profile: DatasetProfile) -> str:
-    """파일 내용 해시. 레코드가 없으면(메타데이터-only) 요약문이 내용이다."""
+    """파일 내용 해시. 레코드가 없으면(메타데이터-only) 데이터셋 이름과 요약문이 내용이다.
+
+    메타데이터만 있는 데이터셋은 같은 설명을 공유할 수 있어(표준데이터의 지자체별 목록) 이름을 함께 넣는다.
+    """
     content = (
         {"columns": profile.column_names, "sample_records": profile.sample_records, "record_count": profile.record_count}
         if profile.record_count
-        else {"summary": profile.table_summary}
+        else {"table_name": profile.table_name, "summary": profile.table_summary}
     )
     return hashlib.sha256(json.dumps(content, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _column_profile(profile: DatasetProfile) -> dict:
+    """meta_datagokr_file.column_profile — 정형은 샘플 레코드, 비정형 텍스트는 본문 특징, 분류된 성격을 함께 둔다."""
+    return {
+        "sample_records": profile.sample_records,
+        **({"text_profile": profile.text_profile} if profile.text_profile else {}),
+        **({"nature": profile.nature} if profile.nature else {}),
+    }
 
 
 def _to_profile(row: dict) -> DatasetProfile:
@@ -62,19 +78,25 @@ def _to_profile(row: dict) -> DatasetProfile:
         dataset_id=row["dataset_id"],
         table_name=row["file_name"],
         display_name=row["display_name"] or "",
-        catalog_identifier=ids[0] if ids else "",
+        # 원천 식별자는 'datagokr:'·'kosis:' 처럼 출처 접두가 붙는다 — 접두 없는 값이 통합 카탈로그 식별자
+        catalog_identifier=next((i for i in ids if ":" not in i), ""),
         party=row["party"] or "",
         provider=row["publisher"] or "",
         landing_page=row["landing_page"] or "",
         source=row["source"],
+        source_type=row["source_type"],
+        language=row["language"],
         domain=row["domain"] or "",
-        categories=row["theme"],
+        categories=row["category"],
         record_count=row["record_count"] or 0,
         column_count=row["column_count"] or 0,
         column_names=row["column_names"],
         sample_records=row["column_profile"].get("sample_records", []),
+        text_profile=row["column_profile"].get("text_profile", {}),
+        nature=row["column_profile"].get("nature", ""),
         description=row["description"] or "",
         table_summary=row["table_summary"] or "",
+        embed_text=row["embed_text"] or "",
         table_embedding=from_vector(row["summary_embedding"]),
         keywords=row["keywords"],
         keywords_embedding=from_vector(row["keywords_embedding"]),
@@ -101,26 +123,30 @@ class DatasetRepository:
             "description": profile.description,
             "publisher": profile.provider,
             "keywords": Jsonb(profile.keywords),
-            "theme": Jsonb(profile.categories),
+            "category": Jsonb(profile.categories),
             "landing_page": profile.landing_page,
             "external_ids": Jsonb([profile.catalog_identifier] if profile.catalog_identifier else []),
             "party": profile.party,
+            "source_type": profile.source_type,
+            "language": profile.language,
             "created_at": profile.created_at or None,
         }
         try:
             with connect() as conn:
                 conn.execute(
                     """
-                    INSERT INTO dcat_dataset (dataset_id, source, title, description, publisher, keywords, theme,
-                                              landing_page, external_ids, party, created_at)
+                    INSERT INTO dcat_dataset (dataset_id, source, title, description, publisher, keywords, category,
+                                              landing_page, external_ids, party, source_type, language, visibility,
+                                              created_at)
                     VALUES (%(dataset_id)s, %(source)s, %(title)s, %(description)s, %(publisher)s, %(keywords)s,
-                            %(theme)s, %(landing_page)s, %(external_ids)s, %(party)s,
-                            COALESCE(%(created_at)s::timestamptz, now()))
+                            %(category)s, %(landing_page)s, %(external_ids)s, %(party)s, %(source_type)s,
+                            %(language)s, 'PUBLIC', COALESCE(%(created_at)s::timestamptz, now()))
                     ON CONFLICT (dataset_id) DO UPDATE SET
                         source = EXCLUDED.source, title = EXCLUDED.title, description = EXCLUDED.description,
-                        publisher = EXCLUDED.publisher, keywords = EXCLUDED.keywords, theme = EXCLUDED.theme,
+                        publisher = EXCLUDED.publisher, keywords = EXCLUDED.keywords, category = EXCLUDED.category,
                         landing_page = EXCLUDED.landing_page, external_ids = EXCLUDED.external_ids,
-                        party = EXCLUDED.party, updated_at = now()
+                        party = EXCLUDED.party, source_type = EXCLUDED.source_type, language = EXCLUDED.language,
+                        updated_at = now()
                     """,
                     dataset,
                 )
@@ -137,7 +163,7 @@ class DatasetRepository:
                         profile.raw_storage_key, profile.record_count, profile.column_count,
                         Jsonb(profile.column_names),
                         # ponytail: 항목별 기술통계량(타입·결측률·상위값) 산출 전까지 샘플 레코드를 둔다
-                        Jsonb({"sample_records": profile.sample_records}),
+                        Jsonb(_column_profile(profile)),
                         profile.domain, profile.table_summary,
                     ),
                 )
@@ -149,11 +175,54 @@ class DatasetRepository:
                     """,
                     (
                         file_id, to_vector(profile.table_embedding), to_vector(profile.keywords_embedding),
-                        profile.table_summary, settings.EMBEDDING_MODEL_NAME,
+                        profile.embed_text or profile.table_summary, settings.EMBEDDING_MODEL_NAME,
                     ),
                 )
         except errors.UniqueViolation as e:
             raise DuplicateDatasetContentError(profile.table_name) from e
+
+    def update_nature(self, table_name: str, nature: str) -> None:
+        """분류한 데이터셋 성격만 덮어쓴다 (column_profile.nature)."""
+        with connect() as conn:
+            conn.execute(
+                "UPDATE meta_datagokr_file SET column_profile = column_profile || %s WHERE file_name = %s",
+                (Jsonb({"nature": nature}), table_name),
+            )
+
+    def update_text_analysis(self, profile: DatasetProfile) -> None:
+        """이미 등록된 데이터셋에 비정형 텍스트 분석 결과(형식·언어·본문 특징·분류·임베딩)만 덮어쓴다.
+
+        upsert 는 파일 행을 지우고 다시 넣어 표준 항목(파일 형식·크기·기간)을 잃으므로 쓰지 않는다.
+
+        Raises:
+            DatasetNotFoundError: 파일 행이 없는 데이터셋
+        """
+        with connect() as conn:
+            conn.execute(
+                "UPDATE dcat_dataset SET source_type = %s, language = %s, category = %s, updated_at = now() "
+                "WHERE dataset_id = %s",
+                (profile.source_type, profile.language, Jsonb(profile.categories), profile.dataset_id),
+            )
+            row = conn.execute(
+                "UPDATE meta_datagokr_file SET column_profile = column_profile || %s, domain = %s, updated_at = now() "
+                "WHERE dataset_id = %s RETURNING file_id",
+                (Jsonb({"text_profile": profile.text_profile}), profile.domain, profile.dataset_id),
+            ).fetchone()
+            if row is None:
+                raise DatasetNotFoundError(profile.dataset_id)
+            conn.execute(
+                """
+                INSERT INTO meta_datagokr_file_vec (file_id, summary_embedding, keywords_embedding, embed_text, model_name)
+                VALUES (%s, %s::vector, %s::vector, %s, %s)
+                ON CONFLICT (file_id) DO UPDATE SET
+                    summary_embedding = EXCLUDED.summary_embedding, keywords_embedding = EXCLUDED.keywords_embedding,
+                    embed_text = EXCLUDED.embed_text, model_name = EXCLUDED.model_name, embedded_at = now()
+                """,
+                (
+                    row["file_id"], to_vector(profile.table_embedding), to_vector(profile.keywords_embedding),
+                    profile.embed_text, settings.EMBEDDING_MODEL_NAME,
+                ),
+            )
 
     def search_knn(
         self,
@@ -265,7 +334,7 @@ class DatasetRepository:
                 """
                 WITH base AS (
                     SELECT f.file_name, f.display_name, d.description, f.table_summary, d.publisher, d.party,
-                           d.source, d.theme, f.domain, f.record_count, f.column_count, d.landing_page,
+                           d.source, d.category, f.domain, f.record_count, f.column_count, d.landing_page,
                            d.keywords, d.created_at,
                            (SELECT count(*) FROM dcat_dataset_relation r
                             WHERE r.status = 'APPROVED'
@@ -280,9 +349,9 @@ class DatasetRepository:
                     JOIN dcat_dataset d USING (dataset_id)
                     LEFT JOIN meta_datagokr_file_vec v USING (file_id)
                     WHERE (%(category)s = '' OR EXISTS (
-                              SELECT 1 FROM jsonb_array_elements_text(d.theme) t
+                              SELECT 1 FROM jsonb_array_elements_text(d.category) t
                               WHERE split_part(t, ' > ', 1) = %(category)s))
-                      AND (%(subcategory)s = '' OR d.theme ? %(subcategory)s)
+                      AND (%(subcategory)s = '' OR d.category ? %(subcategory)s)
                       AND (%(party)s = '' OR d.party = %(party)s)
                       AND (%(provider)s = '' OR d.publisher = %(provider)s)
                 )
@@ -295,7 +364,7 @@ class DatasetRepository:
                 {
                     "qvec": to_vector(query_embedding or []), "like": f"%{query}%" if query else None,
                     "category": category, "subcategory": subcategory, "party": party, "provider": provider,
-                    "min_similarity": _MIN_SEARCH_SIMILARITY, "limit": limit, "offset": offset,
+                    "min_similarity": settings.SEARCH_MIN_SIMILARITY, "limit": limit, "offset": offset,
                 },
             ).fetchall()
         return (rows[0]["total"] if rows else 0), rows
@@ -306,10 +375,10 @@ class DatasetRepository:
             rows = conn.execute(
                 """
                 SELECT t AS category, count(DISTINCT d.dataset_id) AS n
-                FROM dcat_dataset d, jsonb_array_elements_text(d.theme) t GROUP BY t
+                FROM dcat_dataset d, jsonb_array_elements_text(d.category) t GROUP BY t
                 UNION ALL
                 SELECT split_part(t, ' > ', 1), count(DISTINCT d.dataset_id)
-                FROM dcat_dataset d, jsonb_array_elements_text(d.theme) t GROUP BY 1
+                FROM dcat_dataset d, jsonb_array_elements_text(d.category) t GROUP BY 1
                 """
             ).fetchall()
         return {r["category"]: r["n"] for r in rows}
