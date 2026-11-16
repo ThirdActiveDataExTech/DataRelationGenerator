@@ -119,5 +119,5 @@
     # 도커 이미지 빌드
     docker build -t python-fastapi-template:dev -f dev.Dockerfile .
     # 컨테이너 구동
-    docker run -d --rm --name python-fastapi-template -p 8000:8000 -e X_TOKEN=wisenut python-fastapi-template:dev
+    docker run -d --rm --name python-fastapi-template -p 8000:8000 -e X_TOKEN= python-fastapi-template:dev
     ```
