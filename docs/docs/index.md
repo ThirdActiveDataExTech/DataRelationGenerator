@@ -13,7 +13,7 @@
 
 <hr>
 
-**Documentation** : <https://labs.wisenut.kr/clusters/local/namespaces/mkdocs/services/pft-mkdocs/public/latest/>    
+**Documentation** : <<INTERNAL_DOCS_URL>>    
 **Source Code**: <https://gitlab.com/wisenut-research/starter/python-fastapi-template>
 
 <hr>
