@@ -4,44 +4,143 @@ import uuid
 from enum import Enum
 from typing import Any, Literal
 
+from app.config import settings
 from app.schemas.tool_utils import pydantic_function_tool
+from app.src.dataset.domain_classifier import CATEGORIES
 from pydantic import BaseModel, Field
 
 
 class Level1RelationType(str, Enum):
-    """Level 1 (데이터셋 간) 관계 유형 — "최소 필수" 3종 (§7.4, §10.1).
+    """데이터셋 간 관계 유형 4종 (관계 유형 정의서 0항).
 
-    - JOINABLE: 공통 키/식별자로 직접 결합 가능 (주로 rule/Tier1)
-    - SEMANTICALLY_RELATED: 같은 주제·도메인을 다루어 함께 분석할 가치 (embedding/llm)
-    - COMPLEMENTARY: 한쪽이 다른 쪽을 보강·확장 (llm)
+    - DETAIL_FOR: 같은 개체에 앵커가 갖지 않은 속성을 공급
+    - STATISTIC_FOR: 다른 입도의 집계·지수로 앵커 값에 맥락을 제공
+    - ADJACENT_TO: 같은 맥락의 다른 개체 (대체재·다음 단계·주제 인접)
+    - SAME_KIND: 같은 항목(시설·업종 목록, 통계 지표)을 지역·기관·기간·분류 기준만 달리해 담은 데이터
 
-    도메인별 세분 유형은 relation_type 문자열의 하위 라벨로 확장 가능(개방형 스키마).
+    방향 (정의서 1.1항): DETAIL_FOR·STATISTIC_FOR 는 비대칭으로, 역할을 주는 쪽(상세·집계)이
+    source, 앵커가 target 이다. ADJACENT_TO·SAME_KIND 는 대칭.
+
+    하위라벨은 relation_type 문자열에 `:` 로 이어 붙인다 (개방형 스키마).
     """
 
-    JOINABLE = "JOINABLE"
-    SEMANTICALLY_RELATED = "SEMANTICALLY_RELATED"
-    COMPLEMENTARY = "COMPLEMENTARY"
+    DETAIL_FOR = "DETAIL_FOR"
+    STATISTIC_FOR = "STATISTIC_FOR"
+    ADJACENT_TO = "ADJACENT_TO"
+    SAME_KIND = "SAME_KIND"
 
 
-def canonicalize_level1_type(raw_type: str, has_common_columns: bool) -> str:
-    """LLM/규칙이 산출한 자유 텍스트 관계 유형을 Level 1 표준 3종으로 정규화.
+# source 쪽에서 target 을 볼 때의 유형. 상세를 준 쪽에게도 앵커는 같은 대상의 다른 정보지만,
+# 집계표에게 개체 목록은 비교 기준이 아니라 같은 맥락의 다른 데이터다. 대칭 유형은 그대로.
+_SOURCE_VIEW = {
+    Level1RelationType.DETAIL_FOR.value: Level1RelationType.DETAIL_FOR.value,
+    Level1RelationType.STATISTIC_FOR.value: Level1RelationType.ADJACENT_TO.value,
+}
 
-    원본 라벨은 하위 라벨로 보존한다 (예: "COMPLEMENTARY:병원기본-병원장비").
+
+def type_seen_from(relation_type: str, anchor_is_source: bool) -> str:
+    """기준 데이터셋에서 본 관계 유형 ("유형:하위라벨"). 기준이 source 쪽이면 역방향 유형이다."""
+    head, sep, sub = relation_type.partition(":")
+    if anchor_is_source:
+        head = _SOURCE_VIEW.get(head, head)
+    return f"{head}{sep}{sub}"
+
+
+# 4종 이전에 저장된 값 → 현행 유형. 원본은 하위라벨로 보존한다.
+_LEGACY_TYPE_MAP = {
+    "JOINABLE": Level1RelationType.DETAIL_FOR,
+    "COMPLEMENTARY": Level1RelationType.DETAIL_FOR,
+    "SEMANTICALLY_RELATED": Level1RelationType.ADJACENT_TO,
+}
+
+_AGGREGATE_HINTS = ("통계", "집계", "지표", "현황 통계", "statistic", "aggregate")
+
+
+def column_jaccard(columns_a: list[str], columns_b: list[str]) -> float:
+    """두 컬럼 목록의 자카드 유사도. 공백·대소문자 차이는 무시한다."""
+    norm = lambda cols: {c.strip().lower().replace(" ", "") for c in cols if c and c.strip()}
+    a, b = norm(columns_a), norm(columns_b)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+# 데이터셋 성격 — 집계 맥락의 방향(집계표가 source)을 정한다. 컬럼 이름 규칙(시점+측정 컬럼)은
+# 정답 표본 200건에서 재현율 14%(국가통계포털 통계표 0/30, 컬럼 없는 메타데이터 판별 불가)라
+# 데이터셋마다 LLM 으로 한 번 분류해 저장한다 (같은 표본 정확도 96%).
+DatasetNature = Literal["aggregate", "record", "reference", "content"]
+
+
+def migrate_stored_type(stored: str) -> str:
+    """저장된 관계 유형을 현행 4종으로 옮긴다 (조회 시점).
+
+    정규화는 쓰기 시점에만 걸리므로 그 이전에 적재된 관계는 구 유형을 그대로
+    갖고 있다. 조회 응답이 구 유형을 노출하지 않도록 앞 토큰만 바꾸고
+    설명 하위라벨은 보존한다. 백필 없이 구·신 데이터를 함께 다룬다.
+    """
+    head, _, sub = (stored or "").partition(":")
+    migrated = _LEGACY_TYPE_MAP.get(head.strip().upper())
+    if migrated is None:
+        return stored
+    return f"{migrated.value}:{sub}" if sub else migrated.value
+
+
+def _as_level1_type(value: str | None) -> "Level1RelationType | None":
+    """LLM이 준 유형 문자열을 enum 으로. 알 수 없는 값은 무시한다."""
+    try:
+        return Level1RelationType(str(value).strip().upper())
+    except ValueError:
+        return None
+
+
+def canonicalize_level1_type(
+    raw_type: str,
+    has_common_columns: bool,
+    *,
+    is_aggregate: bool = False,
+    llm_type: str | None = None,
+) -> str:
+    """관계 유형을 4종으로 정규화. 원본 라벨은 하위라벨로 보존한다.
+
+    판정 순서 — 앞선 조건이 성립하면 뒤는 보지 않는다.
+
+    1. LLM 판정
+    2. 한쪽만 집계표 → STATISTIC_FOR
+    3. 공통 컬럼이 있다 (같은 개체) → DETAIL_FOR
+    4. 그 외 → ADJACENT_TO
+
+    구조 신호(2·3)는 LLM 판정이 없을 때만 쓴다. 쌍을 함께 본 LLM 판정이 데이터셋 하나씩 본
+    성격보다 관계를 잘 가린다(같은 지표의 지역 판본은 양쪽 다 집계표지만 동종 판본이다). 같은
+    시스템의 다른 측정표(속성 보완)는 공통 컬럼이 많아 컬럼 겹침으로 동종 판본을 가를 수 없다.
 
     Args:
-        raw_type: 원본 관계 유형 텍스트
-        has_common_columns: Tier1 공통 컬럼 존재 여부 (조인 가능성 신호)
+        raw_type: LLM/규칙이 산출한 원본 관계 유형 텍스트
+        has_common_columns: 공통 컬럼 존재 여부 (Tier1/Tier1.5)
+        is_aggregate: 데이터셋 성격상 한쪽만 집계표인지. 둘 다 집계표면 같은 통계의 다른 판일 수 있어 구조 신호가 아니다
+        llm_type: LLM이 판정한 4종 유형. 구프롬프트 응답이면 빈 값
 
     Returns:
-        "<표준유형>" 또는 "<표준유형>:<원본라벨>"
+        "<유형>" 또는 "<유형>:<원본라벨>"
     """
     text = (raw_type or "").lower()
-    if has_common_columns or any(k in text for k in ("join", "조인", "fk", "공통", "식별자", "key")):
-        canonical = Level1RelationType.JOINABLE
-    elif any(k in text for k in ("complement", "보완", "보강", "확장", "extend")):
-        canonical = Level1RelationType.COMPLEMENTARY
+    legacy = _LEGACY_TYPE_MAP.get((raw_type or "").strip().upper())
+
+    judged = _as_level1_type(llm_type)
+
+    if legacy is not None:
+        # 4종 이전 값은 텍스트 키워드보다 매핑을 우선한다
+        canonical = legacy
+    elif judged is not None:
+        canonical = judged
+    elif is_aggregate:
+        canonical = Level1RelationType.STATISTIC_FOR
+    elif any(k in text for k in _AGGREGATE_HINTS):
+        # 구프롬프트 응답 대비 — 라벨 문구로 집계를 추정한다
+        canonical = Level1RelationType.STATISTIC_FOR
+    elif has_common_columns:
+        canonical = Level1RelationType.DETAIL_FOR
     else:
-        canonical = Level1RelationType.SEMANTICALLY_RELATED
+        canonical = Level1RelationType.ADJACENT_TO
 
     raw_clean = (raw_type or "").strip()
     if raw_clean and raw_clean.upper() not in {t.value for t in Level1RelationType}:
@@ -66,17 +165,32 @@ class DatasetProfile(BaseModel):
     landing_page: str = Field(
         default="", description="원본 제공처 URL (DCAT dcat:landingPage/accessURL) — 사용자 시나리오 '수집' 단계 연결용"
     )
-    domain: str = Field(description="데이터 도메인 (medical, broadcast, general 등)")
-    domain_confidence: float | None = Field(
-        default=None, description="도메인 자동 분류 신뢰도 (None = 사용자/카탈로그 지정)"
+    source: str = Field(
+        default="", description="원천 포털 코드 (DATA_GO_KR / KOSIS / HIRA / HCDL / FIRST_PARTY / OTHER) — 원장이 제공처로 정한다"
     )
+    domain: str = Field(description="대표 대분류 (디지털 집현전 7대분류 — 과학·기술·인문·사회·교육·의료·문화). 미분류면 빈 값")
+    categories: list[str] = Field(
+        default_factory=list,
+        description="분야 분류 '대분류 > 중분류' 1~3개 (디지털 집현전 분류표). 첫 번째가 대표 분류",
+    )
+    source_type: Literal["structured_file", "unstructured_text"] = Field(
+        default="structured_file", description="데이터 형식 — 정형 파일 / 비정형 텍스트(문서). 원장 dcat_dataset.source_type"
+    )
+    language: str = Field(default="ko", description="데이터 언어 (ISO 639-1 — ko·en, 판별 불가 und)")
     record_count: int = Field(description="레코드 수")
     column_count: int = Field(description="컬럼 수")
     column_names: list[str] = Field(description="컬럼명 목록")
     sample_records: list[dict[str, Any]] = Field(description="샘플 레코드 (최대 10개)")
+    text_profile: dict[str, Any] = Field(
+        default_factory=dict, description="비정형 텍스트 본문 특징 (형식·언어·글자 수·발췌). 정형 데이터는 빈 값"
+    )
+    nature: DatasetNature | Literal[""] = Field(
+        default="", description="데이터셋 성격 — 집계표 / 개체·사건 기록 / 기준 정보 / 콘텐츠. 빈 값은 미분류"
+    )
     description: str = Field(default="", description="테이블 짧은 설명")
     table_summary: str = Field(default="", description="테이블 상세 요약 (임베딩 소스)")
-    table_embedding: list[float] = Field(default_factory=list, description="table_summary 임베딩 벡터")
+    embed_text: str = Field(default="", description="임베딩 입력 텍스트 — 비어 있으면 table_summary (문서는 요약+본문 발췌)")
+    table_embedding: list[float] = Field(default_factory=list, description="embed_text 임베딩 벡터")
     keywords: list[str] = Field(default_factory=list, description="LLM이 추출한 도메인 개념 키워드")
     keywords_embedding: list[float] = Field(default_factory=list, description="keywords 평균 임베딩 벡터")
     created_at: str = Field(default="", description="생성 시각 (ISO 8601)")
@@ -86,8 +200,8 @@ class DatasetProfile(BaseModel):
 class DatasetRelation(BaseModel):
     """테이블 간 관계 정보."""
 
-    table_a: str = Field(description="출발 테이블명")
-    table_b: str = Field(description="도착 테이블명")
+    table_a: str = Field(description="출발(source) 테이블명 — 비대칭 유형에서 상세·집계를 주는 쪽")
+    table_b: str = Field(description="도착(target) 테이블명 — 비대칭 유형에서 앵커")
     catalog_identifier_a: str = Field(default="", description="출발 데이터셋의 통합 카탈로그 식별자 (①연동 키)")
     catalog_identifier_b: str = Field(default="", description="도착 데이터셋의 통합 카탈로그 식별자 (①연동 키)")
     score: float = Field(ge=0.0, le=1.0, description="관계 점수")
@@ -103,13 +217,19 @@ class DatasetIngestRequest(BaseModel):
     """테이블 메타데이터 적재 요청."""
 
     table_name: str = Field(description="테이블명")
-    domain: str = Field(default="", description="도메인 (medical, broadcast 등). 빈 값이면 특징 기반 자동 분류")
+    domain: str = Field(
+        default="", description="분야 분류 '대분류 > 중분류' (디지털 집현전 분류표). 생략하거나 분류표 밖 값이면 자동 분류"
+    )
     catalog_identifier: str = Field(default="", description="통합 카탈로그 식별자 (catalog_entry.identifier)")
     description: str = Field(default="", description="짧은 설명")
     table_summary: str = Field(default="", description="상세 요약 (비어있으면 description 사용)")
     party: Literal["", "1st", "3rd"] = Field(default="", description="데이터 파티 구분 (1st/3rd)")
     provider: str = Field(default="", description="제공 기관/발행처")
     landing_page: str = Field(default="", description="원본 제공처 URL")
+    column_names: list[str] = Field(
+        default_factory=list,
+        description="레코드 없이 스키마만 공개된 데이터의 컬럼 목록 (테이블명세서·API 응답 명세). records가 있으면 무시",
+    )
 
 
 class IngestFromCatalogRequest(BaseModel):
@@ -169,6 +289,9 @@ class DatasetSearchResult(BaseModel):
         default="knn", description="매칭 근거 — knn(임베딩 유사 후보) / relation(기존 확정 관계)"
     )
     relation_type: str = Field(default="", description="match_type=relation 일 때 관계 유형")
+    evidence: dict[str, Any] = Field(
+        default_factory=dict, description="match_type=relation 일 때 생성 근거 (결합 컬럼·LLM 판정 이유)"
+    )
 
 
 # ── Tier 1 ──────────────────────────────────────────────────────────────────
@@ -215,28 +338,26 @@ class Tier2Candidate(BaseModel):
 
 # ── Tier 3 ──────────────────────────────────────────────────────────────────
 
-EvidenceType = Literal[
-    "shared_key", "value_overlap", "same_entity", "parallel_schema", "usage_dependency", "none"
-]
-
-
 TableNature = Literal["record", "knowledge_content"]
 
 
 class TableRelationVerification(BaseModel):
-    """LLM 관계 검증 결과 (tool call 스키마)."""
+    """LLM 관계 검증 결과 (tool call 스키마).
 
-    related: bool = Field(description="두 테이블이 의미적으로 연관되어 있는가")
-    table_a_nature: TableNature = Field(
-        description="테이블 A의 성격 (record: 실세계 개체·사건의 기록 / knowledge_content: 지식·콘텐츠 자체가 행의 대상)"
-    )
-    table_b_nature: TableNature = Field(description="테이블 B의 성격")
-    evidence_type: EvidenceType = Field(
-        description="관계 근거 유형 — 근거가 테이블 데이터 안에 존재해야 함 (related=false면 none)"
-    )
-    relation_type: str = Field(description="관계 유형 설명 (예: 진단명-건강정보, 환자-병원)")
+    유형은 4종 하나만 쓴다. 근거는 별도 분류를 받지 않고 **인용**으로 받아
+    코드가 실제 컬럼·샘플에 대조 검증한다 (자기신고 분류는 검증이 불가능했다).
+    """
+
+    related: bool = Field(description="근거가 있는 관계인가")
+    table_a_nature: TableNature = Field(description="A의 성격")
+    table_b_nature: TableNature = Field(description="B의 성격")
+    level1_type: Level1RelationType = Field(description="관계 유형")
+    evidence_columns: list[str] = Field(default_factory=list, description="양쪽에 모두 있는 근거 컬럼명")
+    evidence_values: list[str] = Field(default_factory=list, description="양쪽 샘플에 모두 나오는 근거 값")
+    relation_type: str = Field(description="두 데이터가 어떻게 이어지는지 한 줄")
     confidence: float = Field(ge=0.0, le=1.0, description="확신도")
-    reason: str = Field(description="판단 근거 (2~3문장)")
+    reason: str = Field(description="판정 근거 (검토자용)")
+    usage: str = Field(description="두 데이터를 합치면 무엇을 알게 되는지 한 문장 (관계가 없으면 빈 문자열)")
 
 
 table_relation_verification_tool = pydantic_function_tool(
@@ -255,10 +376,6 @@ class TableMetadataExtraction(BaseModel):
         default="",
         description="테이블의 한국어 표시명 — 사람이 한눈에 알아볼 간결한 명사구 (예: patient_info → '환자 기본정보'). 테이블명이 이미 자연스러운 한국어면 그대로 사용",
     )
-    domain: str = Field(
-        default="",
-        description="데이터 도메인 분류 (한국어 명사, 예: 보건의료, 교통및물류, 환경). 기존 도메인 목록이 주어지면 그중 가장 적합한 것을 우선 선택하고, 정말 맞는 것이 없을 때만 새 도메인을 제안",
-    )
 
 
 table_metadata_extraction_tool = pydantic_function_tool(
@@ -268,18 +385,32 @@ table_metadata_extraction_tool = pydantic_function_tool(
 )
 
 
-class DomainSelection(BaseModel):
-    """도메인 선택 결과 — 기존 도메인 우선, 신설은 최후 수단."""
+class DatasetCategoryClassification(BaseModel):
+    """분야 분류 결과 — 디지털 집현전 분류표 안에서만 고른다."""
 
-    domain: str = Field(
-        description="제시된 기존 도메인 중 하나 (우선). 정말 해당 없을 때만 대분류 수준의 새 도메인 명사"
+    # Bedrock 은 배열 minItems/maxItems 를 거부한다 — 개수는 프롬프트로 지시하고 normalize_categories 가 자른다
+    categories: list[Literal[CATEGORIES]] = Field(  # type: ignore[valid-type]
+        description="'대분류 > 중분류' 1~3개. 가장 대표적인 분류를 맨 앞에. 확실한 것만 고르고 억지로 채우지 말 것",
     )
 
 
-domain_selection_tool = pydantic_function_tool(
-    DomainSelection,
-    name="select_domain",
-    description="데이터셋 메타데이터를 도메인으로 분류합니다. 기존 도메인 재사용을 우선하고 신설은 지양합니다.",
+dataset_category_classification_tool = pydantic_function_tool(
+    DatasetCategoryClassification,
+    name="classify_dataset_categories",
+    description="데이터셋을 디지털 집현전 주제 분류(대분류 > 중분류)로 분류합니다.",
+)
+
+
+class DatasetNatureClassification(BaseModel):
+    """데이터셋 성격 분류 결과."""
+
+    nature: DatasetNature = Field(description="데이터셋 성격")
+
+
+dataset_nature_classification_tool = pydantic_function_tool(
+    DatasetNatureClassification,
+    name="classify_dataset_nature",
+    description="데이터셋이 집계표·개체 기록·기준 정보·콘텐츠 중 무엇인지 분류합니다.",
 )
 
 
@@ -288,6 +419,25 @@ class DatasetSearchIntent(BaseModel):
 
     search_query: str = Field(description="데이터셋 요약문과 유사도 비교할 서술형 명사구 (한국어)")
     keywords: list[str] = Field(default_factory=list, description="핵심 주제 키워드 (보조 신호)")
+
+
+class DatasetSearchAnswer(BaseModel):
+    """검색 결과와 관계 구조를 근거로 한 자연어 답변."""
+
+    answer: str = Field(
+        description="질의에 대한 답변. 검색된 데이터셋과 그 관계만 근거로 삼는다 (한국어 3~5문장)"
+    )
+    suggested_next: list[str] = Field(
+        default_factory=list,
+        description="이어서 볼 만한 데이터셋명 — 반드시 제시된 목록 안에서만 고른다",
+    )
+
+
+dataset_search_answer_tool = pydantic_function_tool(
+    DatasetSearchAnswer,
+    name="answer_dataset_search",
+    description="검색된 데이터셋과 관계 구조를 근거로 질의에 답합니다.",
+)
 
 
 dataset_search_intent_tool = pydantic_function_tool(
@@ -303,9 +453,12 @@ class Tier3Result(BaseModel):
     table_a: str
     table_b: str
     relation_type: str
-    evidence_type: str = Field(default="", description="LLM이 분류한 관계 근거 유형")
+    level1_type: str = Field(default="", description="LLM이 판정한 4종 유형 (구프롬프트 응답이면 빈 값)")
+    evidence_columns: list[str] = Field(default_factory=list, description="LLM이 인용한 근거 컬럼")
+    evidence_values: list[str] = Field(default_factory=list, description="LLM이 인용한 근거 값")
     confidence: float
     reason: str
+    usage: str = Field(default="", description="사용자에게 보여줄 활용 설명")
     embedding_score: float = Field(description="Tier 2 유사도 (참고용)")
     method: Literal["llm"] = "llm"
 
@@ -329,12 +482,23 @@ class RelationPipelineResult(BaseModel):
     )
 
 
+class RelationReviewRequest(BaseModel):
+    """관계 판정 — 승인 또는 반려."""
+
+    approved: bool = Field(description="true 면 승인(APPROVED), false 면 반려(REJECTED)")
+
+
 class RunRelationPipelineRequest(BaseModel):
     """관계 생성 파이프라인 실행 요청."""
 
     table_names: list[str] = Field(default_factory=list, description="대상 테이블명 목록 (비어있으면 전체)")
-    tier2_threshold: float = Field(default=0.4, ge=0.0, le=1.0, description="Tier 2 유사도 임계값")
-    tier3_confidence_threshold: float = Field(default=0.8, ge=0.0, le=1.0, description="Tier 3 확신도 임계값")
+    tier2_threshold: float = Field(
+        default=settings.RELATION_CANDIDATE_THRESHOLD, ge=0.0, le=1.0, description="Tier 2 유사도 임계값 (임베딩 모델 기준값)"
+    )
+    tier3_confidence_threshold: float = Field(
+        default=0.6, ge=0.0, le=1.0,
+        description="Tier 3 확신도 하한 — 이상이면 판정 대기, 자동 확정 기준(RELATION_AUTO_APPROVE_THRESHOLD) 이상이면 확정",
+    )
     refresh_table_names: list[str] = Field(
         default_factory=list,
         description="메타데이터가 변동된 테이블 — 이 테이블이 낀 쌍은 기존 관계가 있어도 재평가 (증분 갱신)",

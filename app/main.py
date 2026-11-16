@@ -23,7 +23,7 @@ from starlette.types import HTTPExceptionHandler
 from app import handlers
 from app.api.api_router import api_router
 from app.config import settings
-from app.constants import DESCRIPTION, SUMMARY, LICENSE_INFO
+from app.constants import DESCRIPTION, LICENSE_INFO, OPENAPI_TAGS, SUMMARY
 from app.dependencies import get_token_header
 from app.exceptions.base import ApplicationError
 from app.log import setup_logging
@@ -81,6 +81,7 @@ app = FastAPI(
     license_info=LICENSE_INFO,
     servers=settings.servers,
     root_path_in_servers=settings.root_path_in_servers,
+    openapi_tags=OPENAPI_TAGS,
     docs_url=None, redoc_url=None,  # Serve the static files
     routes=routes()
 )
@@ -132,7 +133,7 @@ async def add_request_id(request: Request, call_next):
     return response
 
 
-@app.get('/')
+@app.get('/', include_in_schema=False)
 def index():
     return RedirectResponse('/docs')
 
@@ -168,7 +169,7 @@ async def redoc_html():
     )
 
 
-@app.get("/health")
+@app.get("/health", tags=["System"])
 def health():
     return {
         "status": "UP", "service": settings.SERVICE_NAME, "version": VERSION, "home_path": os.getcwd(),
@@ -176,7 +177,7 @@ def health():
     }
 
 
-@app.get("/info")
+@app.get("/info", tags=["System"])
 async def info():
     version: str = VERSION
     if 'Unknown' in version:

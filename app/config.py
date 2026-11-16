@@ -130,7 +130,8 @@ class Settings(BaseSettings):
     OPENSEARCH_DOCUMENTS_INDEX: str = "third-party-graph-documents"
     OPENSEARCH_KEYS_INDEX: str = "third-party-graph-keys"
     OPENSEARCH_VALUES_INDEX: str = "third-party-graph-values"
-    OPENSEARCH_DATASETS_INDEX: str = "third-party-datasets"
+
+    POSTGRES_DSN: str = "postgresql://wisenut"
 
     # 원본 업로드 파일(blob) 보관 백엔드 선택 (§3.2): filesystem | minio | none
     #   - filesystem: 로컬 디스크(또는 PVC 마운트 경로)에 저장 — active-metadata 프로젝트와 동일 방식
@@ -184,16 +185,27 @@ class Settings(BaseSettings):
     CATALOG_SYNC_ENABLED: bool = False
     CATALOG_SYNC_INTERVAL_MINUTES: int = 60
 
-    # Dataset RDF Namespace
-    DATASET_RDF_NAMESPACE: str = "http://datarelation.wisenet.co.kr/ontology#"
-    DATASET_RDF_NAMESPACE_PREFIX: str = "dm"
+    # 카탈로그 access_url 실데이터 수집
+    CATALOG_FETCH_DATA_ENABLED: bool = True
+    DATA_FETCH_TIMEOUT_SECONDS: int = 30
+    DATA_FETCH_MAX_BYTES: int = 50 * 1024 * 1024
+    DATA_FETCH_MAX_RECORDS: int = 5000
 
-    # Embedding Config
-    EMBEDDING_MODEL_NAME: str = "jhgan/ko-sroberta-multitask"
+    KV_BUILD_ON_SYNC: bool = False
+
+    # Embedding Config — 다국어 모델이라 언어가 다른 데이터도 한 벡터 공간에서 비교된다
+    EMBEDDING_MODEL_NAME: str = "intfloat/multilingual-e5-base"
+    # E5 계열은 입력 앞에 역할 접두를 붙여 학습됐다. 데이터셋끼리 비교하는 대칭 과제라 모든 입력에 "query: "
+    EMBEDDING_PROMPT: str = "query: "
+    # 코사인 임계값은 모델마다 분포가 달라(E5 는 0.8~0.9 에 몰림) 모델을 바꾸면
+    # scripts/validation/compare_embedding_models.py 로 다시 환산한다 (2026-11-03, 원장 7,469건 기준)
+    # 관계 후보(Tier 2): 확정 관계 쌍 통과율을 종전 모델(ko-sroberta 0.4, 81%)과 같게
+    RELATION_CANDIDATE_THRESHOLD: float = 0.82
+    # 검색어 의미 유사도 하한: 정답 통과율 98% 유지, 무관 데이터 통과율은 종전(28%) 이하
+    SEARCH_MIN_SIMILARITY: float = 0.85
     SIMILARITY_THRESHOLD: float = 0.75
     SIMILARITY_TOP_K: int = 5
 
 
 settings = Settings()  # type: ignore
-print(settings.model_dump_json())
 langfuse_handler = CallbackHandler()
